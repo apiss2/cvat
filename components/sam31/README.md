@@ -1,14 +1,13 @@
 # SAM3.1 polygon tracking
 
 This optional extension adds `pth-sam31-tracker`. It does not replace SAM2 or
-UltraSAM, patch CVAT core, or modify the upstream SAM source. The UI shares the
-polygon selection dialog; the model, Python/CUDA image, checkpoint, temporal
-state codec and Redis service are separate.
+UltraSAM, patch CVAT core, or modify the upstream SAM source. SAM2 and SAM3.1 use
+the same polygon-selection dialog and tracking action implementation. The model,
+Python/CUDA image, checkpoint, state codec and Redis service remain separate.
 
-**Experimental until the real-checkpoint GPU smoke test and CVAT browser
-acceptance checks below pass on the deployment host.** CPU contract tests use a
-fake predictor. They do not demonstrate working SAM3.1 inference or its accuracy.
-The complete Docker image and CVAT UI build must also be validated locally.
+**Experimental until real-checkpoint GPU smoke tests and CVAT browser acceptance
+checks pass on the deployment host.** CPU tests use model/command doubles. They
+do not establish working GPU inference, accuracy, latency or VRAM requirements.
 
 ## Model and state contract
 
@@ -16,122 +15,138 @@ The adapter pins Meta's SAM repository to
 `0570b3a5be9c4e694f23d85232fb55f4a6f1f7fc`. It uses the SAM3.1 multiplex tracker
 and shared visual backbone from the official merged `sam3.1_multiplex.pt`
 checkpoint. It does not instantiate text/detection heads. Missing tracking
-weights cause startup to fail rather than leaving randomly initialized weights.
+weights cause startup to fail instead of leaving randomly initialized weights.
 
-The adapter runs one batched encoder/tracking step per frame for one to four
-fixed polygon seeds, then stores bounded CPU tensor memory in Redis. It retains
-the initial conditioning frame, the recent mask memories and the object-pointer
-horizon required by the pinned forward-only implementation. State uses
-safetensors with bounded, validated JSON metadata, never pickle. Atomic Redis
-revision checks and stored replies support retries after lost responses or a
-worker restart. A changed checkpoint/adapter/precision rejects old state.
+The adapter runs one batched encoder/tracking step per frame for one to 16 fixed
+polygon seeds. The previous four-object limit was an adapter/storage policy, not
+the multiplex capacity: the pinned model is configured with 16 multiplex slots.
+The initial frame, bounded recent mask memory and object-pointer horizon are
+stored as CPU tensors in Redis. State uses validated safetensors, not pickle.
+Atomic revisions and stored replies support replay after response loss or worker
+restart; a changed checkpoint/adapter/precision rejects old state.
 
-The package reuses only image decoding, contour conversion and Redis transaction
-helpers from the existing SAM2 extension. `deploy.py` stages these helpers with a
-separate SAM31 environment/prefix; it never imports the SAM2 neural model or
-its temporal state format at runtime. No session is kept in process-local GPU
-memory between requests.
+Only image decoding, contour conversion and Redis transaction helpers are shared
+with SAM2. `deploy.py` stages these helpers with a separate SAM31 environment and
+key prefix; it does not import the SAM2 neural model or state codec at runtime.
+SAM2's corresponding object, serialization and deployment limits are also 16.
+Its default state byte limit is 256 MiB, increased from 64 MiB. SAM3.1 keeps its
+256 MiB default. Independent byte, pixel, output-coordinate and Redis memory
+limits still apply; selecting the maximum range/count is not a promise that every
+video or polygon complexity fits those budgets.
 
 Source references:
 - https://github.com/facebookresearch/sam3/blob/0570b3a5be9c4e694f23d85232fb55f4a6f1f7fc/sam3/model_builder.py
 - https://github.com/facebookresearch/sam3/blob/0570b3a5be9c4e694f23d85232fb55f4a6f1f7fc/sam3/model/video_tracking_multiplex.py
 - https://github.com/facebookresearch/sam3/blob/0570b3a5be9c4e694f23d85232fb55f4a6f1f7fc/sam3/model/multiplex_utils.py
 
-## Deployment
+## Deployment through cvatctl
 
-Obtain approved access to `facebook/sam3.1` on Hugging Face and accept the model's
-license before downloading its checkpoint. Keep the checkpoint outside the CVAT
-checkout. Neither Hugging Face tokens nor weights are embedded in the build
-context. The deployed function mounts the checkpoint read-only and disables
-runtime Hugging Face downloads.
+Obtain authorized access to `facebook/sam3.1`, accept the model license and obtain
+its checkpoint. Keep weights and access tokens outside the checkout/build
+context. The function mounts the checkpoint read-only and disables runtime
+Hugging Face downloads.
 
-Append to the existing deployment environment file used by `cvatctl`; do not
-replace existing extension or site settings. Preserve its `0600` permissions. Client plugin paths use
-`:` separators and extra Compose paths use `;` separators.
+Append `sam31` to the existing `CVAT_EXTENSIONS` list, preserving other selected
+extensions. Configure the following entries in the same private deployment
+`.env` used by `components/extensions/cvatctl`:
 
 ```dotenv
-# Append these entries to existing lists, rather than discarding other entries.
-CVAT_CLIENT_PLUGINS=plugins/sam31
-CVAT_EXTRA_COMPOSE_FILES=components/sam31/docker-compose.sam31.yml
+# Example selection; retain your actual existing extension list.
+CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,sam31
 SAM31_CHECKPOINT_HOST=/absolute/path/outside/cvat/sam3.1_multiplex.pt
 SAM31_CHECKPOINT_SHA256=<sha256sum output>
 SAM31_REDIS_PASSWORD=<separate 32 to 128 character random password>
+SAM31_REDIS_VOLUME=
 SAM31_REDIS_MAXMEMORY=2gb
 SAM31_STATE_MAX_BYTES=268435456
 SAM31_SESSION_TTL_SECONDS=28800
 SAM31_GPU_DEVICE=0
 ```
 
-The existing manager automatically appends enabled SAM2/registry plugin paths.
-Do **not** add `sam31` to `CVAT_EXTENSIONS`: this optional component uses the
-existing extra-plugin and extra-Compose interfaces instead of extending that
-manager's hard-coded feature list. A deployment already using SAM2, UltraSAM or
-the model registry already includes the serverless overlay. Otherwise also add
-`components/serverless/docker-compose.serverless.yml` before the SAM3.1 overlay.
+The default Redis volume is `<COMPOSE_PROJECT_NAME>_sam31_redis_data`; it is an
+external persistent volume managed by cvatctl. SAM2 and SAM3.1 may not share it.
+`cvatctl init` generates independent Redis passwords, but an existing environment
+file must be updated explicitly. Keep `.env` mode `0600`.
 
-Rebuild/apply the configured deployment with the existing extension management
-procedure. Then, from the repository root, deploy this function separately:
+The common manager selects the SAM3.1 plugin, serverless support and Compose
+file automatically. Do not add manual SAM3.1 entries to
+`CVAT_CLIENT_PLUGINS` or `CVAT_EXTRA_COMPOSE_FILES`.
 
 ```sh
-python components/sam31/deploy.py --env-file /path/to/existing-deployment.env
+# Use the existing deployment environment/state directory for every operation.
+components/extensions/cvatctl --env-file /path/to/deployment.env down
+# Edit the configuration above while stopped.
+components/extensions/cvatctl --env-file /path/to/deployment.env up
+components/extensions/cvatctl --env-file /path/to/deployment.env check
+
+# Explicit SAM3.1 function redeployment under the same operation lock/state:
+components/extensions/cvatctl --env-file /path/to/deployment.env deploy-sam31
 ```
 
-Deployment requires a Docker host with a compatible NVIDIA driver, GPU container
-runtime and an `nuctl` version matching the existing Nuclio dashboard. The
-function image uses Python 3.12, PyTorch 2.10 and CUDA 12.8. FlashAttention 3 and
-compilation are disabled. VRAM requirements and performance on the team's
-ultrasound images have not been measured; no speed or accuracy improvement over
-SAM2 is assumed. Redeploy with `deploy.py` after changing SAM3.1 source/settings;
-the ordinary manager does not automatically build this optional function.
+`up` starts and health-checks Redis before restoring functions, then deploys the
+SAM3.1 tracker. `up --no-build` (also accepted before `up`) reuses matching local
+images and rejects missing images before startup. Image fingerprints include
+SAM3.1 source, the function definition and the shared helpers. Runtime settings
+and the checkpoint mount are checked separately. Changes require the ordinary
+stop/reconfigure/start procedure rather than silent adoption of a changed mount.
+
+`status`, `check`, `down` and restart-policy restoration include SAM3.1. To disable
+it, run `down`, remove `sam31` from `CVAT_EXTENSIONS`, then run `up`; its suspended
+function stays stopped and its Redis volume is retained. No SAM2 volume is deleted.
+`deploy.py` is a packaging helper; invoking its command-line entry also delegates
+to the common manager instead of creating a second deployment state.
+
+Deployment requires a compatible NVIDIA driver, GPU container runtime and nuctl
+matching the dashboard. The function image uses Python 3.12, PyTorch 2.10 and
+CUDA 12.8. FlashAttention 3 and compilation are disabled. Real-image builds and
+inference still require validation on the deployment host.
 
 ## Tracking in CVAT
 
 Open a 2D annotation job and select **Menu > SAM3.1: ポリゴンを追跡…**. Set the
-start frame and inclusive end frame. Select one to four unlocked polygon shapes
-shown with their object IDs, labels and contour previews. The start-frame shape
-is the initial mask; there is no text prompt. **開始フレームを表示** navigates to it.
+start frame and inclusive end frame. Select one to 16 unlocked polygon shapes
+shown with IDs, labels and contour previews. **開始フレームを表示** navigates to the
+seed frame. There is no text prompt; the seed polygon is converted to a mask.
 
-The chosen shapes are replaced by tracks as one undoable action after all
-requests succeed. Other shapes/tracks are left unchanged. The original seed
-contour, labels, groups and attributes are preserved. Changes are not saved
-automatically. Cancellation, seed edits during inference and errors discard the
-pending replacement. An outside keyframe terminates extrapolation beyond the
-requested range. Deleted frames are skipped.
+Both models use exactly the same controls for frame range, selection, previews,
+progress and cancellation. The permitted end is at most 10,000 frame indices
+beyond the start, and must remain within the job. The seed and end are both
+included, so a contiguous range can contain 10,001 frames in total. The browser
+keeps its two-million-coordinate result budget; complex contours can reach that
+limit earlier. Errors or cancellation leave the original annotations unchanged.
 
-The current scope is forward tracking, one to four independent polygon shapes,
-at most 1000 frame indices after the start. Existing tracks are not seeds.
-Polygon tracks retain the largest external contour and cannot represent holes
-or disconnected components. SAM2 uses the same dialog through its own menu item
-and its original deployed function.
+Selected shapes become tracks as one undoable action after all requests succeed.
+Other shapes and existing tracks are unchanged. Seed geometry, labels, groups and
+attributes are preserved; saving remains manual. Seed edits during tracking are
+rejected. Deleted frames are skipped and an outside keyframe terminates unwanted
+extrapolation beyond the range. Existing tracks are not seed inputs.
+
+Polygon output retains the largest external contour, not holes or disconnected
+components. This extension supplies polygon-seeded video tracking, not SAM2's
+separate single-image point-prompt interactor. The shared tracking UI does not
+hide or invent unsupported single-image features.
 
 ## Verification
 
-CPU tests require pytest, numpy, Pillow, CPU PyTorch and safetensors. Contour
-conversion additionally requires OpenCV. They do not require the model weights.
+CPU tests require pytest, numpy, Pillow, CPU PyTorch, safetensors and OpenCV. They
+do not require model weights. CLI tests replace external commands, not the manager:
 
 ```sh
-python -m pytest components/sam31/tests/test_runtime.py -q
+python -m pytest components/sam31/tests/test_runtime.py components/sam31/tests/test_review_limits.py components/sam31/tests/test_cvatctl.py -q
 node cvat-ui/plugins/sam2/tests/run-tests.cjs
 ```
 
-After building the image, copy `tests/gpu_smoke.py` to the running function
-container and run it with that container's configured environment and mounted
-checkpoint. Substitute the actual function container name or ID:
+After building the image, copy and run `tests/gpu_smoke.py` in the function
+container with its configured environment and read-only checkpoint mount:
 
 ```sh
 docker cp components/sam31/tests/gpu_smoke.py <function-container>:/tmp/gpu_smoke.py
 docker exec <function-container> python /tmp/gpu_smoke.py --objects 4 --frames 40
 ```
 
-This uses real GPU inference and checks strict checkpoint loading, finite masks,
-codec restoration on every frame, bounded state size, and mask equality against
-unpruned forward inference past both memory horizons. It is a contract check on
-synthetic images, not an ultrasound accuracy benchmark or a real Redis test.
-
-Before production use, also validate the complete CVAT UI build and browser
-workflow; test Redis-backed continuation after a worker restart, identical
-request replay after response loss, conflicting requests, and wrong-model state
-rejection. Check concurrent jobs and representative ultrasound videos. A failure
-must leave original annotations untouched. Keep SAM2 available while doing these
-checks. Disabling SAM3.1 means stopping/deleting its Nuclio function and removing
-its plugin/overlay entries; do not delete the existing SAM2 Redis volume.
+This checks real checkpoint loading, finite masks, restoration each frame and
+agreement with unpruned inference on synthetic images, not ultrasound accuracy.
+Before production use, additionally validate maximum-count GPU tracking, the
+complete UI build/browser workflow, real Redis restart/replay/conflict behavior,
+concurrent jobs and representative ultrasound videos. A failure must leave the
+original annotations untouched. Keep SAM2 available during validation.

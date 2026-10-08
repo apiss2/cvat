@@ -7,6 +7,7 @@ import json
 import os
 from PIL import Image, UnidentifiedImageError
 
+MAX_OBJECTS = 16
 MAX_BODY_BYTES = 32 * 1024 * 1024
 MAX_PIXELS = int(os.getenv("SAM2_MAX_PIXELS", "16777216"))
 

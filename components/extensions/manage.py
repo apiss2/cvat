@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Manage the selected CVAT extensions and their Compose deployment.
 
-Requires Python >=3.10, Git, Docker Compose >=2.24.4; SAM2/UltraSAM require nuctl.
+Requires Python >=3.10, Git, Docker Compose >=2.24.4; SAM2/UltraSAM/SAM3.1 require nuctl.
 Settings are literal assignments in .env. Runtime snapshots live OUTSIDE the
 build context. No shell evaluation, volume deletion, or automatic DB rollback.
 """
@@ -32,6 +32,9 @@ from registryctl import (
 )
 from storage import default_home, prepare_storage, storage_paths
 
+sys.path.insert(0, str(ROOT))
+from components.sam31 import deploy as sam31_deploy
+
 SERVERLESS_COMPOSE = "components/serverless/docker-compose.serverless.yml"
 LOCAL_REGISTRY_COMPOSE = (
     "components/model_registry/docker-compose.registry.yml",
@@ -44,10 +47,12 @@ EXTENSION_COMPOSE = {
         "components/sam2/docker-compose.sam2.yml",
     ),
     "ultrasam": ("components/ultrasam/docker-compose.ultrasam.yml",),
+    "sam31": ("components/sam31/docker-compose.sam31.yml",),
     "model_registry": ("components/model_registry/docker-compose.gateway.yml",),
 }
 EXTENSION_PLUGINS = {
     "sam2": "plugins/sam2",
+    "sam31": "plugins/sam31",
     "model_registry": "plugins/model-registry",
 }
 FINAL_COMPOSE = "components/extensions/docker-compose.extensions.yml"
@@ -68,12 +73,14 @@ FUNCTION_SOURCES = {"sam2": NUCLIO_SOURCE, "ultrasam": ULTRASAM_SOURCE}
 FUNCTION_DEFINITIONS = {
     "sam2": FUNCTION_FILES,
     "ultrasam": {"pth-ultrasam-interactor": "function-gpu.yaml"},
+    "sam31": {sam31_deploy.FUNCTION: "function-gpu.json"},
 }
 FUNCTION_OWNERS = {
     name: feature for feature, files in FUNCTION_DEFINITIONS.items() for name in files
 }
-SERVERLESS_EXTENSIONS = {"sam2", "ultrasam", "model_registry"}
+SERVERLESS_EXTENSIONS = {"sam2", "ultrasam", "sam31", "model_registry"}
 DEFAULTS = {
+    **sam31_deploy.DEFAULTS,
     "CVAT_HOST": "localhost",
     "COMPOSE_PROJECT_NAME": "cvat",
     "NUCLIO_NAMESPACE": "nuclio",
@@ -101,7 +108,7 @@ def enabled_extensions(values: dict[str, str]) -> tuple[str, ...]:
         item not in EXTENSION_COMPOSE for item in selected
     ):
         raise OperationError(
-            "CVAT_EXTENSIONS must contain unique names: itgformat,sam2,ultrasam,model_registry"
+            "CVAT_EXTENSIONS must contain unique names: itgformat,sam2,ultrasam,sam31,model_registry"
         )
     return tuple(name for name in EXTENSION_COMPOSE if name in selected)
 
@@ -164,7 +171,10 @@ def settings(path: Path, root: Path = ROOT) -> dict[str, str]:
     values["SAM2_REDIS_VOLUME"] = (
         values.get("SAM2_REDIS_VOLUME") or f"{project}_sam2_redis_data"
     )
-    for key in ("CVAT_NETWORK_NAME", "SAM2_REDIS_VOLUME"):
+    values["SAM31_REDIS_VOLUME"] = (
+        values.get("SAM31_REDIS_VOLUME") or f"{project}_sam31_redis_data"
+    )
+    for key in ("CVAT_NETWORK_NAME", "SAM2_REDIS_VOLUME", "SAM31_REDIS_VOLUME"):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", values[key]):
             raise OperationError(f"Invalid {key}")
     if "sam2" in selected and not re.fullmatch(
@@ -182,6 +192,12 @@ def settings(path: Path, root: Path = ROOT) -> dict[str, str]:
         r"[1-9][0-9]*(?:[kKmMgG][bB]?)?", values["SAM2_REDIS_MAXMEMORY"]
     ):
         raise OperationError("Invalid SAM2_REDIS_MAXMEMORY (example: 2gb)")
+    if "sam31" in selected:
+        values["SAM31_CHECKPOINT_HOST"] = str(
+            sam31_deploy.validate_settings(values, root, verify_file=False)
+        )
+        if "sam2" in selected and values["SAM31_REDIS_VOLUME"] == values["SAM2_REDIS_VOLUME"]:
+            raise OperationError("SAM2 and SAM3.1 must use separate Redis volumes")
     if "ultrasam" in selected:
         values["ULTRASAM_GPU_DEVICE"] = values.get("ULTRASAM_GPU_DEVICE") or "0"
         if not re.fullmatch(r"[0-9]+|GPU-[A-Za-z0-9-]+", values["ULTRASAM_GPU_DEVICE"]):
@@ -307,8 +323,9 @@ def validate_model(model: dict[str, Any], env: dict[str, str]) -> None:
     }
     if set(selected) & SERVERLESS_EXTENSIONS:
         required.add("nuclio")
-    if "sam2" in selected:
-        required.add("sam2_redis")
+    for feature in ("sam2", "sam31"):
+        if feature in selected:
+            required.add(feature + "_redis")
     if "model_registry" in selected:
         required.add("model-gateway")
         if local_registry(env):
@@ -389,15 +406,14 @@ def validate_model(model: dict[str, Any], env: dict[str, str]) -> None:
         or network.get("name") != env["CVAT_NETWORK_NAME"]
     ):
         raise OperationError("CVAT network must be the configured external network")
-    if "sam2" in selected:
-        volume = model.get("volumes", {}).get("sam2_redis_data", {})
-        if (
-            volume.get("external") is not True
-            or volume.get("name") != env["SAM2_REDIS_VOLUME"]
-        ):
-            raise OperationError("SAM2 Redis must use the configured external volume")
-        if services["sam2_redis"].get("ports"):
-            raise OperationError("SAM2 Redis must not publish host ports")
+    for feature in ("sam2", "sam31"):
+        if feature not in selected:
+            continue
+        volume = model.get("volumes", {}).get(feature + "_redis_data", {})
+        if volume.get("external") is not True or volume.get("name") != env[feature.upper() + "_REDIS_VOLUME"]:
+            raise OperationError(f"{feature} Redis must use the configured external volume")
+        if services[feature + "_redis"].get("ports"):
+            raise OperationError(f"{feature} Redis must not publish host ports")
     for port in services.get("nuclio", {}).get("ports", []):
         if not isinstance(port, dict) or port.get("host_ip") not in (
             "127.0.0.1",
@@ -474,6 +490,7 @@ class Manager:
                     "CVAT_",
                     "COMPOSE_",
                     "SAM2_",
+                    "SAM31_",
                     "ULTRASAM_",
                     "NUCLIO_",
                     "ITGFORMAT_",
@@ -655,17 +672,19 @@ class Manager:
                 "extensions": self.extensions,
                 "images": images or {},
                 "function_environment": self.function_environment(),
+                "sam31_checkpoint": self.values.get("SAM31_CHECKPOINT_HOST") if "sam31" in self.extensions else None,
             },
         )
 
     def function_environment(self) -> dict[str, dict[str, str]]:
+        environments = {}
         if "ultrasam" in self.extensions:
-            return {
-                "pth-ultrasam-interactor": {
-                    "CUDA_VISIBLE_DEVICES": self.values["ULTRASAM_GPU_DEVICE"],
-                }
+            environments["pth-ultrasam-interactor"] = {
+                "CUDA_VISIBLE_DEVICES": self.values["ULTRASAM_GPU_DEVICE"],
             }
-        return {}
+        if "sam31" in self.extensions:
+            environments[sam31_deploy.FUNCTION] = sam31_deploy.runtime_environment(self.values)
+        return environments
 
     def matches_configuration(
         self, saved: dict[str, Any], model: dict[str, Any]
@@ -674,6 +693,9 @@ class Manager:
             saved["model"] == model
             and tuple(saved.get("extensions", ("itgformat", "sam2"))) == self.extensions
             and saved.get("function_environment", {}) == self.function_environment()
+            and saved.get("sam31_checkpoint") == (
+                self.values.get("SAM31_CHECKPOINT_HOST") if "sam31" in self.extensions else None
+            )
         )
 
     def local_image_ids(self, model: dict[str, Any]) -> dict[str, str]:
@@ -736,18 +758,18 @@ class Manager:
                     "Only the local Docker bridge deployment is supported"
                 )
 
-    def ensure_volume(self) -> None:
-        name = self.values["SAM2_REDIS_VOLUME"]
+    def ensure_volume(self, feature: str = "sam2") -> None:
+        name = self.values[feature.upper() + "_REDIS_VOLUME"]
         users = self.run(["docker", "ps", "-q", "--filter", "volume=" + name]).split()
         if users:
             for item in json.loads(self.run(["docker", "inspect", *users])):
                 labels = item["Config"].get("Labels") or {}
                 if (
                     labels.get("com.docker.compose.project") != self.project
-                    or labels.get("com.docker.compose.service") != "sam2_redis"
+                    or labels.get("com.docker.compose.service") != feature + "_redis"
                 ):
                     raise OperationError(
-                        "The SAM2 Redis volume is used by another running container. Stop the old Redis first."
+                        f"The {feature} Redis volume is used by another running container. Stop the old Redis first."
                     )
         names = self.run(
             ["docker", "volume", "ls", "--format", "{{.Name}}"]
@@ -1001,6 +1023,9 @@ class Manager:
         for extension in selected:
             if extension not in FUNCTION_DEFINITIONS:
                 continue
+            if extension == "sam31":
+                images[sam31_deploy.FUNCTION] = sam31_deploy.function_image(version, self.root)
+                continue
             source = self.root / FUNCTION_SOURCES[extension]
             if not source.is_dir():
                 raise OperationError(f"Missing function source: {source}")
@@ -1050,6 +1075,11 @@ class Manager:
             raise OperationError(
                 "UltraSAM supports image prompts only; use deploy-ultrasam or deploy-ultrasam image"
             )
+        if feature == "sam31":
+            if mode == "image":
+                raise OperationError("SAM3.1 supports polygon tracking only; use deploy-sam31 tracker")
+            sam31_deploy.deploy(self, model, force=force, no_build=no_build)
+            return
         images = self.function_images(self.nuctl_check(model), feature)
         source = self.root / FUNCTION_SOURCES[feature]
         namespace = self.values["NUCLIO_NAMESPACE"]
@@ -1202,6 +1232,7 @@ class Manager:
         *,
         images: dict[str, str] | None = None,
         environments: dict[str, dict[str, str]] | None = None,
+        sam31_checkpoint: str | None = None,
     ) -> None:
         functions = {
             i["Config"]["Labels"]["nuclio.io/function-name"]: i
@@ -1217,13 +1248,17 @@ class Manager:
                 raise OperationError(
                     f"{name}: unexpected host port binding. Do not reopen external access."
                 )
+            if name == sam31_deploy.FUNCTION:
+                checkpoint = sam31_checkpoint or self.values.get("SAM31_CHECKPOINT_HOST")
+                if not checkpoint or not sam31_deploy.checkpoint_matches(item, checkpoint):
+                    raise OperationError("SAM3.1 checkpoint mount differs or is not read-only")
             for key, value in (environments or {}).get(name, {}).items():
                 if f"{key}={value}" not in item["Config"].get("Env", []):
                     raise OperationError(
                         f"{name}: {key} differs from the recorded function setting"
                     )
             if images and any(
-                image.startswith(("cvat.sam2-", "cvat.ultrasam-")) for image in images
+                image.startswith(("cvat.sam2-", "cvat.ultrasam-", "cvat.sam31-")) for image in images
             ):
                 expected = images.get(item["Config"]["Image"])
                 actual = self.run(
@@ -1243,6 +1278,8 @@ class Manager:
     def up(self, *, no_build: bool = False) -> None:
         self.prepare_registry()
         model = self.configuration()
+        if "sam31" in self.extensions:
+            sam31_deploy.validate_settings(self.values, self.root)
         # Fail before changing containers if managed GPU functions cannot be deployed.
         function_features = [
             name for name in self.extensions if name in FUNCTION_DEFINITIONS
@@ -1285,12 +1322,13 @@ class Manager:
                     ]
                 ).strip()
         self.ensure_network()
-        if "sam2" in self.extensions:
-            self.ensure_volume()
+        redis_features = [feature for feature in ("sam2", "sam31") if feature in self.extensions]
+        for feature in redis_features:
+            self.ensure_volume(feature)
         self.freeze(
             model, images
         )  # A partial startup can subsequently be stopped with this exact configuration.
-        if "sam2" in self.extensions:
+        if redis_features:
             self.run(
                 self.compose(
                     "up",
@@ -1299,7 +1337,7 @@ class Manager:
                     "--wait",
                     "--wait-timeout",
                     "180",
-                    "sam2_redis",
+                    *(feature + "_redis" for feature in redis_features),
                 ),
                 stream=True,
             )
@@ -1397,6 +1435,7 @@ class Manager:
                     list(FUNCTION_DEFINITIONS[feature]),
                     images=recorded,
                     environments=saved.get("function_environment", {}),
+                    sam31_checkpoint=saved.get("sam31_checkpoint"),
                 )
         if "itgformat" in selected:
             script = (self.root / "tests/itgformat/check_in_cvat.py").read_text()
@@ -1556,6 +1595,7 @@ def main() -> None:
             "check",
             "deploy-sam2",
             "deploy-ultrasam",
+            "deploy-sam31",
             "purge-deleted",
         ),
     )
@@ -1565,6 +1605,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "deploy-ultrasam" and args.mode == "tracker":
         parser.error("UltraSAM supports image prompts only; tracker is unavailable")
+    if args.command == "deploy-sam31" and args.mode == "image":
+        parser.error("SAM3.1 supports polygon tracking only; image prompts are unavailable")
     if args.no_build and args.command != "up":
         parser.error("--no-build is only supported with up")
     if (args.model_id or args.confirm) and args.command != "purge-deleted":
@@ -1589,6 +1631,7 @@ def main() -> None:
             (ROOT / "components/extensions/config.example.env")
             .read_text()
             .replace("GENERATE_ON_INIT", secrets.token_hex(32))
+            .replace("GENERATE_SAM31_ON_INIT", secrets.token_hex(32))
         )
         fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as stream:
@@ -1628,6 +1671,10 @@ def main() -> None:
             }
             if "sam2" in manager.extensions:
                 summary["sam2_redis_volume"] = manager.values["SAM2_REDIS_VOLUME"]
+            if "sam31" in manager.extensions:
+                summary["sam31_redis_volume"] = manager.values["SAM31_REDIS_VOLUME"]
+                summary["sam31_checkpoint"] = manager.values["SAM31_CHECKPOINT_HOST"]
+                summary["sam31_gpu_device"] = manager.values["SAM31_GPU_DEVICE"]
             if "ultrasam" in manager.extensions:
                 summary["ultrasam_gpu_device"] = manager.values["ULTRASAM_GPU_DEVICE"]
             if any(feature in FUNCTION_DEFINITIONS for feature in manager.extensions):
@@ -1686,7 +1733,7 @@ def main() -> None:
                 manager.run(manager.compose("ps", "--all"), stream=True)
             for item in manager.functions():
                 print(item["Name"], item["State"]["Status"])
-        elif args.command in ("deploy-sam2", "deploy-ultrasam"):
+        elif args.command in ("deploy-sam2", "deploy-ultrasam", "deploy-sam31"):
             feature = args.command.removeprefix("deploy-")
             if feature not in manager.extensions:
                 raise OperationError(
@@ -1700,9 +1747,11 @@ def main() -> None:
                 )
             manager.assert_identity(saved)
             version = manager.nuctl_check(model)
+            if feature == "sam31":
+                sam31_deploy.validate_settings(manager.values, manager.root)
             manager.ensure_network()
-            if feature == "sam2":
-                manager.ensure_volume()
+            if feature in ("sam2", "sam31"):
+                manager.ensure_volume(feature)
             manager.run(
                 manager.compose(
                     "up",
@@ -1711,7 +1760,7 @@ def main() -> None:
                     "--wait",
                     "--wait-timeout",
                     "180",
-                    *(["sam2_redis"] if feature == "sam2" else []),
+                    *([feature + "_redis"] if feature in ("sam2", "sam31") else []),
                     "nuclio",
                 ),
                 stream=True,

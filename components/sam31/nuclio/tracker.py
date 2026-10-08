@@ -5,7 +5,7 @@ import secrets
 import threading
 
 from geometry import polygon_mask, polygon_shape
-from protocol import ProtocolError, decode_image
+from protocol import MAX_OBJECTS, ProtocolError, decode_image
 from state_codec import StateCodec
 
 
@@ -39,8 +39,8 @@ class Tracker:
         seeds, states = data.get("shapes", []), data.get("states", [])
         if not isinstance(seeds, list) or not isinstance(states, list):
             raise ProtocolError("shapes and states must be arrays")
-        if max(len(seeds), len(states)) > 4:
-            raise ProtocolError("Select one to four polygons", 413)
+        if max(len(seeds), len(states)) > MAX_OBJECTS:
+            raise ProtocolError(f"Select one to {MAX_OBJECTS} polygons", 413)
         if not states:
             if not seeds:
                 raise ProtocolError("Provide at least one polygon seed")

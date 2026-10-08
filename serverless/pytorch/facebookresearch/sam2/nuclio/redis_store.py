@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import json
 import os
 import re
-from protocol import ProtocolError, MAX_PIXELS
+from protocol import ProtocolError, MAX_PIXELS, MAX_OBJECTS
 
 CREATE = """-- sam2-create
 if redis.call('EXISTS', KEYS[1]) ~= 0 then return 0 end
@@ -48,7 +48,7 @@ class Record:
 
 class RedisStore:
     def __init__(self, client, *, ttl=28800, prefix="cvat:sam2:",
-                 max_bytes=64 * 1024 * 1024, errors=(OSError, TimeoutError)):
+                 max_bytes=256 * 1024 * 1024, errors=(OSError, TimeoutError)):
         if type(ttl) is not int or not 60 <= ttl <= 604800:
             raise ValueError("State TTL must be 60..604800 seconds")
         if not re.fullmatch(r"[a-zA-Z0-9:_-]{1,100}", prefix):
@@ -71,7 +71,7 @@ class RedisStore:
         )
         store = cls(client, ttl=int(os.getenv("SAM2_SESSION_TTL_SECONDS", "28800")),
                     prefix=os.getenv("SAM2_REDIS_PREFIX", "cvat:sam2:"),
-                    max_bytes=int(os.getenv("SAM2_STATE_MAX_BYTES", str(64 * 1024 * 1024))),
+                    max_bytes=int(os.getenv("SAM2_STATE_MAX_BYTES", str(256 * 1024 * 1024))),
                     errors=(redis.exceptions.RedisError, OSError, TimeoutError))
         store._call(client.ping)
         return store
@@ -104,7 +104,7 @@ class RedisStore:
             if set(fields) != {b"revision", b"payload", b"meta", b"request", b"shapes"}:
                 raise ValueError("Unexpected state fields")
             self._check_payload(fields[b"payload"])
-            if len(fields[b"meta"]) > 1024 or len(fields[b"shapes"]) > 2 * 1024 * 1024:
+            if len(fields[b"meta"]) > 1024 or len(fields[b"shapes"]) > 8 * 1024 * 1024:
                 raise ValueError("Oversized state metadata")
             revision = int(fields[b"revision"])
             meta = json.loads(fields[b"meta"])
@@ -115,7 +115,7 @@ class RedisStore:
             if not isinstance(meta, dict) or set(meta) != {"identity", "count", "width", "height"}:
                 raise ValueError("Invalid metadata")
             if (not isinstance(meta["identity"], str) or not re.fullmatch(r"[0-9a-f]{64}", meta["identity"]) or
-                    type(meta["count"]) is not int or not 1 <= meta["count"] <= 4 or
+                    type(meta["count"]) is not int or not 1 <= meta["count"] <= MAX_OBJECTS or
                     len(shapes) != meta["count"]):
                 raise ValueError("Invalid model or object count")
             if any(type(meta[key]) is not int or meta[key] <= 0 for key in ("width", "height")) or meta["width"] * meta["height"] > MAX_PIXELS:

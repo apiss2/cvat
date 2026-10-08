@@ -7,7 +7,7 @@ import struct
 
 import torch
 from safetensors.torch import load, save
-from protocol import MAX_PIXELS, ProtocolError
+from protocol import MAX_OBJECTS, MAX_PIXELS, ProtocolError
 from temporal_video import MEMORY_FIELDS, Snapshot
 
 DTYPES = {"F32": 4, "BF16": 2, "F16": 2}
@@ -63,7 +63,7 @@ class StateCodec:
             raise ProtocolError("SAM3.1 model or state schema changed; start a new tracking run", 409)
         if any(type(metadata[key]) is not int for key in ("index", "width", "height", "count")):
             raise ValueError("Invalid metadata types")
-        if not (0 <= metadata["index"] < 2**31 and 1 <= metadata["count"] <= 4
+        if not (0 <= metadata["index"] < 2**31 and 1 <= metadata["count"] <= MAX_OBJECTS
                 and metadata["width"] > 0 and metadata["height"] > 0
                 and metadata["width"] * metadata["height"] <= MAX_PIXELS):
             raise ValueError("Invalid metadata bounds")

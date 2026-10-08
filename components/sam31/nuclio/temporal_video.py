@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from protocol import ProtocolError
+from protocol import MAX_OBJECTS, ProtocolError
 
 SAM3_REVISION = "0570b3a5be9c4e694f23d85232fb55f4a6f1f7fc"
 ADAPTER_VERSION = 1
@@ -110,7 +110,7 @@ def load_model(checkpoint, expected_sha256):
     if digest != expected_sha256:
         raise ValueError("SAM3.1 checkpoint SHA256 does not match SAM31_CHECKPOINT_SHA256")
     model = build_sam3_multiplex_video_model(
-        checkpoint_path=None, load_from_HF=False, multiplex_count=16,
+        checkpoint_path=None, load_from_HF=False, multiplex_count=MAX_OBJECTS,
         use_fa3=False, use_rope_real=True, device="cpu", compile=False,
     )
     weights = torch.load(checkpoint, map_location="cpu", weights_only=True)
@@ -185,8 +185,8 @@ class TemporalVideo:
         return memory, list(result)
 
     def initialize(self, image, masks):
-        if not 1 <= len(masks) <= 4 or any(np.asarray(mask).shape != (image.height, image.width) for mask in masks):
-            raise ProtocolError("Provide one to four masks matching the seed image")
+        if not 1 <= len(masks) <= MAX_OBJECTS or any(np.asarray(mask).shape != (image.height, image.width) for mask in masks):
+            raise ProtocolError(f"Provide one to {MAX_OBJECTS} masks matching the seed image")
         with torch.inference_mode(), self.context():
             output, result = self._step(image, 0, len(masks), {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}, masks)
         outputs = {"cond_frame_outputs": {0: output}, "non_cond_frame_outputs": {}}

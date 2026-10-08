@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Pure orchestration, isolated from CVAT classes for deterministic contract tests.
+import { MAX_TRACKING_OBJECTS, MAX_TRACKING_FRAMES } from './selection';
+
 export interface Polygon { type: 'polygon'; points: number[]; }
 export interface Keyframe { frame: number; points: number[]; outside: boolean; }
 export interface FrameMeta { width: number; height: number; deleted: boolean; }
@@ -67,8 +69,8 @@ export async function track(
     progress: (message: string, percent: number) => void,
 ): Promise<Keyframe[][] | null> {
     const { seeds, start, stop, span, width, height, trackerName = 'SAM2' } = input;
-    if (!seeds.length || seeds.length > 4) throw new Error('Select between one and four polygon shapes.');
-    if (!Number.isInteger(span) || span < 1 || span > 1000) throw new Error('Frames to track must be 1..1000.');
+    if (!seeds.length || seeds.length > MAX_TRACKING_OBJECTS) throw new Error(`Select between 1 and ${MAX_TRACKING_OBJECTS} polygon shapes.`);
+    if (!Number.isInteger(span) || span < 1 || span > MAX_TRACKING_FRAMES) throw new Error(`Frames to track must be 1..${MAX_TRACKING_FRAMES}.`);
     const frameNumbers = [...new Set(input.frameNumbers)].sort((a, b) => a - b);
     if (!frameNumbers.includes(start)) throw new Error('The seed frame does not belong to this job.');
     const end = Math.min(stop, start + span);

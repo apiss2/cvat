@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Optional overlay through CVAT_EXTRA_COMPOSE_FILES. No published Redis port.
+# Selected automatically by CVAT_EXTENSIONS=sam31. No published Redis port.
 services:
   sam31_redis:
     image: redis:7.2.11-alpine
@@ -27,4 +27,5 @@ services:
         condition: service_healthy
 volumes:
   sam31_redis_data:
-    name: ${COMPOSE_PROJECT_NAME:-cvat}_sam31_redis_data
+    external: true
+    name: ${SAM31_REDIS_VOLUME:?Set the managed SAM3.1 Redis volume}

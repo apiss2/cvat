@@ -67,7 +67,7 @@ spec:
   description: SAM2 polygon tracker (GPU)
   env:
   - name: SAM2_MAX_OBJECTS
-    value: '4'
+    value: '16'
   - name: SAM2_SESSION_TTL_SECONDS
     value: '28800'
   - name: SAM2_REDIS_HOST
@@ -77,4 +77,4 @@ spec:
   - name: SAM2_REDIS_DB
     value: '0'
   - name: SAM2_STATE_MAX_BYTES
-    value: '67108864'
+    value: '268435456'

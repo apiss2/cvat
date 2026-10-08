@@ -15,7 +15,7 @@ import { Canvas } from 'cvat-canvas-wrapper';
 import { fetchAnnotationsAsync } from 'actions/annotation-actions';
 import { PolygonTrackAction } from './action';
 import type { TrackerDefinition } from './action';
-import { resolveSelection, validateRange } from './selection';
+import { MAX_TRACKING_OBJECTS, MAX_TRACKING_FRAMES, resolveSelection, validateRange } from './selection';
 
 type Host = ComponentBuilderArgs;
 type Props = { host: Host; job: Job; definition: TrackerDefinition; onClose: () => void };
@@ -120,7 +120,7 @@ function TrackingDialog({ host, job, definition, onClose }: Props): JSX.Element 
             )}
         >
             <Space direction='vertical' size='middle' style={{ width: '100%' }}>
-                <Alert type='info' showIcon message='開始フレームのポリゴンを初期値にして、終了フレームまで前方向に追跡します。終了フレームも含みます。' />
+                <Alert type='info' showIcon message={`開始フレームのポリゴンを初期値にして、終了フレームまで前方向に追跡します。終了フレームも含みます。最大${MAX_TRACKING_OBJECTS}個、開始から${MAX_TRACKING_FRAMES}フレーム先まで指定できます。メモリ量と結果サイズにも上限があります。`} />
                 <Space wrap>
                     <label htmlFor='polygon-tracking-start'>開始フレーム（初期値）</label>
                     <InputNumber id='polygon-tracking-start' value={start} min={job.startFrame} max={job.stopFrame}
@@ -132,7 +132,7 @@ function TrackingDialog({ host, job, definition, onClose }: Props): JSX.Element 
                         }}
                     />
                     <label htmlFor='polygon-tracking-end'>終了フレーム（含む）</label>
-                    <InputNumber id='polygon-tracking-end' value={end} min={job.startFrame} max={job.stopFrame}
+                    <InputNumber id='polygon-tracking-end' value={end} min={job.startFrame} max={Math.min(job.stopFrame, start + MAX_TRACKING_FRAMES)}
                         precision={0} disabled={busy} onChange={(value) => {
                             if (typeof value === 'number') { setEnd(value); setError(''); }
                         }}
@@ -142,13 +142,13 @@ function TrackingDialog({ host, job, definition, onClose }: Props): JSX.Element 
                     }}>開始フレームを表示</Button>
                 </Space>
                 {rangeError ? <Alert type='warning' message={rangeError} /> : null}
-                <div>初期ポリゴンを選択（{ids.length}/4個）</div>
+                <div>初期ポリゴンを選択（{ids.length}/{MAX_TRACKING_OBJECTS}個）</div>
                 {loading ? <div>開始フレームのポリゴンを読み込んでいます。</div> : null}
                 {!loading && !candidates.length ? <div>対象のポリゴンがありません。開始フレームにロックされていないポリゴン図形を描いてください。</div> : null}
                 <Space direction='vertical' style={{ width: '100%', maxHeight: 280, overflow: 'auto' }}>
                     {candidates.map((state) => (
                         <Checkbox key={state.clientID} checked={ids.includes(state.clientID)}
-                            disabled={busy || (!ids.includes(state.clientID) && ids.length >= 4)}
+                            disabled={busy || (!ids.includes(state.clientID) && ids.length >= MAX_TRACKING_OBJECTS)}
                             onChange={(event) => {
                                 setError('');
                                 setIDs(event.target.checked ? [...ids, state.clientID] : ids.filter((id) => id !== state.clientID));

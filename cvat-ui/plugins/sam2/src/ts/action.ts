@@ -4,6 +4,7 @@ import {
 } from 'cvat-core-wrapper';
 import type { CVATCore, ObjectState, MLModel, Task } from 'cvat-core-wrapper';
 import { track } from './tracking';
+import { MAX_TRACKING_FRAMES } from './selection';
 import type { Polygon, TrackerReply } from './tracking';
 
 type Input = Parameters<BaseCollectionAction['run']>[0];
@@ -35,7 +36,7 @@ export class PolygonTrackAction extends BaseCollectionAction {
     get name(): string { return `${this.definition.name}: track polygon shapes`; }
     get parameters(): NonNullable<BaseCollectionAction['parameters']> {
         return {
-            'Frames to track': { type: ActionParameterType.NUMBER, values: ['1', '1000', '1'], defaultValue: '50' },
+            'Frames to track': { type: ActionParameterType.NUMBER, values: ['1', String(MAX_TRACKING_FRAMES), '1'], defaultValue: '50' },
         };
     }
     async init(instance: Job | Task, parameters: Record<string, string | number>): Promise<void> {
@@ -43,8 +44,8 @@ export class PolygonTrackAction extends BaseCollectionAction {
         if (instance.dimension !== '2d') throw new Error(`${this.definition.name} tracking supports 2D jobs only.`);
         this.instance = instance;
         this.span = Number(parameters['Frames to track']);
-        if (!Number.isInteger(this.span) || this.span < 1 || this.span > 1000) {
-            throw new Error('Tracking range must span 1 to 1000 frame indices.');
+        if (!Number.isInteger(this.span) || this.span < 1 || this.span > MAX_TRACKING_FRAMES) {
+            throw new Error(`Tracking range must span 1 to ${MAX_TRACKING_FRAMES} frame indices.`);
         }
         const { models } = await this.core.lambda.list();
         this.model = models.find((model) => model.id === this.definition.functionID && model.kind === 'tracker') ?? null;

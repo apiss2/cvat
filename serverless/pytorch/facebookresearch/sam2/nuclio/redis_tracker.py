@@ -4,14 +4,14 @@ import hashlib
 import secrets
 import threading
 from geometry import polygon_mask, polygon_shape
-from protocol import ProtocolError, decode_image
+from protocol import MAX_OBJECTS, ProtocolError, decode_image
 from state_codec import StateCodec
 
 
 class RedisTracker:
-    def __init__(self, video, store, identity, *, max_objects=4):
-        if type(max_objects) is not int or not 1 <= max_objects <= 4:
-            raise ValueError("max_objects must be 1..4")
+    def __init__(self, video, store, identity, *, max_objects=MAX_OBJECTS):
+        if type(max_objects) is not int or not 1 <= max_objects <= MAX_OBJECTS:
+            raise ValueError(f"max_objects must be 1..{MAX_OBJECTS}")
         self.video, self.store, self.identity, self.max_objects = video, store, identity, max_objects
         self.codec = StateCodec(identity, max_bytes=store.max_bytes)
         # This protects the predictor within ONE process, not session state. Different
