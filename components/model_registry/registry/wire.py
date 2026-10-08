@@ -15,15 +15,26 @@ def validate_wire(result: list, manifest: Manifest, width: int, height: int) -> 
         raise ValueError("invalid worker object count")
     labels = {label.name: label.type for label in manifest.labels}
     total_vertices = 0
+    tag_labels: set[str] = set()
     for obj in result:
-        if not isinstance(obj, dict) or set(obj) != {"label", "type", "confidence", "points"}:
+        if not isinstance(obj, dict):
             raise ValueError("invalid worker output fields")
-        kind = obj["type"]
+        kind = obj.get("type")
+        fields = {"label", "type", "confidence"}
+        if kind != "tag":
+            fields.add("points")
+        if set(obj) != fields:
+            raise ValueError("invalid worker output fields")
         if not isinstance(obj["label"], str) or labels.get(obj["label"]) != kind:
             raise ValueError("worker label/type does not match manifest")
         score = obj["confidence"]
         if type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 1:
             raise ValueError("invalid worker score")
+        if kind == "tag":
+            if obj["label"] in tag_labels:
+                raise ValueError("duplicate worker tag for the same image")
+            tag_labels.add(obj["label"])
+            continue
         points = obj["points"]
         if not isinstance(points, list) or any(type(x) not in (int, float) or not math.isfinite(x) for x in points):
             raise ValueError("invalid worker coordinates")
