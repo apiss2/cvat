@@ -21,6 +21,7 @@ from .auth import Auth, owner
 from .config import Settings
 from .http_limits import GuardMiddleware
 from .packages import MAX_ARCHIVE
+from .partial_updates import install_partial_updates
 from .runtime import Busy, DockerRuntime, RuntimeFailure
 from .schema import InvokeRequest, Manifest, function_id
 from .service import Gone, Service
@@ -252,4 +253,5 @@ def create_app(settings: Settings | None = None, runtime=None, service: Service 
         result = service.infer(identifier, body.model_dump(exclude_none=True), rid)
         return JSONResponse(result, headers={"X-Request-ID": rid})
 
+    install_partial_updates(app, service, settings)
     return app

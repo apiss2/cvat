@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+# Optional overlay through CVAT_EXTRA_COMPOSE_FILES. No published Redis port.
+services:
+  sam31_redis:
+    image: redis:7.2.11-alpine
+    restart: unless-stopped
+    environment:
+      SAM31_REDIS_PASSWORD: ${SAM31_REDIS_PASSWORD:?Set a separate SAM3.1 Redis password}
+    command:
+      - /bin/sh
+      - -ec
+      - exec redis-server --appendonly yes --appendfsync everysec --maxmemory "${SAM31_REDIS_MAXMEMORY:-2gb}" --maxmemory-policy noeviction --requirepass "$$SAM31_REDIS_PASSWORD"
+    healthcheck:
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$$SAM31_REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - sam31_redis_data:/data
+    networks:
+      - cvat
+    labels:
+      org.cvat.extension: sam31
+  nuclio:
+    depends_on:
+      sam31_redis:
+        condition: service_healthy
+volumes:
+  sam31_redis_data:
+    name: ${COMPOSE_PROJECT_NAME:-cvat}_sam31_redis_data
