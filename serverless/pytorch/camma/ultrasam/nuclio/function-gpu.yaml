@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: MIT
+metadata:
+  name: pth-ultrasam-interactor
+  namespace: nuclio
+  annotations:
+    name: UltraSAM (GPU)
+    type: interactor
+    version: '2'
+    spec: '[]'
+    min_pos_points: '1'
+    min_neg_points: '0'
+    help_message: Select an ultrasound object with positive points and exclude regions
+      with negative points. Up to 128 total points. Image annotation only.
+spec:
+  runtime: python:3.10
+  handler: main:handler
+  description: UltraSAM ultrasound image interactor (GPU)
+  eventTimeout: 120s
+  readinessTimeoutSeconds: 300
+  minReplicas: 1
+  maxReplicas: 1
+  build:
+    baseImage: nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+    image: cvat.ultrasam-interactor:ff3157b1-cuda118-nvrtc-gpu
+    directives:
+      preCopy:
+      - kind: ENV
+        value: DEBIAN_FRONTEND=noninteractive
+      - kind: ENV
+        value: NVIDIA_VISIBLE_DEVICES=all
+      - kind: ENV
+        value: NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - kind: ENV
+        value: PYTHONPATH=/opt/ultrasam
+      - kind: ENV
+        value: OMP_NUM_THREADS=1
+      - kind: WORKDIR
+        value: /opt/nuclio
+      - kind: RUN
+        value: apt-get update && apt-get install -y --no-install-recommends
+          python3 python3-pip python3-dev python-is-python3 git curl ca-certificates
+          libgl1 libglib2.0-0 cuda-nvrtc-11-8=11.8.89-1 cuda-nvrtc-dev-11-8=11.8.89-1
+          && rm -rf /var/lib/apt/lists/*
+      # The runtime package provides the versioned library and matching builtins;
+      # the dev package provides the libnvrtc.so name requested by cuDNN.
+      # Keep the inherited NVIDIA driver search paths and add a loader cache entry.
+      - kind: RUN
+        value: printf '%s\n' /usr/local/cuda-11.8/targets/x86_64-linux/lib
+          > /etc/ld.so.conf.d/ultrasam-cuda.conf && ldconfig
+      - kind: RUN
+        value: python -m pip install --no-cache-dir "pip==25.1.1" "setuptools==75.8.0" "wheel==0.45.1"
+      - kind: RUN
+        value: python -m pip install --no-cache-dir "torch==2.0.0+cu118"
+          "torchvision==0.15.1+cu118" --index-url https://download.pytorch.org/whl/cu118
+      - kind: RUN
+        value: python -m pip install --no-cache-dir "numpy==1.26.4"
+          "mmcv==2.1.0" --only-binary=mmcv
+          -f https://download.openmmlab.com/mmcv/dist/cu118/torch2.0/index.html
+      - kind: RUN
+        value: git clone https://github.com/CAMMA-public/UltraSam.git /opt/ultrasam
+          && git -C /opt/ultrasam checkout ff3157b1fca8b1d963d9138372768e1fecad71e9
+          && mkdir -p /opt/nuclio/checkpoints
+          && curl --fail --location --retry 8 --retry-all-errors --continue-at -
+          https://s3.unistra.fr/camma_public/github/ultrasam/UltraSam.pth
+          -o /opt/nuclio/checkpoints/UltraSam.pth
+      postCopy:
+      - kind: RUN
+        value: python /opt/nuclio/ultrasam_runtime.py --mode build
+      - kind: RUN
+        value: python -m pip install --no-cache-dir -r /opt/nuclio/requirements.txt
+      - kind: RUN
+        value: python -m pip check && python /opt/nuclio/validate_build.py
+          && python -m pip freeze > /opt/nuclio/build-requirements.txt
+  triggers:
+    http:
+      kind: http
+      maxWorkers: 1
+      workerAvailabilityTimeoutMilliseconds: 10000
+      attributes:
+        maxRequestBodySize: 33554432
+        disablePortPublishing: true
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+  platform:
+    attributes:
+      restartPolicy:
+        name: unless-stopped
+      mountMode: volume

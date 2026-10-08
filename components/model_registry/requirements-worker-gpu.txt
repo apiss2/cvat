@@ -1,0 +1,4 @@
+-r requirements-control.txt
+onnx==1.18.0
+onnxruntime-gpu==1.22.0
+opencv-python-headless==4.11.0.86

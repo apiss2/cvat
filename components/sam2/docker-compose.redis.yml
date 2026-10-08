@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+# Included in the same Compose project as CVAT. No host port is published.
+services:
+  sam2_redis:
+    image: ${SAM2_REDIS_IMAGE:-redis:7.2.11-alpine}
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      SAM2_REDIS_PASSWORD: ${SAM2_REDIS_PASSWORD:?Set a strong SAM2_REDIS_PASSWORD}
+    command:
+      - sh
+      - -ec
+      - >-
+        exec redis-server --appendonly yes --appendfsync everysec
+        --save "300 1" --maxmemory ${SAM2_REDIS_MAXMEMORY:-2gb}
+        --maxmemory-policy noeviction
+        --requirepass "$${SAM2_REDIS_PASSWORD}"
+    volumes:
+      - sam2_redis_data:/data
+    networks:
+      - cvat
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$${SAM2_REDIS_PASSWORD}" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Do not publish Redis on a host port.
+volumes:
+  sam2_redis_data:
+    external: true
+    name: ${SAM2_REDIS_VOLUME:?Use components/extensions/cvatctl}

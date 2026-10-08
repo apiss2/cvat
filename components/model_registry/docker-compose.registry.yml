@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: MIT
+# Management/inference plane. cvatctl includes this in the CVAT Compose project.
+# registryctl.py remains available for a separately deployed inference host.
+services:
+  model-registry:
+    image: ${MR_MANAGER_IMAGE:-cvat-local/model-registry:1.0.0}
+    pull_policy: never
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    environment:
+      MR_DATA_DIR: /data
+      MR_HOST_DATA_DIR: ${MR_HOST_DATA_DIR:?Set the actual Docker host data directory}
+      MR_INSTANCE: ${MR_INSTANCE:-team-models}
+      MR_NAMESPACE: ${MR_NAMESPACE:-nuclio}
+      MR_WORKER_IMAGE: ${MR_WORKER_IMAGE:-cvat-local/onnx-worker:1.0.0-cpu}
+      MR_GPU_DEVICE: ${MR_GPU_DEVICE:-}
+      MR_MAX_LOADED: ${MR_MAX_LOADED:-2}
+      MR_WORKER_MEMORY_MIB: ${MR_WORKER_MEMORY_MIB:-4096}
+      MR_WORKER_CPUS: ${MR_WORKER_CPUS:-2}
+      MR_STORAGE_GIB: ${MR_STORAGE_GIB:-50}
+      MR_AUTH_MODE: ${MR_AUTH_MODE:-cvat}
+      MR_CVAT_URL: ${MR_CVAT_URL:-http://cvat_server:8080}
+      MR_CVAT_CA_FILE: ${MR_CVAT_CA_FILE:-}
+      MR_CVAT_SESSION_COOKIE: ${MR_CVAT_SESSION_COOKIE:-sessionid}
+      MR_PUBLIC_URL: ${MR_PUBLIC_URL:?Set the CVAT browser URL ending in /model-registry/}
+      MR_SERVICE_TOKEN_FILE: /config/secrets/service_token
+      TMPDIR: /data/uploads
+    volumes:
+      - type: bind
+        source: ${MR_HOST_DATA_DIR:?}
+        target: /data
+      - type: bind
+        source: ${MR_CONFIG_DIR:?}
+        target: /config
+        read_only: true
+      - /var/run/docker.sock:/var/run/docker.sock
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=67108864
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8091/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

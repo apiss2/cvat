@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+# Paths are relative to the FIRST Compose file (repository root).
+services:
+  nuclio:
+    ports: !override
+      - "127.0.0.1:${NUCLIO_DASHBOARD_PORT:-8070}:8070"
+    depends_on:
+      sam2_redis:
+        condition: service_healthy
+  cvat_ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+      args:
+        CLIENT_PLUGINS: ${CVAT_CLIENT_PLUGINS:-plugins/sam2}
+    image: ${CVAT_EXT_UI_IMAGE:?Use components/extensions/cvatctl}
+    pull_policy: never
+  cvat_server:
+    environment:
+      CVAT_NUCLIO_HOST: ${CVAT_AI_GATEWAY_HOST:-nuclio}
+      CVAT_NUCLIO_PORT: ${CVAT_AI_GATEWAY_PORT:-8070}
+      CVAT_NUCLIO_DEFAULT_TIMEOUT: ${CVAT_AI_GATEWAY_TIMEOUT:-120}
+      CVAT_NUCLIO_FUNCTION_NAMESPACE: ${NUCLIO_NAMESPACE:-nuclio}
+      CVAT_NUCLIO_INVOKE_METHOD: dashboard
+  cvat_worker_annotation:
+    environment:
+      CVAT_NUCLIO_HOST: ${CVAT_AI_GATEWAY_HOST:-nuclio}
+      CVAT_NUCLIO_PORT: ${CVAT_AI_GATEWAY_PORT:-8070}
+      CVAT_NUCLIO_DEFAULT_TIMEOUT: ${CVAT_AI_GATEWAY_TIMEOUT:-120}
+      CVAT_NUCLIO_FUNCTION_NAMESPACE: ${NUCLIO_NAMESPACE:-nuclio}
+      CVAT_NUCLIO_INVOKE_METHOD: dashboard

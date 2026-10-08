@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/* && python3 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+WORKDIR /app
+COPY requirements-control.txt requirements-worker-gpu.txt ./
+RUN pip install --no-cache-dir -r requirements-worker-gpu.txt
+COPY registry ./registry
+USER 65532:65532
+CMD ["python", "-m", "uvicorn", "registry.worker:app", "--uds", "/run/model/worker.sock", "--workers", "1", "--no-access-log"]

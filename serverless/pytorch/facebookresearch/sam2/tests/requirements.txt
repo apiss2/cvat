@@ -1,0 +1,9 @@
+# Install CPU PyTorch separately as documented in docs/sam2/README.md (repository root).
+# These dependencies belong to the isolated SAM2 test environment, not CVAT server.
+numpy==1.26.4
+Pillow==11.3.0
+opencv-python-headless==4.11.0.86
+safetensors==0.7.0
+redis==5.2.1
+PyYAML==6.0.2
+pytest==8.3.5

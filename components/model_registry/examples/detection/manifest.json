@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "ONNX demo detection",
+  "description": "Identity network plus brightness postprocessing; interface test only",
+  "weights": [
+    "model.onnx"
+  ],
+  "labels": [
+    {
+      "id": 0,
+      "name": "bright_region",
+      "type": "rectangle"
+    }
+  ],
+  "author_contact": "",
+  "polygon": {
+    "min_distance_px": 2.0,
+    "spacing_percent": 1.0,
+    "min_area_px": 10.0
+  }
+}

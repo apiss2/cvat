@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MIT
+# All backend services must run the same source revision, regardless of the
+# selected extension. CLIENT_PLUGINS and gateway routing are resolved by cvatctl.
+x-extension-backend: &extension-backend
+  image: ${CVAT_EXT_SERVER_IMAGE:?Use components/extensions/cvatctl}
+  pull_policy: never
+
+services:
+  cvat_server:
+    <<: *extension-backend
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      CVAT_NUCLIO_HOST: ${CVAT_AI_GATEWAY_HOST:-nuclio}
+      CVAT_NUCLIO_PORT: ${CVAT_AI_GATEWAY_PORT:-8070}
+      CVAT_NUCLIO_DEFAULT_TIMEOUT: ${CVAT_AI_GATEWAY_TIMEOUT:-120}
+      CVAT_NUCLIO_FUNCTION_NAMESPACE: ${NUCLIO_NAMESPACE:-nuclio}
+      CVAT_NUCLIO_INVOKE_METHOD: dashboard
+  cvat_worker_utils:
+    <<: *extension-backend
+  cvat_worker_import:
+    <<: *extension-backend
+  cvat_worker_export:
+    <<: *extension-backend
+  cvat_worker_annotation:
+    <<: *extension-backend
+    environment:
+      CVAT_NUCLIO_HOST: ${CVAT_AI_GATEWAY_HOST:-nuclio}
+      CVAT_NUCLIO_PORT: ${CVAT_AI_GATEWAY_PORT:-8070}
+      CVAT_NUCLIO_DEFAULT_TIMEOUT: ${CVAT_AI_GATEWAY_TIMEOUT:-120}
+      CVAT_NUCLIO_FUNCTION_NAMESPACE: ${NUCLIO_NAMESPACE:-nuclio}
+      CVAT_NUCLIO_INVOKE_METHOD: dashboard
+  cvat_worker_webhooks:
+    <<: *extension-backend
+  cvat_worker_quality_reports:
+    <<: *extension-backend
+  cvat_worker_chunks:
+    <<: *extension-backend
+  cvat_worker_consensus:
+    <<: *extension-backend
+  cvat_ui:
+    image: ${CVAT_EXT_UI_IMAGE:?Use components/extensions/cvatctl}
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+      args:
+        CLIENT_PLUGINS: ${CVAT_CLIENT_PLUGINS-}
+
+# Nuclio function containers are not managed by Compose. Retain their network.
+networks:
+  cvat: !override
+    external: true
+    name: ${CVAT_NETWORK_NAME:?Use components/extensions/cvatctl}

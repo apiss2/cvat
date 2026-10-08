@@ -1,0 +1,21 @@
+# PyTorch/CUDA and MMCV are installed separately from their binary indexes.
+numpy==1.26.4
+Pillow==11.3.0
+opencv-python==4.11.0.86
+mmengine==0.10.7
+mmdet==3.2.0
+mmpretrain==1.2.0
+scipy==1.13.1
+matplotlib==3.9.4
+pycocotools==2.0.8
+scikit-image==0.24.0
+six==1.17.0
+terminaltables==3.1.10
+addict==2.4.0
+PyYAML==6.0.2
+rich==13.9.4
+termcolor==2.5.0
+yapf==0.43.0
+einops==0.8.1
+model-index==0.1.11
+importlib-metadata==8.7.0

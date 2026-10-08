@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT
+FROM python:3.12.12-slim-bookworm
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY requirements-control.txt requirements-worker.txt ./
+RUN pip install --no-cache-dir -r requirements-worker.txt
+COPY registry ./registry
+USER 65532:65532
+CMD ["python", "-m", "uvicorn", "registry.worker:app", "--uds", "/run/model/worker.sock", "--workers", "1", "--no-access-log"]

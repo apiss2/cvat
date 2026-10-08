@@ -131,6 +131,7 @@ import cvat.apps.dataset_manager.formats.cvat
 import cvat.apps.dataset_manager.formats.datumaro
 import cvat.apps.dataset_manager.formats.icdar
 import cvat.apps.dataset_manager.formats.imagenet
+import cvat.apps.dataset_manager.formats.itgformat
 import cvat.apps.dataset_manager.formats.kitti
 import cvat.apps.dataset_manager.formats.labelme
 import cvat.apps.dataset_manager.formats.lfw

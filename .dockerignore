@@ -17,3 +17,4 @@
 /cvat-cli
 /profiles
 **/__pycache__
+/cvat-model-registry/

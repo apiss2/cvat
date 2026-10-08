@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: MIT
+# Selected automatically by CVAT_EXTENSIONS=model_registry.
+# All relative paths are CVAT-root-relative.
+services:
+  nuclio:
+    ports: !override
+      - "127.0.0.1:${NUCLIO_DASHBOARD_PORT:-8070}:8070"
+  model-gateway:
+    image: ${CVAT_MODEL_GATEWAY_IMAGE:-cvat-local/model-gateway:1.0.0}
+    pull_policy: never
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [cvat]
+    environment:
+      MR_REGISTRY_URL: ${CVAT_MODEL_REGISTRY_URL:?Set the inference registry URL}
+      MR_NUCLIO_URL: http://nuclio:8070
+      MR_CA_FILE: ${CVAT_MODEL_REGISTRY_CA_FILE:-}
+      MR_NAMESPACE: ${NUCLIO_NAMESPACE:-nuclio}
+      MR_SERVICE_TOKEN_FILE: /run/secrets/service_token
+    volumes:
+      - type: bind
+        source: ${CVAT_MODEL_GATEWAY_SECRETS_DIR:?Set absolute secrets directory}
+        target: /run/secrets
+        read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16777216
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8070/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

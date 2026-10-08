@@ -1,0 +1,6 @@
+# Transport, geometry and cache tests require no PyTorch, CUDA or OpenMMLab.
+pytest==9.1.1
+numpy==1.26.4
+Pillow==11.3.0
+PyYAML==6.0.2
+# Install PyTorch separately for tensor, weight and runtime warmup tests.

@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT
+# Build against the checked-out CVAT source; invoked by components/extensions/cvatctl.
+# The same modified backend image must be used by the API and every worker.
+x-itgformat-backend: &itgformat-backend
+  image: ${CVAT_EXT_SERVER_IMAGE:?Use components/extensions/cvatctl}
+  pull_policy: never
+
+services:
+  cvat_server:
+    <<: *itgformat-backend
+    build:
+      context: .
+      dockerfile: Dockerfile
+  cvat_worker_utils:
+    <<: *itgformat-backend
+  cvat_worker_import:
+    <<: *itgformat-backend
+  cvat_worker_export:
+    <<: *itgformat-backend
+  cvat_worker_annotation:
+    <<: *itgformat-backend
+  cvat_worker_webhooks:
+    <<: *itgformat-backend
+  cvat_worker_quality_reports:
+    <<: *itgformat-backend
+  cvat_worker_chunks:
+    <<: *itgformat-backend
+  cvat_worker_consensus:
+    <<: *itgformat-backend

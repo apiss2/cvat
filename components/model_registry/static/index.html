@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>モデル管理 | CVAT</title>
+    <link rel="stylesheet" href="./static/style.css">
+</head>
+<body>
+<a class="skip-link" href="#main">メインコンテンツへ移動</a>
+<header class="app-header">
+    <a class="brand" href="#models" aria-label="CVAT モデル管理のモデル一覧へ"><span class="brand-mark" aria-hidden="true">C</span><span>CVAT <span class="brand-divider">/</span> <strong>モデル管理</strong></span></a>
+    <div class="header-actions"><a class="header-link" id="cvat-link" href="/">CVATへ戻る</a><div id="account" class="account" hidden><span id="avatar" class="avatar" aria-hidden="true"></span><span><strong id="identity"></strong><small>CVATのアカウント</small></span></div></div>
+</header>
+<main id="main" tabindex="-1">
+<section id="access-panel" class="session-panel" aria-labelledby="access-title" aria-busy="true">
+    <div id="loading-indicator" class="loading-indicator" aria-hidden="true"></div>
+    <h1 id="access-title">モデル一覧を読み込んでいます</h1><p id="access-help">少々お待ちください。</p>
+    <div id="access-actions" class="session-actions" hidden><a id="return-cvat" class="button primary" href="/">CVATへ戻る</a><button id="retry-access" class="secondary" type="button">再試行</button></div>
+</section>
+<p id="notice" role="status" aria-live="polite"></p>
+<noscript><p class="noscript">モデル管理にはJavaScriptが必要です。ブラウザーの設定で有効にしてください。</p></noscript>
+<div id="workspace" hidden>
+    <nav class="workspace-nav" aria-label="モデル管理"><a id="models-nav" href="#models">モデル一覧</a><a id="register-nav" href="#register">モデル登録</a><span class="nav-note">チームで共有するONNXモデル</span></nav>
+    <section id="catalog" class="catalog-section" aria-labelledby="catalog-title">
+        <div class="page-heading"><div><p class="eyebrow">MODEL LIBRARY</p><h1 id="catalog-title">モデル一覧</h1><p>モデルと作者を見つけて、次のアノテーションに使えます。</p></div><button id="new-model" class="primary" type="button"><span aria-hidden="true">＋</span> 新しいモデルを登録</button></div>
+        <div class="stats" aria-label="モデルの集計"><div class="stat"><span>表示できるモデル</span><strong id="model-count">0</strong></div><div class="stat"><span>公開中</span><strong id="published-count">0</strong></div><div class="stat"><span>自分のモデル</span><strong id="my-model-count">0</strong></div></div>
+        <div class="panel catalog-panel"><div class="catalog-toolbar"><label class="search-label" for="search"><span>モデルを検索</span><input id="search" type="search" autocomplete="off" placeholder="モデル名または作者で検索"></label><button id="refresh" class="secondary" type="button">一覧を更新</button></div>
+            <div class="table-scroll"><table><caption class="sr-only">チームのモデル一覧</caption><thead><tr><th scope="col">モデル</th><th scope="col">種類</th><th scope="col">作者と連絡先</th><th scope="col">状態</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="models"></tbody></table></div>
+            <p id="catalog-count" class="catalog-footer" aria-live="polite"></p>
+        </div>
+        <p class="page-note">公開したモデルはチーム全員が確認できます。更新、削除、処理ログの確認は作者と管理者が行えます。</p>
+    </section>
+    <section id="registration" class="registration-section" hidden aria-labelledby="form-title">
+        <div class="page-heading"><div><p class="eyebrow">MODEL REGISTRATION</p><h1 id="form-title">モデルの新規登録</h1><p>ファイルをアップロードすると、試験推論の成功後にモデルが公開されます。</p></div><a class="text-link" href="#models">モデル一覧に戻る</a></div>
+        <form id="register-form">
+            <div class="panel form-panel"><div class="form-section-heading"><span class="step-number" aria-hidden="true">1</span><div><h2>基本情報</h2><p>モデルの用途と、問い合わせ先を伝えます。</p></div></div>
+                <div class="fields-row"><label>モデル名 <span class="required">必須</span><input id="name" maxlength="128" placeholder="例: 製品表面の傷検出" required></label><label>モデルの種類<select id="model-kind"><option value="polygon">Segmentation（polygon出力）</option><option value="rectangle">Detection（矩形出力）</option></select></label></div>
+                <label>説明<textarea id="description" rows="3" maxlength="4000" placeholder="対象、得意な条件、使うときの注意点など"></textarea></label>
+                <label>作者の連絡先 <span class="optional">任意</span><input id="author-contact" maxlength="512" placeholder="社内メールアドレス、内線など" aria-describedby="contact-help"></label><p id="contact-help" class="help">連絡先はログインした利用者全員に表示されます。</p>
+            </div>
+            <div class="panel form-panel"><div class="form-section-heading"><span class="step-number" aria-hidden="true">2</span><div><h2>出力ラベルと変換</h2><p>推論結果と、CVATで使用するラベルを対応付けます。</p></div></div>
+                <p id="label-help" class="help"></p><div id="labels"></div><button type="button" id="add-label" class="secondary">＋ ラベルを追加</button>
+                <fieldset id="polygon-options"><legend>Polygon変換</legend><div class="fields-row">
+                    <label>隣接する頂点の最小距離（px）<input id="min-distance" type="number" min="0" step="any" value="2" required></label>
+                    <label>周長に対する点の間隔（%）<input id="spacing-percent" type="number" min="0" max="100" step="any" value="1" required></label>
+                    <label>最小面積（px²）<input id="min-area" type="number" min="0" step="any" value="10" required></label></div>
+                    <p class="help">周長に沿って点を配置した後、最後と最初を含む隣接頂点の距離を確認します。条件を満たすpolygonを作れない小領域は除外します。穴は外周の内側として塗りつぶされます。</p>
+                </fieldset>
+            </div>
+            <div class="panel form-panel"><div class="form-section-heading"><span class="step-number" aria-hidden="true">3</span><div><h2>ファイルと試験画像</h2><p>公開前に、登録するモデルで試験画像を推論します。</p></div></div>
+                <div class="upload-grid"><label class="file-field"><strong>推論コード</strong><span class="help">model.py</span><input id="code" type="file" accept=".py" required></label><label class="file-field"><strong>ONNXファイル</strong><span class="help">複数選択できます</span><input id="weights" type="file" accept=".onnx" multiple required></label><label class="file-field"><strong>試験画像</strong><span class="help">PNGまたはJPEG</span><input id="sample" type="file" accept=".png,.jpg,.jpeg" required></label></div>
+                <p class="help">ModelBaseを継承したModelクラスのloadとpredictを実装します。入力画像はRGB形式です。更新の検証に失敗した場合は公開中の版を維持します。</p>
+                <div class="form-actions"><button id="submit-model" class="primary" type="submit">検証して公開</button><button id="cancel-update" class="secondary" type="button" hidden>更新を取り消す</button><span>試験推論が成功すると、CVATから利用できます。</span></div><progress id="upload-progress" max="100" value="0" aria-label="アップロードの進捗" hidden></progress>
+            </div>
+        </form>
+        <details class="panel zip-panel"><summary>ZIPでまとめて登録する</summary><p>manifest.json、model.py、宣言したONNXファイル、sample.pngまたはsample.jpgをZIP直下に配置します。ZIP内の設定を使用します。フォームが更新状態の場合は同じモデルを更新します。</p><form id="zip-form"><label class="file-field">モデルのZIP<input id="package" type="file" accept=".zip" required></label><button id="submit-zip" class="secondary" type="submit">ZIPを検証して公開</button></form></details>
+    </section>
+    <pre id="operation" aria-live="polite"></pre>
+    <section id="detail" class="detail-section" hidden aria-labelledby="detail-title">
+        <a class="text-link back-link" href="#models">← モデル一覧</a><div class="page-heading"><div><p class="eyebrow">MODEL DETAILS</p><h1 id="detail-title"></h1></div><div class="button-group"><button id="update-model" class="primary" type="button">このモデルを更新</button><button id="delete-model" class="danger" type="button">モデルを削除</button></div></div>
+        <div class="panel detail-summary"><div class="detail-meta"><p id="detail-info"></p><p id="detail-contact"></p></div><p id="detail-description"></p><h2>出力ラベル</h2><pre id="detail-labels"></pre><p id="detail-polygon" class="help"></p></div>
+        <div id="owner-detail">
+            <div class="panel form-panel"><h2>公開する版</h2><p class="help">保持されている版に戻す場合は、切り替える前に試験推論で結果を確認できます。</p><div class="revision-controls"><label>保持されている版<select id="revision"></select></label><button id="rollback" class="secondary" type="button">選択した版を公開する</button></div></div>
+            <div class="panel form-panel"><h2>試験推論</h2><p class="help">選択した版のモデルで画像を推論し、結果を確認します。</p><form id="test-form"><label class="file-field">試験する画像<input id="test-image" type="file" accept=".png,.jpg,.jpeg" required></label><button type="submit" id="test-button" class="primary">選択した版で推論</button></form><canvas id="preview" aria-label="試験推論の結果" hidden></canvas><pre id="test-result"></pre></div>
+            <div class="panel form-panel"><div class="section-heading"><div><h2>処理ログ</h2><p class="help">直近200件を表示します。入力画像自体はログに保存しません。</p></div><div class="button-group"><button id="refresh-logs" class="secondary" type="button">ログを更新</button><button id="download-logs" class="secondary" type="button">ログを保存</button></div></div><pre id="logs"></pre></div>
+        </div>
+    </section>
+</div>
+</main>
+<footer>CVAT モデル管理 <span>チームのONNXモデルを共有するワークスペース</span></footer>
+<script src="./static/app.js" defer></script>
+</body>
+</html>

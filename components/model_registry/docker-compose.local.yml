@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+# Join the CVAT network and publish the browser surface through CVAT's Traefik.
+# Standard CVAT accepts HTTP on the web entrypoint, optionally behind an HTTPS proxy.
+# Set MR_TRAEFIK_ENTRYPOINTS and MR_TRAEFIK_TLS only when Traefik itself terminates TLS.
+services:
+  model-registry:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${MR_CVAT_NETWORK:-cvat_cvat}"
+      - 'traefik.http.routers.mr-${MR_INSTANCE:-team-models}.rule=Host(`${MR_PUBLIC_HOST:?Set the host derived from MR_PUBLIC_URL}`) && (Path(`/model-registry`) || Path(`/model-registry/`) || PathPrefix(`/model-registry/static/`) || PathPrefix(`/model-registry/api/`))'
+      - "traefik.http.routers.mr-${MR_INSTANCE:-team-models}.priority=100"
+      - "traefik.http.routers.mr-${MR_INSTANCE:-team-models}.entrypoints=${MR_TRAEFIK_ENTRYPOINTS:-web}"
+      - "traefik.http.routers.mr-${MR_INSTANCE:-team-models}.tls=${MR_TRAEFIK_TLS:-false}"
+      - "traefik.http.routers.mr-${MR_INSTANCE:-team-models}.service=mr-${MR_INSTANCE:-team-models}"
+      - "traefik.http.routers.mr-${MR_INSTANCE:-team-models}.middlewares=mr-${MR_INSTANCE:-team-models}-slash,mr-${MR_INSTANCE:-team-models}-strip"
+      - "traefik.http.services.mr-${MR_INSTANCE:-team-models}.loadbalancer.server.port=8091"
+      - 'traefik.http.middlewares.mr-${MR_INSTANCE:-team-models}-slash.redirectregex.regex=^https?://[^/]+/model-registry([?].*)?$$'
+      - "traefik.http.middlewares.mr-${MR_INSTANCE:-team-models}-slash.redirectregex.replacement=${MR_PUBLIC_URL:?Set the CVAT browser URL ending in /model-registry/}"
+      - "traefik.http.middlewares.mr-${MR_INSTANCE:-team-models}-slash.redirectregex.permanent=true"
+      - "traefik.http.middlewares.mr-${MR_INSTANCE:-team-models}-strip.stripprefix.prefixes=/model-registry"
+    networks:
+      cvat:
+        aliases: [model-registry]
+networks:
+  cvat:
+    external: true
+    name: ${MR_CVAT_NETWORK:-cvat_cvat}
