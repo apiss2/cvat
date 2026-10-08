@@ -55,7 +55,6 @@
                 <div class="form-actions"><button id="submit-model" class="primary" type="submit">検証して公開</button><button id="cancel-update" class="secondary" type="button" hidden>更新を取り消す</button><span>試験推論が成功すると、CVATから利用できます。</span></div><progress id="upload-progress" max="100" value="0" aria-label="アップロードの進捗" hidden></progress>
             </div>
         </form>
-        <details class="panel zip-panel"><summary>ZIPでまとめて登録する</summary><p>manifest.json、model.py、宣言したONNXファイル、sample.pngまたはsample.jpgをZIP直下に配置します。ZIP内の設定を使用します。フォームが更新状態の場合は同じモデルを更新します。</p><form id="zip-form"><label class="file-field">モデルのZIP<input id="package" type="file" accept=".zip" required></label><button id="submit-zip" class="secondary" type="submit">ZIPを検証して公開</button></form></details>
     </section>
     <pre id="operation" aria-live="polite"></pre>
     <section id="detail" class="detail-section" hidden aria-labelledby="detail-title">

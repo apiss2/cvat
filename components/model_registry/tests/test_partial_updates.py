@@ -117,19 +117,24 @@ def test_sample_extension_change_removes_old_sample(updates, package):
 def test_code_only_keeps_all_weights(updates, package):
     root, source, manifest, _ = package
     target = root / "candidate.zip"
-    updates.assemble_update(target, source, manifest, upload("renamed.py", b"new code"), [], None)
+    updates.assemble_update(target, source, manifest, upload("model.py", b"new code"), [], None)
     assert read_zip(target)["model.py"] == b"new code"
     assert (source / "model.py").read_bytes() == b"class Model: pass"
 
 
-def test_manifest_can_explicitly_remove_and_add_weights(updates, package):
-    root, source, manifest, _ = package
-    changed = updates.merge_manifest(manifest.model_dump(), {"weights": ["decoder.onnx", "new.onnx"]})
+@pytest.mark.parametrize("weights", [["decoder.onnx"], ["encoder.onnx", "decoder.onnx", "new.onnx"], ["renamed.onnx", "decoder.onnx"]])
+def test_manifest_cannot_remove_add_or_rename_weights(updates, package, weights):
+    with pytest.raises(ValueError, match="Weight filenames cannot change"):
+        updates.merge_manifest(package[2].model_dump(), {"weights": weights})
+
+
+def test_renamed_code_rejected_before_assembly(updates, package):
+    root, source, manifest, files = package
     target = root / "candidate.zip"
-    updates.assemble_update(target, source, changed, None, [upload("new.onnx", b"new")], None)
-    assert "encoder.onnx" not in read_zip(target)
-    with pytest.raises(ValueError, match="Upload the new"):
-        updates.assemble_update(target, source, changed, None, [], None)
+    with pytest.raises(ValueError, match="filename must be model.py"):
+        updates.assemble_update(target, source, manifest, upload("renamed.py", b"new code"), [], None)
+    assert not target.exists()
+    assert {p.name: p.read_bytes() for p in source.iterdir()} == files
 
 
 @pytest.mark.parametrize("names", [["../escape.onnx"], ["other.onnx"], ["encoder.onnx", "encoder.onnx"]])
@@ -206,6 +211,26 @@ def test_endpoint_allows_metadata_only(client):
     response = c.post(f"/api/models/{record['id']}/update", data={"expected_revision": record["active_revision"], "manifest": '{"description":"new"}'})
     assert response.status_code == 202
     assert json.loads(state.submissions[0][0]["manifest.json"])["description"] == "new"
+
+
+@pytest.mark.parametrize("field, filename", [("weights", "renamed.onnx"), ("weights", "Encoder.onnx"), ("code", "renamed.py")])
+def test_endpoint_rejects_filename_mismatch(client, package, field, filename):
+    c, state, record, root = client
+    response = c.post(f"/api/models/{record['id']}/update",
+                      data={"expected_revision": record["active_revision"]},
+                      files={field: (filename, b"new")})
+    assert response.status_code == 422
+    assert not state.submissions and not list((root / "uploads").iterdir())
+    assert {p.name: p.read_bytes() for p in package[1].iterdir()} == package[3]
+
+
+def test_endpoint_rejects_manifest_weight_rename(client):
+    c, state, record, root = client
+    response = c.post(f"/api/models/{record['id']}/update",
+                      data={"expected_revision": record["active_revision"], "manifest": '{"weights":["renamed.onnx","decoder.onnx"]}'},
+                      files={"weights": ("renamed.onnx", b"new")})
+    assert response.status_code == 422
+    assert not state.submissions and not list((root / "uploads").iterdir())
 
 
 @pytest.mark.parametrize("scenario, status", [("stale",409), ("missing-revision",422), ("non-owner",403), ("deleted",410), ("no-change",422)])

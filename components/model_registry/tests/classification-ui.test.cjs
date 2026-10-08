@@ -55,7 +55,7 @@ function setup() {
     };
     const context = vm.createContext(sandbox);
     const app = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
-    const boot = /\nresetForm\(\);\nrun\(checkSession\);\s*$/;
+    const boot = /\r?\nresetForm\(\);\r?\nrun\(checkSession\);\s*$/;
     assert(boot.test(app), 'unexpected application boot sequence');
     vm.runInContext(app.replace(boot, '\n'), context);
     vm.runInContext(fs.readFileSync(path.join(root, 'static/updates.js'), 'utf8'), context);
@@ -117,12 +117,45 @@ test('classification update restores type and needs no new code or sample', asyn
     assert.equal(ui.get('model-kind').value, 'tag');
     assert.equal(ui.get('code').required, false); assert.equal(ui.get('sample').required, false);
     const panel = ui.get('weights').parentElement.parentElement.children.find((node) => node.id === 'retained-model-files');
-    panel.children.find((node) => node.tagName === 'label').children[0].files = [file('new-local-name.onnx')];
+    panel.children.find((node) => node.tagName === 'label').children[0].files = [file('model.onnx')];
     await ui.submit('register-form');
     const { route, data } = ui.sandbox.submitted[0];
     assert.equal(route, `/api/models/${'a'.repeat(20)}/update`);
     assert.deepEqual([...data.keys()], ['weights']);
     assert.equal(data.get('weights').name, 'model.onnx');
+});
+
+for (const name of ['new-local-name.onnx', 'Model.onnx']) {
+    test(`weight name ${name} is rejected without uploading`, async () => {
+        const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+        const panel = ui.get('weights').parentElement.parentElement.children.find((node) => node.id === 'retained-model-files');
+        panel.children.find((node) => node.tagName === 'label').children[0].files = [file(name)];
+        await ui.submit('register-form');
+        assert.equal(ui.sandbox.submitted.length, 0);
+        assert.match(ui.get('notice').textContent, /ONNXファイル名はmodel\.onnxと一致/);
+    });
+}
+
+test('code filename mismatch is rejected without uploading', async () => {
+    const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+    ui.get('code').files = [file('renamed.py')];
+    await ui.submit('register-form');
+    assert.equal(ui.sandbox.submitted.length, 0);
+    assert.match(ui.get('notice').textContent, /ファイル名はmodel\.py/);
+});
+
+test('code-only update retains the model.py filename and other files', async () => {
+    const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+    ui.get('code').files = [file('model.py')];
+    await ui.submit('register-form');
+    const { route, data } = ui.sandbox.submitted[0];
+    assert.equal(route, `/api/models/${'a'.repeat(20)}/update`);
+    assert.deepEqual([...data.keys()], ['code']);
+    assert.equal(data.get('code').name, 'model.py');
+});
+
+test('registration exposes individual files without a ZIP entry', () => {
+    assert.doesNotMatch(html, /zip-form|submit-zip|accept="\.zip"/);
 });
 
 test('metadata-only update does not convert tag labels to polygons', async () => {

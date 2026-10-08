@@ -24,6 +24,8 @@ def merge_manifest(previous: dict, patch: dict) -> Manifest:
     """Omission retains a value. Empty strings/lists are explicit replacements."""
     if not isinstance(patch, dict):
         raise ValueError("Manifest update must be a JSON object")
+    if "weights" in patch and patch["weights"] != previous["weights"]:
+        raise ValueError("Weight filenames cannot change during a partial update")
     merged = {**previous, **patch}
     if isinstance(patch.get("polygon"), dict):
         merged["polygon"] = {**previous.get("polygon", {}), **patch["polygon"]}
@@ -39,6 +41,8 @@ def assemble_update(destination: Path, source: Path, manifest: Manifest,
         raise ValueError("Replacement weight filenames must be distinct names in manifest.weights")
     replacements = dict(zip(names, weights))
     if code is not None:
+        if code.filename != "model.py":
+            raise ValueError("Replacement code filename must be model.py")
         replacements["model.py"] = code
     sample_name = None
     if sample is not None:

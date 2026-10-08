@@ -17,7 +17,7 @@ function signedOut() {
     for (const id of ['logs', 'test-result', 'test-tags', 'operation', 'detail-title', 'detail-info', 'detail-contact', 'detail-description', 'detail-labels', 'detail-polygon', 'catalog-count']) $(id).textContent = '';
     for (const id of ['model-count', 'published-count', 'my-model-count']) $(id).textContent = '0';
     $('search').value = ''; $('revision').replaceChildren(); $('preview').hidden = true; $('preview').width = 0; $('preview').height = 0; $('test-form').reset();
-    $('submit-model').disabled = false; $('submit-zip').disabled = false; $('upload-progress').hidden = true; resetForm();
+    $('submit-model').disabled = false; $('upload-progress').hidden = true; resetForm();
 }
 function accessError(status) {
     signedOut(); notice('');
@@ -66,7 +66,7 @@ function labelRow(value = { id: 0, name: '' }) {
     row.append(button('削除', () => { if ($('labels').children.length <= 1) throw new Error('ラベルは1件以上必要です。'); row.remove(); })); $('labels').append(row);
 }
 function resetForm(model = null) {
-    editing = model; $('register-form').reset(); $('zip-form').reset(); $('labels').replaceChildren();
+    editing = model; $('register-form').reset(); $('labels').replaceChildren();
     $('form-title').textContent = model ? `モデルの更新: ${model.manifest?.name || model.id}` : 'モデルの新規登録';
     $('name').value = model?.manifest?.name || ''; $('description').value = model?.manifest?.description || ''; $('author-contact').value = model?.manifest?.author_contact || '';
     const labelType = model?.manifest?.labels?.[0]?.type;
@@ -172,7 +172,7 @@ async function sendPackage(path, form) {
     const epoch = authEpoch;
     if (activeOperation) throw new Error('現在の登録処理が完了してから操作してください。');
     if (editing) { form.set('model_id', editing.id); form.set('expected_revision', editing.active_revision || ''); }
-    $('submit-model').disabled = true; $('submit-zip').disabled = true; $('upload-progress').value = 0; $('upload-progress').hidden = false; $('operation').textContent = ''; $('operation').hidden = false;
+    $('submit-model').disabled = true; $('upload-progress').value = 0; $('upload-progress').hidden = false; $('operation').textContent = ''; $('operation').hidden = false;
     try {
         const operation = await new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest(); xhr.open('POST', endpoint(path));
@@ -201,7 +201,7 @@ async function sendPackage(path, form) {
             }
             await new Promise((resolve) => setTimeout(resolve, 1500));
         }
-    } finally { if (epoch === authEpoch) { activeOperation = ''; $('submit-model').disabled = false; $('submit-zip').disabled = false; $('upload-progress').hidden = true; } }
+    } finally { if (epoch === authEpoch) { activeOperation = ''; $('submit-model').disabled = false; $('upload-progress').hidden = true; } }
 }
 async function signedIn(account) {
     signedOut(); user = account; $('identity').textContent = `${account.name}${account.admin ? ' (管理者)' : ''}`; $('avatar').textContent = account.name.slice(0, 1).toLocaleUpperCase();
@@ -219,7 +219,6 @@ $('register-form').addEventListener('submit', (event) => { event.preventDefault(
     if ($('model-kind').value === 'polygon') manifest.polygon = { min_distance_px: Number($('min-distance').value), spacing_percent: Number($('spacing-percent').value), min_area_px: Number($('min-area').value) };
     const data = new FormData(); data.set('manifest', JSON.stringify(manifest)); data.set('code', $('code').files[0]); data.set('sample', $('sample').files[0]); weights.forEach((weight) => data.append('weights', weight)); await sendPackage('/api/upload', data);
 }); });
-$('zip-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => { const data = new FormData(); data.set('package', $('package').files[0]); await sendPackage('/api/models', data); }); });
 $('update-model').addEventListener('click', () => { if (selected?.can_manage && !selected.deleted) { resetForm(selected); location.hash = 'register'; } });
 $('delete-model').addEventListener('click', () => run(async () => {
     if (!selected?.can_manage || !confirm('このモデルの全ての版を無効にします。実行中の一括推論は次の画像から失敗する場合があります。削除しますか？')) return;

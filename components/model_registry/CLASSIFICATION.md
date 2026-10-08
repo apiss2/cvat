@@ -38,7 +38,7 @@ return []
 CVAT標準タグに信頼度用の独自属性を自動追加する処理はありません。
 既存アノテーションの削除や、再実行で生成するタグと既存タグの重複排除も追加していません。
 
-## ZIPのラベル定義
+## マニフェストのラベル定義
 
 分類用のラベルは `type: "tag"` にします。スキーマの版は1のままです。
 
@@ -55,10 +55,10 @@ CVAT標準タグに信頼度用の独自属性を自動追加する処理はあ�
 ```
 
 `model.py` の `ModelBase`、`load`、`predict` の呼び出し方は検出と領域分割と同じです。
-実行例は `examples/classification/`、登録用ZIPは `examples/classification-demo.zip` にあります。
+実行例は `examples/classification/` にあります。モデルの登録には個別のファイルを指定します。
 この例はONNX Identity演算と画像の平均輝度を使う接続試験用で、学習済み分類器ではありません。
 そのスコアも分類確率の校正をしたものではありません。
-`python components/model_registry/examples/generate.py` で作例の重み、画像、ZIPを再生成できます。
+`python components/model_registry/examples/generate.py` で作例の重み、画像、内部パッケージ検査用のZIPを再生成できます。
 
 分類モデルも[部分更新](PARTIAL_UPDATES.md)に対応します。
 ONNXだけの置換、Pythonコードだけの置換、設定だけの変更で、未変更のファイルや分類設定を保持します。

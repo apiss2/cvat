@@ -26,7 +26,7 @@ class GuardMiddleware:
         if root_path and path.startswith(root_path + "/"):
             path = path[len(root_path):]
         is_upload = request.method == "POST" and (
-            path in ("/api/models", "/api/upload")
+            path == "/api/upload"
             or re.fullmatch(r"/api/models/[0-9a-f]{20}/update", path) is not None
         )
         limit = (2 * 1024**3 + 2 * 1024**2) if is_upload else self.max_bytes

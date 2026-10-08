@@ -155,18 +155,6 @@ def create_app(settings: Settings | None = None, runtime=None, service: Service 
         os.close(fd)
         return Path(name)
 
-    @app.post("/api/models", status_code=202)
-    def upload_archive(request: Request, package: UploadFile = File(...), model_id: str = Form(""), expected_revision: str = Form("")):
-        check_update(request, model_id, expected_revision)
-        path = temporary_archive()
-        try:
-            with path.open("wb") as stream:
-                save_upload(package, stream, MAX_ARCHIVE)
-            return service.submit(path, request.state.user.name, model_id or None, expected_revision or None)
-        except BaseException:
-            path.unlink(missing_ok=True)
-            raise
-
     @app.post("/api/upload", status_code=202)
     def upload_files(request: Request, manifest: str = Form(...), code: UploadFile = File(...), weights: list[UploadFile] = File(...), sample: UploadFile = File(...), model_id: str = Form(""), expected_revision: str = Form("")):
         check_update(request, model_id, expected_revision)

@@ -29,7 +29,7 @@
         panel.append(help);
         for (const name of model.manifest.weights) {
             const label = document.createElement('label');
-            label.textContent = `ONNX: ${name}（未選択なら引き継ぎ）`;
+            label.textContent = `ONNX: ${name}（同じファイル名で置換、未選択なら引き継ぎ）`;
             const input = document.createElement('input');
             input.type = 'file'; input.accept = '.onnx';
             input.setAttribute('aria-label', `${name}を置換するONNXファイル`);
@@ -73,10 +73,14 @@
             }
             const data = new FormData();
             if (Object.keys(patch).length) data.set('manifest', JSON.stringify(patch));
+            if ($('code').files.length && $('code').files[0].name !== 'model.py') {
+                throw new Error('Pythonコードのファイル名はmodel.pyにしてください。');
+            }
             for (const id of ['code', 'sample']) if ($(id).files.length) data.set(id, $(id).files[0]);
             for (const { name, input } of replacements) {
-                // Use the stored logical filename even when the local file was renamed.
-                if (input.files.length) data.append('weights', input.files[0], name);
+                if (!input.files.length) continue;
+                if (input.files[0].name !== name) throw new Error(`ONNXファイル名は${name}と一致させてください。`);
+                data.append('weights', input.files[0]);
             }
             if (![...data.keys()].length) throw new Error('変更するファイルまたは設定を指定してください。');
             await sendPackage(`/api/models/${model.id}/update`, data);

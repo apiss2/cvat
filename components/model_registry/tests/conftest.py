@@ -88,11 +88,18 @@ def headers(user='alice'):
     return {'Cookie': 'sessionid=' + SESSIONS[user], 'Origin': ORIGIN,
             'X-Registry-Request': '1'}
 
+def model_files(kind='segmentation'):
+    directory = ROOT/'examples'/kind
+    return [('code', ('model.py', (directory/'model.py').read_bytes(), 'text/plain')),
+            ('weights', ('model.onnx', (directory/'model.onnx').read_bytes(), 'application/octet-stream')),
+            ('sample', ('sample.png', (directory/'sample.png').read_bytes(), 'image/png'))]
+
+
 def upload(ctx, kind='segmentation', *, user='alice', model_id=None, expected=None):
-    data = {}
+    data = {'manifest': (ROOT/'examples'/kind/'manifest.json').read_text(encoding='utf-8')}
     if model_id: data.update(model_id=model_id, expected_revision=expected or '')
     c = ctx['client']
-    r = c.post('/api/models', headers=headers(user), data=data, files={'package': ('model.zip', (ROOT/'examples'/f'{kind}-demo.zip').read_bytes(), 'application/zip')})
+    r = c.post('/api/upload', headers=headers(user), data=data, files=model_files(kind))
     assert r.status_code == 202, r.text
     op = r.json()
     deadline = time.monotonic()+8

@@ -2,7 +2,7 @@ import json
 import time
 import threading
 from registry.schema import function_id
-from conftest import ROOT,TOKENS,headers,upload
+from conftest import ROOT,TOKENS,headers,upload,model_files
 
 def test_user_and_service_auth_are_separate(ctx):
     c=ctx['client']
@@ -13,9 +13,9 @@ def test_user_and_service_auth_are_separate(ctx):
     assert c.get('/internal/functions',headers=headers('service')).json()=={}
 
 def test_auth_before_large_upload(ctx):
-    r=ctx['client'].post('/api/models',headers={'Content-Length':str(3*1024**3)},content=b'x')
+    r=ctx['client'].post('/api/upload',headers={'Content-Length':str(3*1024**3)},content=b'x')
     assert r.status_code==401
-    r=ctx['client'].post('/api/models',headers={**headers(),'Content-Length':str(3*1024**3)},content=b'x')
+    r=ctx['client'].post('/api/upload',headers={**headers(),'Content-Length':str(3*1024**3)},content=b'x')
     assert r.status_code==413
 
 def test_publish_infer_and_logs(ctx,published,sample):
@@ -45,7 +45,7 @@ def test_ownership_enforcement(ctx,published,sample):
     assert c.get('/api/models',headers=headers('bob')).json()==[public]
     assert c.get(f'/api/models/{mid}',headers=headers()).json()['can_manage'] is True
     assert c.post(f'/api/models/{mid}/rollback',headers=headers('bob'),json={'expected_revision':published['revision'],'revision':published['revision']}).status_code==403
-    update=c.post('/api/models',headers=headers('bob'),data={'model_id':mid,'expected_revision':published['revision']},files={'package':('m.zip',b'invalid')})
+    update=c.post('/api/upload',headers=headers('bob'),data={'model_id':mid,'expected_revision':published['revision'],'manifest':(ROOT/'examples/segmentation/manifest.json').read_text(encoding='utf-8')},files=model_files())
     assert update.status_code==403
 
 def test_update_failed_keeps_active(ctx,published):
@@ -89,6 +89,18 @@ def test_individual_file_upload(ctx):
         time.sleep(.01)
     assert op['status']=='succeeded',op
 
+
+def test_external_zip_registration_and_full_update_are_removed(ctx,published):
+    c=ctx['client']
+    before=ctx['service'].store.models()
+    for data in ({}, {'model_id':published['model_id'],'expected_revision':published['revision']}):
+        response=c.post('/api/models',headers=headers(),data=data,files={'package':('model.zip',b'invalid')})
+        assert response.status_code==405
+    response=c.post('/api/upload',headers=headers(),files={'package':('model.zip',b'invalid')})
+    assert response.status_code==422
+    assert ctx['service'].store.models()==before
+    assert not list((ctx['settings'].data_dir/'uploads').iterdir())
+
 def test_disable_user_applies_without_restart(ctx):
     ctx['cvat_users']['alice']['is_active'] = False
     assert ctx['client'].get('/api/me',headers=headers()).status_code==403
@@ -107,7 +119,7 @@ def test_concurrent_updates_only_one_published(ctx,published):
     block=threading.Event();ctx['runtime'].block=block
     operations=[]
     for _ in range(2):
-        r=c.post('/api/models',headers=headers(),data={'model_id':mid,'expected_revision':old},files={'package':('m.zip',(ROOT/'examples/segmentation-demo.zip').read_bytes())})
+        r=c.post('/api/upload',headers=headers(),data={'model_id':mid,'expected_revision':old,'manifest':(ROOT/'examples/segmentation/manifest.json').read_text(encoding='utf-8')},files=model_files())
         assert r.status_code==202;operations.append(r.json()['id'])
     block.set()
     for _ in range(500):
