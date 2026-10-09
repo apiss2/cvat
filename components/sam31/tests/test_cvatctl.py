@@ -54,6 +54,7 @@ def test_selection_adds_plugin_serverless_and_separate_volume(cli, manager, monk
     assert manager.values["CVAT_CLIENT_PLUGINS"] == "plugins/sam31"
     assert manager.values["SAM31_REDIS_VOLUME"] == "test_sam31_redis_data"
     assert cli.FUNCTION_OWNERS["pth-sam31-tracker"] == "sam31"
+    assert cli.FUNCTION_OWNERS["pth-sam31-interactor"] == "sam31"
     manager.root = tmp_path / "checkout"; manager.root.mkdir()
     for name in ("docker-compose.yml", cli.SERVERLESS_COMPOSE, cli.FINAL_COMPOSE, *cli.EXTENSION_COMPOSE["sam31"]):
         path = manager.root/name; path.parent.mkdir(parents=True, exist_ok=True); path.touch()
@@ -70,11 +71,13 @@ def test_parent_environment_cannot_override_sam31(cli, manager, monkeypatch):
     assert "SAM31_SURPRISE" not in instance.env
 
 
-def test_mount_and_runtime_changes_invalidate_saved_configuration(manager):
+def test_build_source_is_not_runtime_configuration(manager):
     manager.freeze({"services": {}}, {})
     saved = json.loads((manager.state / "active.json").read_text())
     assert manager.matches_configuration(saved, saved["model"])
-    for key,value in (("SAM31_GPU_DEVICE", "2"), ("SAM31_CHECKPOINT_HOST", "/different/model.pt"),
+    manager.values["SAM31_CHECKPOINT_HOST"] = "/different/model.pt"
+    assert manager.matches_configuration(saved, saved["model"])
+    for key,value in (("SAM31_GPU_DEVICE", "2"),
                       ("SAM31_CHECKPOINT_SHA256", "c"*64), ("SAM31_REDIS_PASSWORD", "other"*10),
                       ("SAM31_STATE_MAX_BYTES", "1024")):
         old = manager.values[key]; manager.values[key] = value
@@ -105,10 +108,13 @@ def test_helpers_and_template_share_image_fingerprint(cli, manager, tmp_path):
     target = root/"components/extensions/manage.py"; target.parent.mkdir(parents=True); shutil.copyfile(ROOT/"components/extensions/manage.py", target)
     manager.root = root
     first = manager.function_images("1.16.3")["pth-sam31-tracker"]
-    assert first == cli.sam31_deploy.function_image("1.16.3", root)
+    assert first == cli.sam31_deploy.function_image(
+        "1.16.3", root, checkpoint_sha256=manager.values["SAM31_CHECKPOINT_SHA256"])
+    assert set(manager.function_images("1.16.3")) == set(cli.sam31_deploy.FUNCTIONS)
     (root/cli.sam31_deploy.SHARED/"geometry.py").write_text("# Changed shared helper\n")
     assert first != manager.function_images("1.16.3")["pth-sam31-tracker"]
-    assert first != cli.sam31_deploy.function_image("1.17.0", ROOT)
+    assert first != cli.sam31_deploy.function_image(
+        "1.17.0", ROOT, checkpoint_sha256=manager.values["SAM31_CHECKPOINT_SHA256"])
 
 
 def test_no_build_deploy_uses_manager_lock_context_image_and_private_config(cli, manager):
@@ -128,26 +134,25 @@ def test_no_build_deploy_uses_manager_lock_context_image_and_private_config(cli,
             assert source not in config.parents
             assert not any(manager.values["SAM31_REDIS_PASSWORD"] in p.read_text() for p in source.glob("*.py"))
             assert "SAM2_" not in (source/"protocol.py").read_text()
-            assert definition["spec"]["volumes"][0]["volumeMount"]["readOnly"] is True
-            assert definition["spec"]["volumes"][0]["volume"]["hostPath"]["path"] == manager.values["SAM31_CHECKPOINT_HOST"]
+            assert "volumes" not in definition["spec"]
+            assert not (source / Path(cli.sam31_deploy.CHECKPOINT).name).exists()
             assert "--run-image" in command and "--no-pull" in command
-            assert command[command.index("--run-image")+1] == manager.function_images("1.16.3")["pth-sam31-tracker"]
+            assert command[command.index("--run-image")+1] == manager.function_images("1.16.3")[definition["metadata"]["name"]]
         return ""
     manager.run = run
     manager.deploy({}, feature="sam31", no_build=True)
-    assert calls[0] == ("owner", ["pth-sam31-tracker"])
+    assert calls[0] == ("owner", list(cli.sam31_deploy.FUNCTIONS))
     assert calls[-1][0] == "verified"
     assert not list(manager.state.glob("sam31-*"))
 
 
-def test_unchanged_function_is_reused_only_with_readonly_expected_mount(cli, manager):
+def test_unchanged_function_is_reused_only_without_checkpoint_mount(cli, manager):
     image = manager.function_images("1.16.3")["pth-sam31-tracker"]
     current = {"Id":"running", "State":{"Running":True},
                "Config":{"Image":image,"Labels":{"nuclio.io/function-name":"pth-sam31-tracker"},
                          "Env":[f"{key}={value}" for key,value in manager.function_environment()["pth-sam31-tracker"].items()]},
                "HostConfig":{"PortBindings":{}},
-               "Mounts":[{"Type":"bind", "Source":manager.values["SAM31_CHECKPOINT_HOST"],
-                          "Destination":cli.sam31_deploy.CHECKPOINT, "RW":False}]}
+               "Mounts":[]}
     manager.functions = lambda: [current]
     manager.guard_function_ownership = lambda names: None
     manager.nuctl_check = lambda model: "1.16.3"
@@ -155,9 +160,9 @@ def test_unchanged_function_is_reused_only_with_readonly_expected_mount(cli, man
         assert command[0] == "docker" and "inspect" in command
         return "sha256:cached"
     manager.run = run
-    manager.deploy({}, feature="sam31")
-    current["Mounts"][0]["RW"] = True
-    with pytest.raises(cli.OperationError, match="read-only"):
+    manager.deploy({}, "tracker", feature="sam31")
+    current["Mounts"].append({"Destination": cli.sam31_deploy.CHECKPOINT, "RW": False})
+    with pytest.raises(cli.OperationError, match="shadowed"):
         manager.verify_functions(["pth-sam31-tracker"])
 
 
@@ -194,10 +199,13 @@ def test_up_starts_redis_before_restoring_and_deploys_sam31(manager):
     assert ("volume","sam31") in calls
     assert ("deploy",{"feature":"sam31","no_build":True}) in calls
     saved = json.loads((manager.state/"active.json").read_text())
-    assert saved["sam31_checkpoint"] == manager.values["SAM31_CHECKPOINT_HOST"]
+    assert saved["sam31_checkpoint"] is None
     assert any(name.startswith("cvat.sam31-") for name in saved["images"])
 
 
-def test_sam31_image_mode_is_explicitly_unsupported(cli, manager):
-    with pytest.raises(cli.OperationError, match="tracking only"):
-        manager.deploy({}, "image", feature="sam31")
+@pytest.mark.parametrize("mode", ["all", "image", "tracker"])
+def test_sam31_modes_forward_to_shared_deployer(cli, manager, monkeypatch, mode):
+    calls = []
+    monkeypatch.setattr(cli.sam31_deploy, "deploy", lambda *args, **kwargs: calls.append(kwargs))
+    manager.deploy({}, mode, feature="sam31", no_build=True)
+    assert calls == [{"force": False, "no_build": True, "mode": mode}]

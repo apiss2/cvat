@@ -30,7 +30,9 @@ class StateCodec:
         self.identity, self.max_bytes = identity, max_bytes
 
     def encode(self, snapshot):
-        tensors = {}
+        # Check the entire source state before CPU copies, contiguous buffers or clones.
+        # References alone do not duplicate tensor storage.
+        references, total = {}, 0
         for kind, name in (("c", "cond_frame_outputs"), ("n", "non_cond_frame_outputs")):
             for frame, memory in snapshot.outputs[name].items():
                 for field, value in memory.items():
@@ -39,9 +41,14 @@ class StateCodec:
                     value = value[-1] if field == "maskmem_pos_enc" else value
                     if not isinstance(value, torch.Tensor) or value.dtype not in (torch.float32, torch.float16, torch.bfloat16):
                         raise ValueError("Unexpected multiplex memory tensor")
-                    tensors[f"{kind}.{frame}.{field}"] = value.detach().cpu().contiguous().clone()
-        if sum(value.numel() * value.element_size() for value in tensors.values()) > self.max_bytes:
-            raise ProtocolError("Temporal memory exceeds SAM31_STATE_MAX_BYTES", 413)
+                    total += value.numel() * value.element_size()
+                    if total > self.max_bytes:
+                        raise ProtocolError("Temporal memory exceeds SAM31_STATE_MAX_BYTES", 413)
+                    references[f"{kind}.{frame}.{field}"] = value
+                    if len(references) > 512:
+                        raise ProtocolError("Too many temporal memory tensors", 413)
+        tensors = {name: value.detach().cpu().contiguous().clone()
+                   for name, value in references.items()}
         metadata = dict(schema=1, identity=self.identity, index=snapshot.index,
                         width=snapshot.width, height=snapshot.height, count=snapshot.count)
         result = save(tensors, metadata={"state": json.dumps(metadata, separators=(",", ":"))})

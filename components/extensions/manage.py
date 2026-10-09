@@ -73,7 +73,7 @@ FUNCTION_SOURCES = {"sam2": NUCLIO_SOURCE, "ultrasam": ULTRASAM_SOURCE}
 FUNCTION_DEFINITIONS = {
     "sam2": FUNCTION_FILES,
     "ultrasam": {"pth-ultrasam-interactor": "function-gpu.yaml"},
-    "sam31": {sam31_deploy.FUNCTION: "function-gpu.json"},
+    "sam31": {name: "function-gpu.json" for name in sam31_deploy.FUNCTIONS},
 }
 FUNCTION_OWNERS = {
     name: feature for feature, files in FUNCTION_DEFINITIONS.items() for name in files
@@ -193,9 +193,8 @@ def settings(path: Path, root: Path = ROOT) -> dict[str, str]:
     ):
         raise OperationError("Invalid SAM2_REDIS_MAXMEMORY (example: 2gb)")
     if "sam31" in selected:
-        values["SAM31_CHECKPOINT_HOST"] = str(
-            sam31_deploy.validate_settings(values, root, verify_file=False)
-        )
+        checkpoint = sam31_deploy.validate_settings(values, root, verify_file=False)
+        values["SAM31_CHECKPOINT_HOST"] = str(checkpoint) if checkpoint is not None else ""
         if "sam2" in selected and values["SAM31_REDIS_VOLUME"] == values["SAM2_REDIS_VOLUME"]:
             raise OperationError("SAM2 and SAM3.1 must use separate Redis volumes")
     if "ultrasam" in selected:
@@ -672,7 +671,8 @@ class Manager:
                 "extensions": self.extensions,
                 "images": images or {},
                 "function_environment": self.function_environment(),
-                "sam31_checkpoint": self.values.get("SAM31_CHECKPOINT_HOST") if "sam31" in self.extensions else None,
+                # A non-null legacy value denotes an external-checkpoint deployment.
+                "sam31_checkpoint": None,
             },
         )
 
@@ -683,7 +683,8 @@ class Manager:
                 "CUDA_VISIBLE_DEVICES": self.values["ULTRASAM_GPU_DEVICE"],
             }
         if "sam31" in self.extensions:
-            environments[sam31_deploy.FUNCTION] = sam31_deploy.runtime_environment(self.values)
+            for name in sam31_deploy.FUNCTIONS:
+                environments[name] = sam31_deploy.runtime_environment(self.values, name)
         return environments
 
     def matches_configuration(
@@ -693,9 +694,7 @@ class Manager:
             saved["model"] == model
             and tuple(saved.get("extensions", ("itgformat", "sam2"))) == self.extensions
             and saved.get("function_environment", {}) == self.function_environment()
-            and saved.get("sam31_checkpoint") == (
-                self.values.get("SAM31_CHECKPOINT_HOST") if "sam31" in self.extensions else None
-            )
+            and saved.get("sam31_checkpoint") is None
         )
 
     def local_image_ids(self, model: dict[str, Any]) -> dict[str, str]:
@@ -1024,7 +1023,11 @@ class Manager:
             if extension not in FUNCTION_DEFINITIONS:
                 continue
             if extension == "sam31":
-                images[sam31_deploy.FUNCTION] = sam31_deploy.function_image(version, self.root)
+                for name in sam31_deploy.FUNCTIONS:
+                    images[name] = sam31_deploy.function_image(
+                        version, self.root,
+                        checkpoint_sha256=self.values["SAM31_CHECKPOINT_SHA256"], function=name,
+                    )
                 continue
             source = self.root / FUNCTION_SOURCES[extension]
             if not source.is_dir():
@@ -1076,9 +1079,7 @@ class Manager:
                 "UltraSAM supports image prompts only; use deploy-ultrasam or deploy-ultrasam image"
             )
         if feature == "sam31":
-            if mode == "image":
-                raise OperationError("SAM3.1 supports polygon tracking only; use deploy-sam31 tracker")
-            sam31_deploy.deploy(self, model, force=force, no_build=no_build)
+            sam31_deploy.deploy(self, model, force=force, no_build=no_build, mode=mode)
             return
         images = self.function_images(self.nuctl_check(model), feature)
         source = self.root / FUNCTION_SOURCES[feature]
@@ -1248,10 +1249,9 @@ class Manager:
                 raise OperationError(
                     f"{name}: unexpected host port binding. Do not reopen external access."
                 )
-            if name == sam31_deploy.FUNCTION:
-                checkpoint = sam31_checkpoint or self.values.get("SAM31_CHECKPOINT_HOST")
-                if not checkpoint or not sam31_deploy.checkpoint_matches(item, checkpoint):
-                    raise OperationError("SAM3.1 checkpoint mount differs or is not read-only")
+            if name in sam31_deploy.FUNCTIONS:
+                if not sam31_deploy.checkpoint_matches(item):
+                    raise OperationError("SAM3.1 embedded checkpoint is shadowed by a runtime mount")
             for key, value in (environments or {}).get(name, {}).items():
                 if f"{key}={value}" not in item["Config"].get("Env", []):
                     raise OperationError(
@@ -1279,7 +1279,7 @@ class Manager:
         self.prepare_registry()
         model = self.configuration()
         if "sam31" in self.extensions:
-            sam31_deploy.validate_settings(self.values, self.root)
+            sam31_deploy.validate_settings(self.values, self.root, verify_file=not no_build)
         # Fail before changing containers if managed GPU functions cannot be deployed.
         function_features = [
             name for name in self.extensions if name in FUNCTION_DEFINITIONS
@@ -1605,8 +1605,6 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "deploy-ultrasam" and args.mode == "tracker":
         parser.error("UltraSAM supports image prompts only; tracker is unavailable")
-    if args.command == "deploy-sam31" and args.mode == "image":
-        parser.error("SAM3.1 supports polygon tracking only; image prompts are unavailable")
     if args.no_build and args.command != "up":
         parser.error("--no-build is only supported with up")
     if (args.model_id or args.confirm) and args.command != "purge-deleted":
@@ -1673,7 +1671,9 @@ def main() -> None:
                 summary["sam2_redis_volume"] = manager.values["SAM2_REDIS_VOLUME"]
             if "sam31" in manager.extensions:
                 summary["sam31_redis_volume"] = manager.values["SAM31_REDIS_VOLUME"]
-                summary["sam31_checkpoint"] = manager.values["SAM31_CHECKPOINT_HOST"]
+                summary["sam31_checkpoint_source"] = manager.values["SAM31_CHECKPOINT_HOST"]
+                summary["sam31_checkpoint"] = sam31_deploy.CHECKPOINT
+                summary["sam31_checkpoint_sha256"] = manager.values["SAM31_CHECKPOINT_SHA256"]
                 summary["sam31_gpu_device"] = manager.values["SAM31_GPU_DEVICE"]
             if "ultrasam" in manager.extensions:
                 summary["ultrasam_gpu_device"] = manager.values["ULTRASAM_GPU_DEVICE"]

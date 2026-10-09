@@ -1,6 +1,6 @@
-# SAM3.1 polygon tracking
+# SAM3.1 image interaction and polygon tracking
 
-This optional extension adds `pth-sam31-tracker`. It does not replace SAM2 or
+This optional extension adds `pth-sam31-interactor` and `pth-sam31-tracker`. It does not replace SAM2 or
 UltraSAM, patch CVAT core, or modify the upstream SAM source. SAM2 and SAM3.1 use
 the same polygon-selection dialog and tracking action implementation. The model,
 Python/CUDA image, checkpoint, state codec and Redis service remain separate.
@@ -42,9 +42,13 @@ Source references:
 ## Deployment through cvatctl
 
 Obtain authorized access to `facebook/sam3.1`, accept the model license and obtain
-its checkpoint. Keep weights and access tokens outside the checkout/build
-context. The function mounts the checkpoint read-only and disables runtime
-Hugging Face downloads.
+its checkpoint. Keep the downloaded source file and access tokens outside the
+checkout. At build time, cvatctl copies only the approved checkpoint into a
+private staging directory and verifies the bytes copied. Both function images
+embed `/opt/nuclio/sam3.1_multiplex.pt`; neither mounts external weights or downloads
+weights at runtime. Access tokens and Redis credentials are not staged as source.
+Treat images containing the gated checkpoint as licensed model artifacts and do
+not publish them to an unauthorized registry.
 
 Append `sam31` to the existing `CVAT_EXTENSIONS` list, preserving other selected
 extensions. Configure the following entries in the same private deployment
@@ -53,6 +57,7 @@ extensions. Configure the following entries in the same private deployment
 ```dotenv
 # Example selection; retain your actual existing extension list.
 CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,sam31
+# Build-only input. May be empty for an existing-image deployment with --no-build.
 SAM31_CHECKPOINT_HOST=/absolute/path/outside/cvat/sam3.1_multiplex.pt
 SAM31_CHECKPOINT_SHA256=<sha256sum output>
 SAM31_REDIS_PASSWORD=<separate 32 to 128 character random password>
@@ -81,18 +86,29 @@ components/extensions/cvatctl --env-file /path/to/deployment.env check
 
 # Explicit SAM3.1 function redeployment under the same operation lock/state:
 components/extensions/cvatctl --env-file /path/to/deployment.env deploy-sam31
+# SAM2-compatible per-function selection:
+components/extensions/cvatctl --env-file /path/to/deployment.env deploy-sam31 image
+components/extensions/cvatctl --env-file /path/to/deployment.env deploy-sam31 tracker
 ```
 
 `up` starts and health-checks Redis before restoring functions, then deploys the
-SAM3.1 tracker. `up --no-build` (also accepted before `up`) reuses matching local
-images and rejects missing images before startup. Image fingerprints include
-SAM3.1 source, the function definition and the shared helpers. Runtime settings
-and the checkpoint mount are checked separately. Changes require the ordinary
-stop/reconfigure/start procedure rather than silent adoption of a changed mount.
+SAM3.1 interactor and tracker. `up --no-build` (also accepted before `up`) reuses
+matching local images and rejects missing images before startup. The original
+checkpoint input is not needed for this mode; its approved SHA256 remains in the
+configuration. Image fingerprints include the checkpoint SHA256, SAM3.1 source,
+function definition, shared helpers and Nuclio version. Changing weights requires
+rebuilding the images. Moving the build-only source file does not change runtime
+identity. Runtime checkpoint mounts are rejected.
+
+When migrating from the older externally mounted SAM3.1 deployment, use the same
+state directory for `down`, install the reviewed source/configuration changes,
+then run a regular `up` to build both new images. After successful validation,
+subsequent restarts may use `up --no-build` without the source checkpoint. Keep
+an authorized backup of the original checkpoint for future rebuilds.
 
 `status`, `check`, `down` and restart-policy restoration include SAM3.1. To disable
 it, run `down`, remove `sam31` from `CVAT_EXTENSIONS`, then run `up`; its suspended
-function stays stopped and its Redis volume is retained. No SAM2 volume is deleted.
+functions stay stopped and its Redis volume is retained. No SAM2 volume is deleted.
 `deploy.py` is a packaging helper; invoking its command-line entry also delegates
 to the common manager instead of creating a second deployment state.
 
@@ -122,9 +138,22 @@ rejected. Deleted frames are skipped and an outside keyframe terminates unwanted
 extrapolation beyond the range. Existing tracks are not seed inputs.
 
 Polygon output retains the largest external contour, not holes or disconnected
-components. This extension supplies polygon-seeded video tracking, not SAM2's
-separate single-image point-prompt interactor. The shared tracking UI does not
-hide or invent unsupported single-image features.
+components. The separate single-image interactor instead returns a full CVAT
+mask, preserving disconnected regions and holes.
+
+## Single-image inference in CVAT
+
+Select **SAM3.1 (GPU, experimental)** in CVAT's existing AI interaction controls.
+Positive and negative clicks and an optional rectangular box follow the same
+request and response contract as SAM2. No custom single-image UI is introduced.
+The same SAM3.1 multiplex checkpoint and interactive segmentation head are used;
+SAM3 image weights and SAM2 weights are not substituted.
+
+Each call uses the complete current prompt, a fresh one-object multiplex state,
+and `run_mem_encoder=False`. Only one image's features are cached; no prompt,
+mask or video history crosses requests. The image function does not connect to
+Redis. Deploying both functions creates separate model instances and can require
+additional GPU memory; verify coexistence with SAM2 on the target GPU.
 
 ## Verification
 
@@ -132,12 +161,12 @@ CPU tests require pytest, numpy, Pillow, CPU PyTorch, safetensors and OpenCV. Th
 do not require model weights. CLI tests replace external commands, not the manager:
 
 ```sh
-python -m pytest components/sam31/tests/test_runtime.py components/sam31/tests/test_review_limits.py components/sam31/tests/test_cvatctl.py -q
+python -m pytest --noconftest components/sam31/tests/test_runtime.py components/sam31/tests/test_review_limits.py components/sam31/tests/test_cvatctl.py components/sam31/tests/test_image_parity.py -q
 node cvat-ui/plugins/sam2/tests/run-tests.cjs
 ```
 
 After building the image, copy and run `tests/gpu_smoke.py` in the function
-container with its configured environment and read-only checkpoint mount:
+container with its configured environment and embedded checkpoint:
 
 ```sh
 docker cp components/sam31/tests/gpu_smoke.py <function-container>:/tmp/gpu_smoke.py
@@ -148,5 +177,7 @@ This checks real checkpoint loading, finite masks, restoration each frame and
 agreement with unpruned inference on synthetic images, not ultrasound accuracy.
 Before production use, additionally validate maximum-count GPU tracking, the
 complete UI build/browser workflow, real Redis restart/replay/conflict behavior,
-concurrent jobs and representative ultrasound videos. A failure must leave the
+concurrent jobs and representative ultrasound videos. Validate single-image
+positive/negative clicks, box-only and combined prompts on non-square images,
+mask output and GPU-memory coexistence of both functions. A failure must leave the
 original annotations untouched. Keep SAM2 available during validation.

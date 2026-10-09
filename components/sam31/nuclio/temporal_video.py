@@ -16,6 +16,7 @@ import torch
 import torch.nn.functional as F
 from protocol import MAX_OBJECTS, ProtocolError
 
+CHECKPOINT = "/opt/nuclio/sam3.1_multiplex.pt"
 SAM3_REVISION = "0570b3a5be9c4e694f23d85232fb55f4a6f1f7fc"
 ADAPTER_VERSION = 1
 MEMORY_FIELDS = ("obj_ptr", "maskmem_features", "maskmem_pos_enc", "image_features", "image_pos_enc")
@@ -99,21 +100,23 @@ def tracking_weights(expected_keys, checkpoint):
 
 def load_model(checkpoint, expected_sha256):
     if not torch.cuda.is_available():
-        raise RuntimeError("SAM3.1 tracking requires a CUDA GPU")
+        raise RuntimeError("SAM3.1 requires a CUDA GPU")
     from sam3.model_builder import build_sam3_multiplex_video_model
 
     checkpoint = Path(checkpoint)
     if not checkpoint.is_file():
-        raise ValueError("Mount the approved SAM3.1 checkpoint as a read-only file")
+        raise ValueError("The SAM3.1 image is missing its approved checkpoint; rebuild the function image")
     with checkpoint.open("rb") as source:
         digest = hashlib.file_digest(source, "sha256").hexdigest()
-    if digest != expected_sha256:
-        raise ValueError("SAM3.1 checkpoint SHA256 does not match SAM31_CHECKPOINT_SHA256")
+        if digest != expected_sha256:
+            raise ValueError("SAM3.1 checkpoint SHA256 does not match SAM31_CHECKPOINT_SHA256")
+        source.seek(0)
+        # Load the same opened file that was verified, not a newly resolved path.
+        weights = torch.load(source, map_location="cpu", weights_only=True)
     model = build_sam3_multiplex_video_model(
         checkpoint_path=None, load_from_HF=False, multiplex_count=MAX_OBJECTS,
         use_fa3=False, use_rope_real=True, device="cpu", compile=False,
     )
-    weights = torch.load(checkpoint, map_location="cpu", weights_only=True)
     model.load_state_dict(tracking_weights(model.state_dict().keys(), weights), strict=True)
     del weights
     model = model.eval().cuda()

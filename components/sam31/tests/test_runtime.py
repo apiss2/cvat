@@ -256,11 +256,13 @@ def test_generated_helpers_do_not_share_sam2_namespace_or_environment(runtime):
     assert runtime.redis_store.RedisStore(None).prefix == "cvat:sam31:"
 
 
-def test_function_secrets_are_runtime_only_and_checkpoint_read_only(runtime, tmp_path):
+def test_function_secrets_are_runtime_only_and_checkpoint_embedded(runtime, tmp_path):
     template = json.loads((Path(__file__).resolve().parents[1]/"function-gpu.json").read_text())
     values = {"NUCLIO_NAMESPACE":"team", "SAM31_REDIS_PASSWORD":"secret"*8, "SAM31_CHECKPOINT_SHA256":"a"*64}
-    result = runtime.deploy.render_function(template, values, tmp_path/"model.pt", "image:revision")
+    result = runtime.deploy.render_function(template, values, "image:revision")
     assert result["metadata"]["namespace"] == "team"
-    assert result["spec"]["volumes"][0]["volumeMount"]["readOnly"] is True
+    assert "volumes" not in result["spec"]
+    env = {entry["name"]: entry["value"] for entry in result["spec"]["env"]}
+    assert env["SAM31_CHECKPOINT"] == runtime.deploy.CHECKPOINT
     assert "secret" not in json.dumps(result["spec"]["build"])
     assert result["spec"]["triggers"]["http"]["attributes"]["disablePortPublishing"] is True
