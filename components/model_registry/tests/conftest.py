@@ -97,9 +97,10 @@ def model_files(kind='segmentation'):
 
 def upload(ctx, kind='segmentation', *, user='alice', model_id=None, expected=None):
     data = {'manifest': (ROOT/'examples'/kind/'manifest.json').read_text(encoding='utf-8')}
-    if model_id: data.update(model_id=model_id, expected_revision=expected or '')
+    if model_id: data.update(expected_revision=expected or '')
     c = ctx['client']
-    r = c.post('/api/upload', headers=headers(user), data=data, files=model_files(kind))
+    path = f'/api/models/{model_id}/update' if model_id else '/api/upload'
+    r = c.post(path, headers=headers(user), data=data, files=model_files(kind))
     assert r.status_code == 202, r.text
     op = r.json()
     deadline = time.monotonic()+8

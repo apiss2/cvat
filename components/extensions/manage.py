@@ -10,7 +10,6 @@ build context. No shell evaluation, volume deletion, or automatic DB rollback.
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
 import fcntl
 import hashlib
 import json
@@ -34,8 +33,8 @@ from registryctl import (
 from storage import default_home, prepare_storage, storage_paths
 
 sys.path.insert(0, str(ROOT))
-from components.sam31 import deploy as sam31_deploy
-from components.sam2 import models as sam2_models
+from components.extensions import functions as gpu_functions
+from components.extensions.functions import FUNCTIONS, OWNERS
 
 SERVERLESS_COMPOSE = "components/serverless/docker-compose.serverless.yml"
 LOCAL_REGISTRY_COMPOSE = (
@@ -65,33 +64,15 @@ COMPOSE_FILES = (
     *LOCAL_REGISTRY_COMPOSE,
     FINAL_COMPOSE,
 )
-FUNCTION_FILES = {
-    "pth-sam2-interactor": "function-gpu.yaml",
-    "pth-sam2-tracker": "tracker-gpu.yaml",
-}
-NUCLIO_SOURCE = "serverless/pytorch/facebookresearch/sam2/nuclio"
-ULTRASAM_SOURCE = "serverless/pytorch/camma/ultrasam/nuclio"
-FUNCTION_SOURCES = {"sam2": NUCLIO_SOURCE, "ultrasam": ULTRASAM_SOURCE}
-FUNCTION_DEFINITIONS = {
-    "sam2": FUNCTION_FILES,
-    "ultrasam": {"pth-ultrasam-interactor": "function-gpu.yaml"},
-    "sam31": {name: "function-gpu.json" for name in sam31_deploy.FUNCTIONS},
-}
-FUNCTION_OWNERS = {
-    name: feature for feature, files in FUNCTION_DEFINITIONS.items() for name in files
-}
 SERVERLESS_EXTENSIONS = {"sam2", "ultrasam", "sam31", "model_registry"}
 DEFAULTS = {
-    **sam31_deploy.DEFAULTS,
+    **gpu_functions.DEFAULTS,
     "CVAT_HOST": "localhost",
     "COMPOSE_PROJECT_NAME": "cvat",
     "NUCLIO_NAMESPACE": "nuclio",
     "NUCLIO_DASHBOARD_PORT": "8070",
-    "SAM2_MODEL": sam2_models.DEFAULT_MODEL,
-    "SAM2_CHECKPOINT_HOST": "",
     "SAM2_REDIS_IMAGE": "redis:7.2.11-alpine",
     "SAM2_REDIS_MAXMEMORY": "2gb",
-    "ULTRASAM_GPU_DEVICE": "0",
     "CVAT_EXTRA_COMPOSE_FILES": "",
 }
 
@@ -101,12 +82,7 @@ class OperationError(RuntimeError):
 
 
 def enabled_extensions(values: dict[str, str]) -> tuple[str, ...]:
-    # Retain the previous deployment when an existing .env has not been updated.
-    raw = values.get("CVAT_EXTENSIONS")
-    if raw is None:
-        raw = "itgformat,sam2"
-        if values.get("CVAT_MODEL_REGISTRY_ENABLED") == "1":
-            raw += ",model_registry"
+    raw = values.get("CVAT_EXTENSIONS", "itgformat,sam2")
     selected = [item.strip() for item in raw.split(",")] if raw.strip() else []
     if len(set(selected)) != len(selected) or any(
         item not in EXTENSION_COMPOSE for item in selected
@@ -181,38 +157,16 @@ def settings(path: Path, root: Path = ROOT) -> dict[str, str]:
     for key in ("CVAT_NETWORK_NAME", "SAM2_REDIS_VOLUME", "SAM31_REDIS_VOLUME"):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", values[key]):
             raise OperationError(f"Invalid {key}")
-    if "sam2" in selected and not re.fullmatch(
-        r"[A-Za-z0-9_-]{32,128}", values.get("SAM2_REDIS_PASSWORD", "")
-    ):
-        raise OperationError(
-            "SAM2_REDIS_PASSWORD must contain 32–128 ASCII letters, digits, _ or -"
-        )
     if (
         not values["NUCLIO_DASHBOARD_PORT"].isdigit()
         or not 1 <= int(values["NUCLIO_DASHBOARD_PORT"]) <= 65535
     ):
         raise OperationError("Invalid NUCLIO_DASHBOARD_PORT")
-    if "sam2" in selected and not re.fullmatch(
-        r"[1-9][0-9]*(?:[kKmMgG][bB]?)?", values["SAM2_REDIS_MAXMEMORY"]
-    ):
-        raise OperationError("Invalid SAM2_REDIS_MAXMEMORY (example: 2gb)")
-    if "sam2" in selected:
-        values.update(sam2_models.environment(values))
-        checkpoint = sam2_models.checkpoint_source(values, root, verify_file=False)
-        values["SAM2_CHECKPOINT_HOST"] = str(checkpoint) if checkpoint is not None else ""
-    if "sam31" in selected:
-        checkpoint = sam31_deploy.validate_settings(
-            values, root, verify_file=False,
-        )
-        values["SAM31_CHECKPOINT_HOST"] = str(checkpoint) if checkpoint is not None else ""
-        if "sam2" in selected and values["SAM31_REDIS_VOLUME"] == values["SAM2_REDIS_VOLUME"]:
-            raise OperationError("SAM2 and SAM3.1 must use separate Redis volumes")
-    if "ultrasam" in selected:
-        values["ULTRASAM_GPU_DEVICE"] = values.get("ULTRASAM_GPU_DEVICE") or "0"
-        if not re.fullmatch(r"[0-9]+|GPU-[A-Za-z0-9-]+", values["ULTRASAM_GPU_DEVICE"]):
-            raise OperationError(
-                "ULTRASAM_GPU_DEVICE must be one numeric device ID or GPU UUID"
-            )
+    for feature in selected:
+        if feature in FUNCTIONS:
+            gpu_functions.validate_settings(feature, values, root)
+    if {"sam2", "sam31"} <= set(selected) and values["SAM31_REDIS_VOLUME"] == values["SAM2_REDIS_VOLUME"]:
+        raise OperationError("SAM2 and SAM3.1 must use separate Redis volumes")
     if "model_registry" in selected:
         values["CVAT_MODEL_REGISTRY_URL"] = (
             values.get("CVAT_MODEL_REGISTRY_URL") or "http://model-registry:8091"
@@ -441,50 +395,6 @@ def validate_model(model: dict[str, Any], env: dict[str, str]) -> None:
             raise OperationError(f"{name}: Nuclio namespace mismatch")
 
 
-def render_function(
-    source: str, namespace: str, image: str, password: str | None
-) -> str:
-    def replace_once(pattern: str, replacement: str, text: str) -> str:
-        result, count = re.subn(
-            pattern, lambda _: replacement, text, flags=re.MULTILINE
-        )
-        if count != 1:
-            raise OperationError(
-                "Nuclio YAML layout changed. Review render_function before deployment."
-            )
-        return result
-
-    source = replace_once(r"^  namespace: .+$", f"  namespace: {namespace}", source)
-    source = replace_once(r"^    image: .+$", f"    image: {image}", source)
-    if password is not None:
-        if "SAM2_REDIS_PASSWORD" in source or "\n  env:\n" not in source:
-            raise OperationError("Unexpected tracker environment layout")
-        source = (
-            source.rstrip()
-            + "\n  - name: SAM2_REDIS_PASSWORD\n    value: "
-            + json.dumps(password)
-            + "\n"
-        )
-    return source
-
-
-def render_function_environment(source: str, name: str, value: str) -> str:
-    """Set a runtime variable in the reviewed function YAML without extra packages."""
-    entry = f"  - name: {name}\n    value: {json.dumps(value)}"
-    pattern = rf"^  - name: {re.escape(name)}\n    value: [^\n]*$"
-    rendered, count = re.subn(pattern, lambda _: entry, source, flags=re.MULTILINE)
-    if count == 1:
-        return rendered
-    if count or re.search(rf"^\s*- name: {re.escape(name)}\s*$", source, re.MULTILINE):
-        raise OperationError(f"Unexpected {name} environment layout")
-    headers = list(re.finditer(r"^  env:\s*$", source, re.MULTILINE))
-    if not headers:
-        return source.rstrip() + "\n  env:\n" + entry + "\n"
-    if len(headers) != 1 or not source[headers[0].end() :].startswith("\n  - name:"):
-        raise OperationError("Unexpected function environment layout")
-    position = headers[0].end()
-    return source[:position] + "\n" + entry + source[position:]
-
 
 class Manager:
     def __init__(self, root: Path, env_file: Path, state: Path):
@@ -508,6 +418,7 @@ class Manager:
             ):
                 self.env.pop(key)
         self.env.update(self.values)  # Persistent config wins over old shell exports.
+        self.env.pop("HF_TOKEN", None)  # Only the host downloader may use this credential.
         self.env["COMPOSE_IGNORE_ORPHANS"] = "true"
 
     def redact(self, text: str) -> str:
@@ -686,30 +597,18 @@ class Manager:
         )
 
     def model_sources(self) -> dict[str, str]:
-        return {feature: self.values.get(feature.upper() + "_CHECKPOINT_HOST", "")
-                for feature in ("sam2", "sam31") if feature in self.extensions}
+        return {"sam2": self.values.get("SAM2_CHECKPOINT_HOST", "")} if "sam2" in self.extensions else {}
 
     def function_environment(self) -> dict[str, dict[str, str]]:
-        environments = {}
-        if "sam2" in self.extensions:
-            for name in FUNCTION_FILES:
-                environments[name] = sam2_models.environment(self.values)
-            environments["pth-sam2-tracker"]["SAM2_REDIS_PASSWORD"] = self.values["SAM2_REDIS_PASSWORD"]
-        if "ultrasam" in self.extensions:
-            environments["pth-ultrasam-interactor"] = {
-                "CUDA_VISIBLE_DEVICES": self.values["ULTRASAM_GPU_DEVICE"],
-            }
-        if "sam31" in self.extensions:
-            for name in sam31_deploy.FUNCTIONS:
-                environments[name] = sam31_deploy.runtime_environment(self.values, name)
-        return environments
+        return {name: gpu_functions.runtime_environment(name, self.values)
+                for feature in self.extensions for name in FUNCTIONS.get(feature, {})}
 
     def matches_configuration(
         self, saved: dict[str, Any], model: dict[str, Any]
     ) -> bool:
         return (
             saved["model"] == model
-            and tuple(saved.get("extensions", ("itgformat", "sam2"))) == self.extensions
+            and tuple(saved["extensions"]) == self.extensions
             and saved.get("function_environment", {}) == self.function_environment()
             and saved.get("model_sources", {}) == self.model_sources()
         )
@@ -1001,7 +900,7 @@ class Manager:
         self.assert_identity(suspended)
         available = {item["Id"] for item in self.functions()}
         for identifier, record in list(suspended["containers"].items()):
-            owner = FUNCTION_OWNERS.get(record["function"])
+            owner = OWNERS.get(record["function"])
             if owner and owner not in self.extensions:
                 continue
             if identifier not in available:
@@ -1031,212 +930,16 @@ class Manager:
             )
         return match[1]
 
-    def function_images(
-        self, version: str, feature: str | None = None
-    ) -> dict[str, str]:
+    def function_images(self, version: str, feature: str | None = None) -> dict[str, str]:
         selected = (feature,) if feature else self.extensions
-        images = {}
-        for extension in selected:
-            if extension not in FUNCTION_DEFINITIONS:
-                continue
-            if extension == "sam31":
-                for name in sam31_deploy.FUNCTIONS:
-                    images[name] = sam31_deploy.function_image(
-                        version, self.root,
-                        checkpoint_source=self.values.get("SAM31_CHECKPOINT_HOST", ""), function=name,
-                    )
-                continue
-            source = self.root / FUNCTION_SOURCES[extension]
-            if not source.is_dir():
-                raise OperationError(f"Missing function source: {source}")
-            if not (source / "main.py").is_file():
-                raise OperationError(f"Missing function handler: {source / 'main.py'}")
-            digest = hashlib.sha256(version.encode())
-            digest.update(Path(__file__).read_bytes())
-            if extension == "sam2":
-                digest.update((self.root / "components/sam2/models.py").read_bytes())
-                digest.update(json.dumps({**sam2_models.environment(self.values),
-                    "source": self.values.get("SAM2_CHECKPOINT_HOST", "")}, sort_keys=True).encode())
-            for file in sorted(source.rglob("*")):
-                if file.is_file() and file.suffix in (".py", ".yaml", ".txt", ".json"):
-                    digest.update(
-                        file.relative_to(source).as_posix().encode()
-                        + b"\0"
-                        + file.read_bytes()
-                    )
-            # Network, namespace, credentials and device selection are runtime settings.
-            fingerprint = digest.hexdigest()[:20]
-            for name, definition in FUNCTION_DEFINITIONS[extension].items():
-                if not (source / definition).is_file():
-                    raise OperationError(
-                        f"Missing function definition: {source / definition}"
-                    )
-                images[name] = f"cvat.{name.removeprefix('pth-')}:{fingerprint}-gpu"
-        return images
+        return {name: image for family in selected if family in FUNCTIONS
+                for name, image in gpu_functions.image_names(version, family, self.values, self.root).items()}
 
-    def sam2_images(self, version: str) -> dict[str, str]:
-        return self.function_images(version, "sam2")
-
-    def ultrasam_images(self, version: str) -> dict[str, str]:
-        return self.function_images(version, "ultrasam")
-
-    def deploy(
-        self,
-        model: dict[str, Any],
-        mode: str = "all",
-        force: bool = False,
-        *,
-        no_build: bool = False,
-        feature: str = "sam2",
-    ) -> None:
-        if feature not in FUNCTION_DEFINITIONS or feature not in self.extensions:
-            raise OperationError(
-                f"Add {feature} to CVAT_EXTENSIONS before deploying it"
-            )
-        if mode not in ("all", "image", "tracker"):
-            raise OperationError("Function mode must be all, image or tracker")
-        if feature == "ultrasam" and mode == "tracker":
-            raise OperationError(
-                "UltraSAM supports image prompts only; use deploy-ultrasam or deploy-ultrasam image"
-            )
-        if feature == "sam31":
-            sam31_deploy.deploy(self, model, force=force, no_build=no_build, mode=mode)
-            return
-        if feature == "sam2":
-            sam2_models.checkpoint_source(self.values, self.root, verify_file=not no_build)
-        images = self.function_images(self.nuctl_check(model), feature)
-        source = self.root / FUNCTION_SOURCES[feature]
-        namespace = self.values["NUCLIO_NAMESPACE"]
-        common = ["--platform", "local", "--namespace", namespace]
-        output = self.run(["nuctl", "get", "projects", *common, "-o", "json"]).strip()
-        # nuctl 1.16.3 prints this exact sentence, even with -o json, for an empty store.
-        projects = [] if output == "No projects found" else json.loads(output)
-
-        def contains_project(value: Any) -> bool:
-            if isinstance(value, dict):
-                # ProjectConfig uses meta; function resources use metadata.
-                meta = value.get("meta", value.get("metadata", {}))
-                return (isinstance(meta, dict) and meta.get("name") == "cvat") or any(
-                    contains_project(v) for v in value.values()
-                )
-            return isinstance(value, list) and any(contains_project(v) for v in value)
-
-        if not contains_project(projects):
-            self.run(["nuctl", "create", "project", "cvat", *common], stream=True)
-        existing = {
-            i["Config"]["Labels"]["nuclio.io/function-name"]: i
-            for i in self.functions()
-        }
-        selected = list(FUNCTION_DEFINITIONS[feature])
-        if mode != "all":
-            selected = [
-                name
-                for name in selected
-                if name.endswith("interactor" if mode == "image" else "tracker")
-            ]
-        self.guard_function_ownership(selected)
-        source_context = (sam2_models.build_source(source, self.values, self.state, no_build=no_build)
-                          if feature == "sam2" else nullcontext(source))
-        with source_context as build_source:
-            for name in selected:
-                kind = "interactor" if name.endswith("interactor") else "tracker"
-                image = images[name]
-                current = existing.get(name)
-                image_matches = False
-                if (
-                    current
-                    and current["Config"]["Image"] == image
-                    and current["State"]["Running"]
-                ):
-                    expected = self.run(
-                        [
-                            "docker",
-                            "image",
-                            "inspect",
-                            image,
-                            "--format",
-                            "{{.Id}}",
-                        ]
-                    ).strip()
-                    actual = self.run(
-                        [
-                            "docker",
-                            "inspect",
-                            current["Id"],
-                            "--format",
-                            "{{.Image}}",
-                        ]
-                    ).strip()
-                    image_matches = expected == actual
-                config_matches = kind != "tracker" or (
-                    current
-                    and "SAM2_REDIS_PASSWORD=" + self.values["SAM2_REDIS_PASSWORD"]
-                    in current["Config"].get("Env", [])
-                )
-                if feature == "ultrasam":
-                    config_matches = bool(
-                        current
-                        and (
-                            "CUDA_VISIBLE_DEVICES=" + self.values["ULTRASAM_GPU_DEVICE"]
-                            in current["Config"].get("Env", [])
-                        )
-                    )
-                if feature == "sam2":
-                    config_matches = bool(current and all(
-                        f"{key}={value}" in current["Config"].get("Env", [])
-                        for key, value in self.function_environment()[name].items()))
-                can_reuse = no_build or not (feature == "sam2" and self.values.get("SAM2_CHECKPOINT_HOST"))
-                if not force and can_reuse and image_matches and config_matches:
-                    print(f"{name}: source/config unchanged, reuse the running function")
-                    continue
-                template = (source / FUNCTION_DEFINITIONS[feature][name]).read_text()
-                if feature == "sam2":
-                    template = sam2_models.render(template, self.values)
-                rendered = render_function(
-                    template,
-                    namespace,
-                    image,
-                    self.values["SAM2_REDIS_PASSWORD"] if kind == "tracker" else None,
-                )
-                if feature == "sam2":
-                    for key, value in sam2_models.environment(self.values).items():
-                        rendered = render_function_environment(rendered, key, value)
-                if feature == "ultrasam":
-                    rendered = render_function_environment(
-                        rendered, "CUDA_VISIBLE_DEVICES", self.values["ULTRASAM_GPU_DEVICE"]
-                    )
-                fd, temp = tempfile.mkstemp(
-                    dir=self.state, prefix=feature + "-", suffix=".yaml"
-                )
-                try:
-                    with os.fdopen(fd, "w") as stream:
-                        stream.write(rendered)
-                    self.run(
-                        [
-                            "nuctl",
-                            "deploy",
-                            "--project-name",
-                            "cvat",
-                            "--path",
-                            str(build_source),
-                            "--file",
-                            temp,
-                            *(["--run-image", image, "--no-pull"] if no_build else []),
-                            *common,
-                            "--platform-config",
-                            json.dumps(
-                                {
-                                    "attributes": {
-                                        "network": self.values["CVAT_NETWORK_NAME"]
-                                    }
-                                }
-                            ),
-                        ],
-                        stream=True,
-                    )
-                finally:
-                    os.unlink(temp)
-        self.verify_functions(selected, environments=self.function_environment())
+    def deploy(self, model: dict[str, Any], mode: str = "all", force: bool = False,
+               *, no_build: bool = False, feature: str = "sam2") -> None:
+        if feature not in FUNCTIONS or feature not in self.extensions:
+            raise OperationError(f"Add {feature} to CVAT_EXTENSIONS before deploying it")
+        gpu_functions.deploy(self, model, feature=feature, mode=mode, force=force, no_build=no_build)
 
     def guard_function_ownership(self, names: list[str]) -> None:
         # nuctl local names are daemon-wide within a namespace, not network-scoped.
@@ -1285,9 +988,10 @@ class Manager:
                 raise OperationError(
                     f"{name}: unexpected host port binding. Do not reopen external access."
                 )
-            if name in sam31_deploy.FUNCTIONS:
-                if not sam31_deploy.checkpoint_matches(item):
-                    raise OperationError("SAM3.1 embedded checkpoint is shadowed by a runtime mount")
+            environment = ((environments or {}).get(name)
+                           or gpu_functions.runtime_environment(name, self.values))
+            if not gpu_functions.checkpoint_matches(item, environment):
+                raise OperationError(f"{name}: embedded checkpoint is shadowed by a runtime mount")
             for key, value in (environments or {}).get(name, {}).items():
                 if f"{key}={value}" not in item["Config"].get("Env", []):
                     raise OperationError(
@@ -1315,12 +1019,10 @@ class Manager:
         self.prepare_registry()
         model = self.configuration()
         if "sam2" in self.extensions:
-            sam2_models.checkpoint_source(self.values, self.root, verify_file=not no_build)
-        if "sam31" in self.extensions:
-            sam31_deploy.validate_settings(self.values, self.root, verify_file=not no_build)
+            gpu_functions.local_checkpoint(self.values, self.root, verify_file=not no_build)
         # Fail before changing containers if managed GPU functions cannot be deployed.
         function_features = [
-            name for name in self.extensions if name in FUNCTION_DEFINITIONS
+            name for name in self.extensions if name in FUNCTIONS
         ]
         function_version = self.nuctl_check(model) if function_features else None
         expected_function_images = (
@@ -1405,7 +1107,7 @@ class Manager:
             raise OperationError("No recorded startup configuration. Run up first.")
         self.assert_identity(saved)
         services = saved["model"]["services"]
-        selected = saved.get("extensions", ("itgformat", "sam2"))
+        selected = saved["extensions"]
         recorded = saved.get("images", {})
         register = (
             "from cvat.apps.dataset_manager.formats.registry import IMPORT_FORMATS, EXPORT_FORMATS; "
@@ -1468,9 +1170,9 @@ class Manager:
                     ).strip()
                 )
         for feature in selected:
-            if feature in FUNCTION_DEFINITIONS:
+            if feature in FUNCTIONS:
                 self.verify_functions(
-                    list(FUNCTION_DEFINITIONS[feature]),
+                    list(FUNCTIONS[feature]),
                     images=recorded,
                     environments=saved.get("function_environment", {}),
                 )
@@ -1537,7 +1239,7 @@ class Manager:
             expected_functions = {
                 name
                 for feature in selected
-                for name in FUNCTION_DEFINITIONS.get(feature, {})
+                for name in FUNCTIONS.get(feature, {})
             }
             if expected_functions:
                 query += f"assert set({sorted(expected_functions)!r}) <= functions; "
@@ -1710,12 +1412,11 @@ def main() -> None:
                 summary["sam2_checkpoint_source"] = manager.values["SAM2_CHECKPOINT_HOST"]
             if "sam31" in manager.extensions:
                 summary["sam31_redis_volume"] = manager.values["SAM31_REDIS_VOLUME"]
-                summary["sam31_checkpoint_source"] = manager.values["SAM31_CHECKPOINT_HOST"]
-                summary["sam31_checkpoint"] = sam31_deploy.CHECKPOINT
+                summary["sam31_model"] = manager.values["SAM31_MODEL"]
                 summary["sam31_gpu_device"] = manager.values["SAM31_GPU_DEVICE"]
             if "ultrasam" in manager.extensions:
                 summary["ultrasam_gpu_device"] = manager.values["ULTRASAM_GPU_DEVICE"]
-            if any(feature in FUNCTION_DEFINITIONS for feature in manager.extensions):
+            if any(feature in FUNCTIONS for feature in manager.extensions):
                 dashboard_image = model["services"]["nuclio"]["image"]
                 version = re.search(r":(\d+\.\d+\.\d+)(?:-|$)", dashboard_image)
                 if not version:
@@ -1723,7 +1424,7 @@ def main() -> None:
                         "Cannot determine the Nuclio version from its image tag"
                     )
                 for feature in manager.extensions:
-                    if feature in FUNCTION_DEFINITIONS:
+                    if feature in FUNCTIONS:
                         summary[feature + "_images"] = manager.function_images(
                             version[1], feature
                         )
@@ -1739,7 +1440,7 @@ def main() -> None:
                     ]
             if args.command == "doctor":
                 if any(
-                    feature in FUNCTION_DEFINITIONS for feature in manager.extensions
+                    feature in FUNCTIONS for feature in manager.extensions
                 ):
                     summary["nuclio_version"] = manager.nuctl_check(model)
                 summary["docker_daemon"] = manager.identity()["daemon"]
@@ -1786,9 +1487,7 @@ def main() -> None:
             manager.assert_identity(saved)
             version = manager.nuctl_check(model)
             if feature == "sam2":
-                sam2_models.checkpoint_source(manager.values, manager.root)
-            if feature == "sam31":
-                sam31_deploy.validate_settings(manager.values, manager.root)
+                gpu_functions.local_checkpoint(manager.values, manager.root, verify_file=True)
             manager.ensure_network()
             if feature in ("sam2", "sam31"):
                 manager.ensure_volume(feature)

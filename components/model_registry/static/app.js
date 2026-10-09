@@ -155,7 +155,7 @@ async function selectModel(id) {
     const polygon = model.manifest?.polygon;
     $('detail-polygon').textContent = polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `Polygon変換: 最小距離 ${polygon.min_distance_px} px、周長比 ${polygon.spacing_percent}%、最小面積 ${polygon.min_area_px} px²` : '';
     const managed = Boolean(model.can_manage); $('owner-detail').hidden = !managed;
-    for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = Boolean(model.deleted); }
+    for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = Boolean(model.deleted || (id === 'update-model' && !model.active_revision)); }
     $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-tags').textContent = ''; $('preview').hidden = true;
     if (managed) {
         for (const rev of model.revisions || []) { const option = document.createElement('option'); option.value = rev.revision; option.textContent = `${rev.revision} ${rev.revision === model.active_revision ? '(公開中)' : '(保持中)'} ${rev.manifest.name}`; $('revision').append(option); }
@@ -171,7 +171,6 @@ async function refreshLogs() {
 async function sendPackage(path, form) {
     const epoch = authEpoch;
     if (activeOperation) throw new Error('現在の登録処理が完了してから操作してください。');
-    if (editing) { form.set('model_id', editing.id); form.set('expected_revision', editing.active_revision || ''); }
     $('submit-model').disabled = true; $('upload-progress').value = 0; $('upload-progress').hidden = false; $('operation').textContent = ''; $('operation').hidden = false;
     try {
         const operation = await new Promise((resolve, reject) => {
@@ -219,7 +218,7 @@ $('register-form').addEventListener('submit', (event) => { event.preventDefault(
     if ($('model-kind').value === 'polygon') manifest.polygon = { min_distance_px: Number($('min-distance').value), spacing_percent: Number($('spacing-percent').value), min_area_px: Number($('min-area').value) };
     const data = new FormData(); data.set('manifest', JSON.stringify(manifest)); data.set('code', $('code').files[0]); data.set('sample', $('sample').files[0]); weights.forEach((weight) => data.append('weights', weight)); await sendPackage('/api/upload', data);
 }); });
-$('update-model').addEventListener('click', () => { if (selected?.can_manage && !selected.deleted) { resetForm(selected); location.hash = 'register'; } });
+$('update-model').addEventListener('click', () => { if (selected?.can_manage && selected.active_revision && !selected.deleted) { resetForm(selected); location.hash = 'register'; } });
 $('delete-model').addEventListener('click', () => run(async () => {
     if (!selected?.can_manage || !confirm('このモデルの全ての版を無効にします。実行中の一括推論は次の画像から失敗する場合があります。削除しますか？')) return;
     const id = selected.id; await api(`/api/models/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: selected.active_revision }) });

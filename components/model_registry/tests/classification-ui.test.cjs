@@ -62,6 +62,7 @@ function setup() {
     vm.runInContext(`
         let pending;
         run = (handler) => { pending = Promise.resolve().then(handler).catch((error) => notice(error.message, true)); };
+        globalThis.actualSendPackage = sendPackage;
         sendPackage = async (route, data) => submitted.push({ route, data });
         api = async (route) => route.endsWith('/logs') ? [] : response;
         user = { id: 1, name: 'alice', admin: false };
@@ -101,6 +102,8 @@ for (const [kind, outputName] of [['tag', 'Classification'], ['polygon', 'Segmen
         await ui.submit('register-form');
         const { route, data } = ui.sandbox.submitted[0];
         assert.equal(route, '/api/upload');
+        assert.equal(data.has('model_id'), false);
+        assert.equal(data.has('expected_revision'), false);
         const manifest = JSON.parse(data.get('manifest'));
         assert.equal(manifest.labels[0].type, kind);
         assert.equal('polygon' in manifest, kind === 'polygon');
@@ -121,7 +124,9 @@ test('classification update restores type and needs no new code or sample', asyn
     await ui.submit('register-form');
     const { route, data } = ui.sandbox.submitted[0];
     assert.equal(route, `/api/models/${'a'.repeat(20)}/update`);
-    assert.deepEqual([...data.keys()], ['weights']);
+    assert.deepEqual([...data.keys()], ['weights', 'expected_revision']);
+    assert.equal(data.get('expected_revision'), 'b'.repeat(16));
+    assert.equal(data.has('model_id'), false);
     assert.equal(data.get('weights').name, 'model.onnx');
 });
 
@@ -150,7 +155,9 @@ test('code-only update retains the model.py filename and other files', async () 
     await ui.submit('register-form');
     const { route, data } = ui.sandbox.submitted[0];
     assert.equal(route, `/api/models/${'a'.repeat(20)}/update`);
-    assert.deepEqual([...data.keys()], ['code']);
+    assert.deepEqual([...data.keys()], ['code', 'expected_revision']);
+    assert.equal(data.get('expected_revision'), 'b'.repeat(16));
+    assert.equal(data.has('model_id'), false);
     assert.equal(data.get('code').name, 'model.py');
 });
 
@@ -163,7 +170,9 @@ test('metadata-only update does not convert tag labels to polygons', async () =>
     ui.get('description').value = 'updated';
     await ui.submit('register-form');
     const data = ui.sandbox.submitted[0].data;
-    assert.deepEqual([...data.keys()], ['manifest']);
+    assert.deepEqual([...data.keys()], ['manifest', 'expected_revision']);
+    assert.equal(data.get('expected_revision'), 'b'.repeat(16));
+    assert.equal(data.has('model_id'), false);
     assert.deepEqual(JSON.parse(data.get('manifest')), { description: 'updated' });
 });
 
@@ -197,3 +206,29 @@ for (const count of [0, 1, 2]) {
         assert.equal(ui.get('test-tags').textContent, '');
     });
 }
+
+test('unpublished models cannot enter the partial-update form', async () => {
+    const ui = setup();
+    ui.sandbox.response = { ...model(), active_revision: null, revisions: [] };
+    await ui.eval('selectModel(response.id)');
+    assert.equal(ui.get('update-model').disabled, true);
+    assert.equal(ui.get('delete-model').disabled, false);
+});
+
+test('common upload transport never injects model or revision fields', async () => {
+    const ui = setup(); const sent = [];
+    ui.sandbox.XMLHttpRequest = class {
+        constructor() { this.upload = {}; this.status = 202; this.responseText = '{"id":"operation"}'; }
+        open() {}
+        setRequestHeader() {}
+        getResponseHeader() { return null; }
+        send(data) { sent.push(data); this.onload(); }
+    };
+    ui.sandbox.model = model();
+    ui.sandbox.data = new FormData(); ui.sandbox.data.set('manifest', '{}');
+    ui.eval(`editing = model; refresh = async () => {}; resetForm = () => {};
+        api = async () => ({ status: 'succeeded', model_id: model.id });`);
+    await ui.eval("actualSendPackage('/api/upload', data)");
+    assert.equal(sent.length, 1);
+    assert.deepEqual([...sent[0].keys()], ['manifest']);
+});

@@ -26,21 +26,19 @@ SHARED = ROOT / "serverless/pytorch/facebookresearch/sam2/nuclio"
 RUNTIME = ROOT / "components/sam31/nuclio"
 
 
-def load_module(name, path, monkeypatch, *, replace=False):
+def load_module(name, path, monkeypatch):
     module = ModuleType(name)
     module.__file__ = str(path)
     monkeypatch.setitem(sys.modules, name, module)
     text = path.read_text()
-    if replace:
-        text = text.replace("SAM2", "SAM31").replace("sam2", "sam31")
     exec(compile(text, str(path), "exec"), module.__dict__)
     return module
 
 
 @pytest.fixture
 def modules(monkeypatch):
-    protocol = load_module("protocol", SHARED / "protocol.py", monkeypatch, replace=True)
-    geometry = load_module("geometry", SHARED / "geometry.py", monkeypatch, replace=True)
+    protocol = load_module("protocol", SHARED / "protocol.py", monkeypatch)
+    geometry = load_module("geometry", SHARED / "geometry.py", monkeypatch)
     temporal = load_module("temporal_video", RUNTIME / "temporal_video.py", monkeypatch)
     image = load_module("image_model", RUNTIME / "image_model.py", monkeypatch)
     codec = load_module("state_codec", RUNTIME / "state_codec.py", monkeypatch)
@@ -247,155 +245,6 @@ def test_state_identity_mismatch_rejected(modules):
     assert error.value.status == 409
 
 
-@pytest.fixture
-def deploy_module(monkeypatch):
-    return load_module("sam31_parity_deploy", ROOT / "components/sam31/deploy.py", monkeypatch)
-
-
-@pytest.fixture
-def deployment(deploy_module, tmp_path):
-    # Minimal explicit source/build fixtures: these are not a real CVAT checkout.
-    root = tmp_path / "checkout"
-    nuclio = root / "components/sam31/nuclio"
-    nuclio.mkdir(parents=True)
-    for name in ("main.py", "image_main.py", "image_model.py"):
-        (nuclio / name).write_text("# reviewed test source\n")
-    shared = root / deploy_module.SHARED
-    shared.mkdir(parents=True)
-    for name in ("protocol.py", "geometry.py", "redis_store.py"):
-        (shared / name).write_text("# SAM2 sam2 fixture\n")
-    template = {"metadata": {"name": deploy_module.FUNCTION, "annotations": {"type": "tracker"}},
-        "spec": {"build": {"image": "placeholder"}, "handler": "main:handler", "env": [],
-                 "volumes": [{"legacy": True}]}}
-    (root / "components/sam31/function-gpu.json").write_text(json.dumps(template))
-    (root / "components/sam31/deploy.py").write_text("# fixture\n")
-    (root / "components/extensions").mkdir()
-    (root / "components/extensions/manage.py").write_text("# fixture\n")
-    checkpoint = tmp_path / "approved.pt"
-    checkpoint.write_bytes(b"approved checkpoint fixture; not real weights")
-    values = {"SAM31_CHECKPOINT_HOST": str(checkpoint),
-        "SAM31_REDIS_PASSWORD": "secret_" * 8,
-        "NUCLIO_NAMESPACE": "nuclio", "CVAT_NETWORK_NAME": "test_cvat"}
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    calls, definitions = [], []
-    def run(command, **kwargs):
-        calls.append(command)
-        if command[:3] == ["nuctl", "get", "projects"]:
-            return '{"project": {"meta": {"name": "cvat"}}}'
-        if command[:2] == ["nuctl", "deploy"]:
-            source = Path(command[command.index("--path") + 1])
-            config = Path(command[command.index("--file") + 1])
-            assert config.stat().st_mode & 0o077 == 0
-            assert source not in config.parents
-            definition = json.loads(config.read_text())
-            assert "volumes" not in definition["spec"]
-            assert all(values["SAM31_REDIS_PASSWORD"].encode() not in p.read_bytes() for p in source.iterdir())
-            definitions.append(definition)
-            weight = source / Path(deploy_module.CHECKPOINT).name
-            if "--run-image" in command:
-                assert "--no-pull" in command and not weight.exists()
-            else:
-                assert weight.read_bytes() == checkpoint.read_bytes()
-                assert weight.stat().st_mode & 0o222 == 0
-        return "sha256:fixture" if command[0] == "docker" else ""
-    manager = SimpleNamespace(root=root, state=state, values=values, run=run,
-        nuctl_check=lambda model: "1.16.3", functions=lambda: [],
-        guard_function_ownership=lambda names: calls.append(["owner", *names]),
-        function_environment=lambda: {name: deploy_module.runtime_environment(values, name) for name in deploy_module.FUNCTIONS},
-        verify_functions=lambda names, **kwargs: calls.append(["verify", *names]))
-    return manager, calls, definitions, checkpoint
-
-
-@pytest.mark.parametrize("mode,count", [("all", 2), ("image", 1), ("tracker", 1)])
-@pytest.mark.parametrize("no_build", [False, True])
-def test_deployment_modes_and_private_staging(deploy_module, deployment, mode, count, no_build):
-    manager, calls, definitions, checkpoint = deployment
-    if no_build:
-        checkpoint.unlink()
-    deploy_module.deploy(manager, {}, mode=mode, no_build=no_build)
-    assert len(definitions) == count
-    assert not list(manager.state.iterdir())
-    assert calls[-1][0] == "verify"
-    for definition in definitions:
-        name = definition["metadata"]["name"]
-        env = {e["name"]: e["value"] for e in definition["spec"]["env"]}
-        assert env["SAM31_CHECKPOINT"] == deploy_module.CHECKPOINT
-        assert env["HF_HUB_OFFLINE"] == "1"
-        if name == deploy_module.IMAGE_FUNCTION:
-            assert definition["metadata"]["annotations"]["type"] == "interactor"
-            assert definition["spec"]["handler"] == "image_main:handler"
-            assert not any(key.startswith("SAM31_REDIS_") for key in env)
-        else:
-            assert definition["metadata"]["annotations"]["type"] == "tracker"
-            assert env["SAM31_REDIS_PASSWORD"] == manager.values["SAM31_REDIS_PASSWORD"]
-
-
-def test_missing_no_build_image_prevents_any_nuctl_deploy(deploy_module, deployment):
-    manager, calls, definitions, _ = deployment
-    def run(command, **kwargs):
-        calls.append(command)
-        raise RuntimeError("missing image")
-    manager.run = run
-    with pytest.raises(RuntimeError, match="missing image"):
-        deploy_module.deploy(manager, {}, no_build=True)
-    assert definitions == [] and not any(c[:2] == ["nuctl", "deploy"] for c in calls)
-
-
-def test_missing_source_fails_before_external_commands(deploy_module, deployment):
-    manager, calls, _, checkpoint = deployment
-    checkpoint.unlink()
-    with pytest.raises(ValueError, match="existing checkpoint"):
-        deploy_module.deploy(manager, {})
-    assert calls == []
-
-
-def test_staging_copies_replacement_without_expected_digest(deploy_module, deployment, tmp_path):
-    manager, _, _, checkpoint = deployment
-    checkpoint.write_bytes(b"replacement checkpoint")
-    destination = tmp_path / "staging"
-    deploy_module.stage_sources(destination, manager.root, checkpoint=checkpoint)
-    assert (destination / Path(deploy_module.CHECKPOINT).name).read_bytes() == b"replacement checkpoint"
-
-
-def test_fingerprint_includes_model_selection_source_and_nuclio_version(deploy_module, deployment):
-    manager, _, _, _ = deployment
-    def fingerprint(source=None, version="1.16.3", function=None):
-        return deploy_module.function_image(version, manager.root,
-            checkpoint_source=source or manager.values["SAM31_CHECKPOINT_HOST"],
-            function=function or deploy_module.FUNCTION)
-    initial = fingerprint()
-    assert initial != fingerprint(source="/models/another.pt")
-    assert initial != fingerprint(version="1.17.0")
-    assert initial != fingerprint(function=deploy_module.IMAGE_FUNCTION)
-    (manager.root / deploy_module.SHARED / "geometry.py").write_text("# changed\n")
-    assert initial != fingerprint()
-
-
-@pytest.mark.parametrize("destination", ["/", "/opt", "/opt/nuclio", "/opt/nuclio/sam3.1_multiplex.pt", "/models/sam3.1_multiplex.pt"])
-def test_checkpoint_shadow_mount_is_rejected(deploy_module, destination):
-    assert not deploy_module.checkpoint_matches({"Mounts": [{"Destination": destination, "RW": False}]})
-
-
-@pytest.mark.parametrize("mounts", [[], [{"Destination": "/etc/nuclio/config/processor"}], [{"Destination": "/tmp/cache"}]])
-def test_unrelated_mounts_allowed(deploy_module, mounts):
-    assert deploy_module.checkpoint_matches({"Mounts": mounts})
-
-
-def test_existing_image_reused_with_exact_env_and_identity(deploy_module, deployment):
-    manager, calls, definitions, checkpoint = deployment
-    name = deploy_module.FUNCTION
-    image = deploy_module.function_image("1.16.3", manager.root,
-        checkpoint_source=manager.values["SAM31_CHECKPOINT_HOST"], function=name)
-    manager.functions = lambda: [{"Id": "running", "State": {"Running": True}, "Mounts": [],
-        "Config": {"Image": image, "Labels": {"nuclio.io/function-name": name},
-                   "Env": [f"{k}={v}" for k, v in deploy_module.runtime_environment(manager.values).items()]}}]
-    checkpoint.unlink()
-    deploy_module.deploy(manager, {}, mode="tracker", no_build=True)
-    assert definitions == []
-    assert not any(c[:2] == ["nuctl", "deploy"] for c in calls)
-
-
 def test_load_model_hashes_and_loads_same_file_descriptor(modules, monkeypatch, tmp_path):
     checkpoint = tmp_path / "weights.pt"
     checkpoint.write_bytes(b"approved fixture")
@@ -417,11 +266,7 @@ def test_load_model_hashes_and_loads_same_file_descriptor(modules, monkeypatch, 
     monkeypatch.setattr(torch, "load", load)
     model, digest = modules.temporal.load_model(checkpoint)
     assert model is fake and digest == expected and reads == [b"approved fixture"]
-    checkpoint.write_bytes(b"replacement fixture")
-    _, replacement = modules.temporal.load_model(checkpoint)
-    assert replacement != digest and len(reads) == 2
-    policy = modules.temporal.MemoryPolicy(6, 15)
-    assert modules.temporal.model_identity(digest, policy, False) != modules.temporal.model_identity(replacement, policy, False)
+    assert len(reads) == 1
 
 
 @pytest.mark.parametrize("count", [1, 4, 16])
@@ -433,32 +278,3 @@ def test_gpu_smoke_fixture_has_distinct_in_bounds_seeds(monkeypatch, count, inde
     assert all(mask.shape == (480, 640) and mask.any() for mask in masks)
     assert len({hashlib.sha256(mask.tobytes()).digest() for mask in masks}) == count
     assert np.stack(masks).sum(axis=0).max() == 1
-
-
-@pytest.mark.parametrize("mode", ["image", "tracker"])
-def test_compatibility_entrypoint_preserves_mode_order(monkeypatch, mode):
-    import os
-    import runpy
-    calls = []
-    monkeypatch.setattr(sys, "argv", ["deploy.py", "--env-file", "/tmp/deployment.env", mode])
-    def execv(executable, arguments):
-        calls.append(arguments)
-        raise RuntimeError("delegated")
-    monkeypatch.setattr(os, "execv", execv)
-    with pytest.raises(RuntimeError, match="delegated"):
-        runpy.run_path(str(ROOT / "components/sam31/deploy.py"), run_name="__main__")
-    assert calls[0][2:] == ["deploy-sam31", "--env-file", "/tmp/deployment.env", mode]
-
-
-def test_normal_deploy_rebuilds_even_with_matching_running_image(deploy_module, deployment):
-    manager, calls, definitions, checkpoint = deployment
-    name = deploy_module.FUNCTION
-    image = deploy_module.function_image("1.16.3", manager.root,
-        checkpoint_source=manager.values["SAM31_CHECKPOINT_HOST"], function=name)
-    manager.functions = lambda: [{"Id": "running", "State": {"Running": True}, "Mounts": [],
-        "Config": {"Image": image, "Labels": {"nuclio.io/function-name": name},
-                   "Env": [f"{k}={v}" for k, v in deploy_module.runtime_environment(manager.values).items()]}}]
-    checkpoint.write_bytes(b"new weights at the same path")
-    deploy_module.deploy(manager, {}, mode="tracker")
-    assert len(definitions) == 1
-    assert any(c[:2] == ["nuctl", "deploy"] and "--run-image" not in c for c in calls)

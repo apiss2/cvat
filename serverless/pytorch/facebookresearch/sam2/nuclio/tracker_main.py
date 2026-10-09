@@ -12,7 +12,7 @@ def init_context(context):
     from redis_store import RedisStore
     from redis_tracker import RedisTracker
     require_gpu()
-    store = RedisStore.from_env()  # Fail closed: no process-local fallback if Redis fails.
+    store = RedisStore.from_env("SAM2")  # Fail closed: no process-local fallback if Redis fails.
     predictor = build_sam2_video_predictor(MODEL_CONFIG, CHECKPOINT, device="cuda", apply_postprocessing=False)
     video = TemporalVideo(predictor)
     config_path = Path(sam2.__file__).parent / MODEL_CONFIG

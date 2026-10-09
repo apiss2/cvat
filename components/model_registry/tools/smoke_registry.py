@@ -99,7 +99,7 @@ def main():
         boundary = '----registry-smoke-' + secrets.token_hex(12)
         parts = []
         directory = ROOT / 'examples' / kind
-        for name, value in [('model_id', model), ('expected_revision', expected),
+        for name, value in [('expected_revision', expected),
                             ('manifest', (directory / 'manifest.json').read_text(encoding='utf-8'))]:
             if value:
                 parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
@@ -111,7 +111,8 @@ def main():
                 (directory / filename).read_bytes(), b'\r\n',
             ])
         parts.append(f'--{boundary}--\r\n'.encode())
-        operation = request('POST', '/api/upload', b''.join(parts), 'multipart/form-data; boundary=' + boundary)
+        path = f'/api/models/{model}/update' if model else '/api/upload'
+        operation = request('POST', path, b''.join(parts), 'multipart/form-data; boundary=' + boundary)
         if not model:
             created.append(operation['model_id'])
         end = time.monotonic() + 210

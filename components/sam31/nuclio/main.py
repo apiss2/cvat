@@ -12,7 +12,7 @@ def init_context(context):
     model, digest = load_model(os.environ.get("SAM31_CHECKPOINT", CHECKPOINT))
     video = TemporalVideo(model)
     identity = model_identity(digest, video.policy, video.bf16)
-    store = RedisStore.from_env()
+    store = RedisStore.from_env("SAM31")
     context.user_data.tracker = Tracker(video, store, identity)
     context.logger.info("SAM3.1 polygon tracker initialized")
 

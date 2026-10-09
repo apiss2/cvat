@@ -83,6 +83,7 @@
                 data.append('weights', input.files[0]);
             }
             if (![...data.keys()].length) throw new Error('変更するファイルまたは設定を指定してください。');
+            data.set('expected_revision', model.active_revision);
             await sendPackage(`/api/models/${model.id}/update`, data);
         });
     }, true);

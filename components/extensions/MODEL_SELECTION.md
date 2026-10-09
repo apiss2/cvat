@@ -1,83 +1,95 @@
-# SAM model selection
+# SAM model selection and common deployment
 
-Set these variables in the persistent `.env` passed to `cvatctl --env-file`.
-The manager deliberately ignores conflicting inherited shell exports. Both image
-interaction and polygon tracking use the same selected model within each family.
-Weights remain embedded in function images, not runtime bind mounts.
+Set model names in the private `.env` read by `cvatctl --env-file`. Both image
+interaction and tracking use the same selection within a model family. The
+manager's persistent settings take precedence over inherited shell exports.
 
-## SAM2.1
+```dotenv
+SAM2_MODEL=sam2.1_hiera_small
+SAM31_MODEL=facebook/sam3.1
+HF_TOKEN=
+```
 
-`SAM2_MODEL` selects the official checkpoint and its matching configuration.
-Omission or an empty value retains the previous small model. Supported values:
+## SAM2.1 models
 
-| SAM2_MODEL | Configuration |
+`SAM2_MODEL` selects the checkpoint and its matching configuration together:
+
+| Model name | Configuration |
 |---|---|
 | `sam2.1_hiera_tiny` | `configs/sam2.1/sam2.1_hiera_t.yaml` |
 | `sam2.1_hiera_small` (default) | `configs/sam2.1/sam2.1_hiera_s.yaml` |
 | `sam2.1_hiera_base_plus` | `configs/sam2.1/sam2.1_hiera_b+.yaml` |
 | `sam2.1_hiera_large` | `configs/sam2.1/sam2.1_hiera_l.yaml` |
 
-Unknown names are errors. `SAM2_CONFIG` and `SAM2_CHECKPOINT` are derived runtime
-settings, not independent cvatctl overrides; this prevents mismatched model pairs.
+The common deployer downloads the selected official weights once into a private
+build directory and embeds them in both function images. Unknown names fail.
+An unset/empty model name retains the default. `SAM2_CONFIG` and
+`SAM2_CHECKPOINT` are derived runtime settings, not independent model overrides.
 
-```dotenv
-SAM2_MODEL=sam2.1_hiera_small
-SAM2_CHECKPOINT_HOST=
-```
+For optional SAM2 fine-tuned weights, `SAM2_CHECKPOINT_HOST` can name an existing
+nonempty file outside the checkout. Select its matching structure in `SAM2_MODEL`.
+This override disables the official download. Normal deployment rebuilds local
+checkpoint images even when a file is replaced at the same path.
 
-With an empty `SAM2_CHECKPOINT_HOST`, the build downloads the selected official
-SAM2.1 checkpoint. To use fine-tuned weights, set an absolute path outside the
-checkout and select the matching architecture with `SAM2_MODEL`:
+## SAM3.1 models
 
-```dotenv
-SAM2_MODEL=sam2.1_hiera_large
-SAM2_CHECKPOINT_HOST=/srv/cvat-models/sam2.1_hiera_large_ultrasound.pt
-```
+`SAM31_MODEL` is a Hugging Face model name in `owner/repository` form. Its default
+is `facebook/sam3.1`, the original official model. Another named repository must
+contain a **compatible merged `sam3.1_multiplex.pt`**. Different model structures,
+SAM3 image-only weights and repackaged safetensors files are not interchangeable.
+No local checkpoint path is required or accepted as the model name.
 
-Local files are copied once into a private build source shared by both function
-builds. The official download step is omitted. The runtime loads
-`/opt/nuclio/checkpoints/<SAM2_MODEL>.pt`; an arbitrary local filename is allowed.
+The deployer obtains the checkpoint over HTTPS during image preparation, copies
+it into both images at `/opt/nuclio/sam3.1_multiplex.pt`, and removes its temporary
+build directory after deployment. Runtime functions have `HF_HUB_OFFLINE=1` and
+neither mount external weights nor download them during inference.
 
-## SAM3.1
+The official repository requires access approval and acceptance of its terms:
+https://huggingface.co/facebook/sam3.1
+After obtaining access, set a read-capable `HF_TOKEN` in the same private `.env`.
+The downloader uses that credential only for the Hugging Face request. It is
+not forwarded to redirected download hosts, subprocesses, build directives,
+image source files, function runtime environments or image-name fingerprints.
+Keep the configuration file mode `0600`. Do not publish licensed images to an
+unauthorized registry. No alternate mirror is selected on authentication failure.
 
-The existing `SAM31_CHECKPOINT_HOST` selects the build input. The normal model
-remains the official merged `sam3.1_multiplex.pt`:
-
-```dotenv
-SAM31_CHECKPOINT_HOST=/srv/cvat-models/sam3.1_multiplex.pt
-```
-
-Point it at a compatible merged fine-tuned checkpoint to change weights. There
-is no artificial size selector: the fixed multiplex architecture is unchanged,
-and weights from a different architecture are not supported. Both functions use
-the selected weights at `/opt/nuclio/sam3.1_multiplex.pt` inside their images.
-SAM3.1 source weights must already have been obtained with appropriate access.
-An empty setting is not an instruction to download or invent missing weights.
-
-## Rebuilds and existing images
-
-Stop before changing model settings and run a normal `up` to build/deploy them.
-Normal deployment always rebuilds local-checkpoint images, including replacement
-of a file at the same path. Unchanged Docker layers can still be cached.
+## Builds and restarts
 
 ```sh
 components/extensions/cvatctl --env-file /path/to/deployment.env down
-# Edit the model settings or replace the local checkpoint while stopped.
+# Edit SAM2_MODEL or SAM31_MODEL while stopped.
 components/extensions/cvatctl --env-file /path/to/deployment.env up
 components/extensions/cvatctl --env-file /path/to/deployment.env check
 ```
 
-For an existing-image restart, `up --no-build` uses the last built weights. Keep
-the source path settings unchanged; the original files need not still exist.
-This mode does not read source checkpoint contents and does not apply their
-changes. Moving or clearing a configured path changes the selected image tag.
+`up --no-build` uses matching already-built images. It needs neither download
+credentials nor SAM3.1 source files/network access. Missing images fail before
+startup. SAM3.1 image identification depends on the model name, source and build
+recipe, not an administrator's local checkpoint path. Unchanged running images
+can also be reused by ordinary `up`.
 
-There is no manual expected-hash setting or checkpoint checksum comparison.
-Automatic hashes remain for model/state identity, request replay, image-embedding
-reuse and source-derived image names. Removing those would allow incompatible
-state or stale results to be reused. The unused SAM2 checksum manifest is removed.
-Content identity does not authenticate the source of downloaded weights.
+Named repositories are fetched from their current `main` revision when a build
+is needed. An unchanged running image is not polled for upstream weight changes.
+Use `deploy-sam31` to explicitly rebuild/refresh the same model name; `image`,
+`tracker` or `all` selects the redeployment scope. Both functions remain selected
+by ordinary `up`. The optional SAM2 local-path setting must remain unchanged for
+`--no-build`; it uses the last built contents, not changes to that source file.
 
-Changing model weights can invalidate saved tracking sessions; restart those
-runs from their seed frame. GPU capacity and inference compatibility of larger
-or fine-tuned models require testing on the deployment host.
+There is no expected-SHA setting or manual checkpoint checksum comparison.
+Automatic content identity remains for rejecting incompatible saved tracking
+state, as do hashes for request replay, image-embedding reuse and image names.
+Content identity and strict loading do not authenticate a model's publisher.
+
+## Shared implementation
+
+`components/extensions/functions.py` owns named-model resolution, structured
+Nuclio definition generation, temporary source preparation, project creation,
+image reuse checks and deployment for SAM2, SAM3.1 and UltraSAM. Each family's
+`components/<family>/build.json` retains only its Python/CUDA/dependency recipe.
+There are no parallel YAML string-rewriting or SAM3.1-only deployment paths.
+The common `cvatctl` owns locking, Compose lifecycle and recorded state.
+
+SAM2 and SAM3.1 use byte-identical protocol, geometry and Redis helper source.
+Their handlers pass `SAM2` or `SAM31` explicitly when creating the Redis store.
+Neural adapters and state codecs remain independent. Redis services/volumes and
+passwords remain separate; both image and tracking functions still start by default.

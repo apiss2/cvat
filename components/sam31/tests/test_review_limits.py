@@ -26,9 +26,9 @@ def runtime(request, monkeypatch, tmp_path):
     for name in names:
         monkeypatch.delitem(sys.modules, name, raising=False)
     if feature == "sam31":
-        spec = importlib.util.spec_from_file_location("review_sam31_deploy", ROOT / "components/sam31/deploy.py")
-        deploy = importlib.util.module_from_spec(spec); spec.loader.exec_module(deploy)
-        deploy.stage_sources(tmp_path, ROOT)
+        monkeypatch.syspath_prepend(str(ROOT))
+        from components.extensions.functions import stage_sources
+        stage_sources(tmp_path, "sam31", ROOT)
         monkeypatch.syspath_prepend(str(tmp_path))
     else:
         # SAM2's numerical predictor is not exercised: only the persisted Snapshot contract.

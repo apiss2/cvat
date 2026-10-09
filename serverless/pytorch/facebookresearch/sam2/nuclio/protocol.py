@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: MIT
-"""Transport helpers. No CVAT, SAM2 or torch dependency in this module."""
+"""Shared transport helpers; independent of CVAT and the neural model."""
 import base64
 import binascii
 import io
 import json
-import os
 from PIL import Image, UnidentifiedImageError
 
 MAX_OBJECTS = 16
 MAX_BODY_BYTES = 32 * 1024 * 1024
-MAX_PIXELS = int(os.getenv("SAM2_MAX_PIXELS", "16777216"))
+MAX_PIXELS = 16777216
 
 class ProtocolError(ValueError):
     def __init__(self, message, status=400):
@@ -37,7 +36,7 @@ def decode_image(data):
         with Image.open(io.BytesIO(raw)) as image:
             width, height = image.size
             if width < 1 or height < 1 or width * height > MAX_PIXELS:
-                raise ProtocolError("Image exceeds SAM2_MAX_PIXELS", 413)
+                raise ProtocolError("Image exceeds the pixel limit", 413)
             if getattr(image, "n_frames", 1) != 1:
                 raise ProtocolError("Send a single frame, not an animation")
             return image.convert("RGB")
@@ -52,7 +51,7 @@ def serve(context, event, operation):
         result, code = {"error": str(exc)}, exc.status
     except Exception as exc:
         # Do not log images, points, session tokens, or tensor contents.
-        context.logger.error("SAM2 inference failed: " + type(exc).__name__)
+        context.logger.error("Inference failed: " + type(exc).__name__)
         result, code = {"error": "Inference failed. Restart tracking from the seed frame; inspect function logs."}, 500
     return context.Response(body=json.dumps(result, allow_nan=False), headers={},
                             content_type="application/json", status_code=code)

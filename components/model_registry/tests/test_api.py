@@ -45,7 +45,7 @@ def test_ownership_enforcement(ctx,published,sample):
     assert c.get('/api/models',headers=headers('bob')).json()==[public]
     assert c.get(f'/api/models/{mid}',headers=headers()).json()['can_manage'] is True
     assert c.post(f'/api/models/{mid}/rollback',headers=headers('bob'),json={'expected_revision':published['revision'],'revision':published['revision']}).status_code==403
-    update=c.post('/api/upload',headers=headers('bob'),data={'model_id':mid,'expected_revision':published['revision'],'manifest':(ROOT/'examples/segmentation/manifest.json').read_text(encoding='utf-8')},files=model_files())
+    update=c.post(f'/api/models/{mid}/update',headers=headers('bob'),data={'expected_revision':published['revision'],'manifest':(ROOT/'examples/segmentation/manifest.json').read_text(encoding='utf-8')},files=model_files())
     assert update.status_code==403
 
 def test_update_failed_keeps_active(ctx,published):
@@ -119,7 +119,7 @@ def test_concurrent_updates_only_one_published(ctx,published):
     block=threading.Event();ctx['runtime'].block=block
     operations=[]
     for _ in range(2):
-        r=c.post('/api/upload',headers=headers(),data={'model_id':mid,'expected_revision':old,'manifest':(ROOT/'examples/segmentation/manifest.json').read_text(encoding='utf-8')},files=model_files())
+        r=c.post(f'/api/models/{mid}/update',headers=headers(),data={'expected_revision':old,'manifest':(ROOT/'examples/segmentation/manifest.json').read_text(encoding='utf-8')},files=model_files())
         assert r.status_code==202;operations.append(r.json()['id'])
     block.set()
     for _ in range(500):
