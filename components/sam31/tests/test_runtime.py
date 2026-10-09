@@ -258,7 +258,7 @@ def test_generated_helpers_do_not_share_sam2_namespace_or_environment(runtime):
 
 def test_function_secrets_are_runtime_only_and_checkpoint_embedded(runtime, tmp_path):
     template = json.loads((Path(__file__).resolve().parents[1]/"function-gpu.json").read_text())
-    values = {"NUCLIO_NAMESPACE":"team", "SAM31_REDIS_PASSWORD":"secret"*8, "SAM31_CHECKPOINT_SHA256":"a"*64}
+    values = {"NUCLIO_NAMESPACE":"team", "SAM31_REDIS_PASSWORD":"secret"*8}
     result = runtime.deploy.render_function(template, values, "image:revision")
     assert result["metadata"]["namespace"] == "team"
     assert "volumes" not in result["spec"]

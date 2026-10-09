@@ -274,7 +274,6 @@ def deployment(deploy_module, tmp_path):
     checkpoint = tmp_path / "approved.pt"
     checkpoint.write_bytes(b"approved checkpoint fixture; not real weights")
     values = {"SAM31_CHECKPOINT_HOST": str(checkpoint),
-        "SAM31_CHECKPOINT_SHA256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         "SAM31_REDIS_PASSWORD": "secret_" * 8,
         "NUCLIO_NAMESPACE": "nuclio", "CVAT_NETWORK_NAME": "test_cvat"}
     state = tmp_path / "state"
@@ -297,7 +296,7 @@ def deployment(deploy_module, tmp_path):
             if "--run-image" in command:
                 assert "--no-pull" in command and not weight.exists()
             else:
-                assert hashlib.sha256(weight.read_bytes()).hexdigest() == values["SAM31_CHECKPOINT_SHA256"]
+                assert weight.read_bytes() == checkpoint.read_bytes()
                 assert weight.stat().st_mode & 0o222 == 0
         return "sha256:fixture" if command[0] == "docker" else ""
     manager = SimpleNamespace(root=root, state=state, values=values, run=run,
@@ -314,7 +313,6 @@ def test_deployment_modes_and_private_staging(deploy_module, deployment, mode, c
     manager, calls, definitions, checkpoint = deployment
     if no_build:
         checkpoint.unlink()
-        manager.values["SAM31_CHECKPOINT_HOST"] = ""
     deploy_module.deploy(manager, {}, mode=mode, no_build=no_build)
     assert len(definitions) == count
     assert not list(manager.state.iterdir())
@@ -344,30 +342,30 @@ def test_missing_no_build_image_prevents_any_nuctl_deploy(deploy_module, deploym
     assert definitions == [] and not any(c[:2] == ["nuctl", "deploy"] for c in calls)
 
 
-def test_wrong_source_digest_fails_before_external_commands(deploy_module, deployment):
+def test_missing_source_fails_before_external_commands(deploy_module, deployment):
     manager, calls, _, checkpoint = deployment
-    checkpoint.write_bytes(b"unexpected")
-    with pytest.raises(ValueError, match="SHA256 mismatch"):
+    checkpoint.unlink()
+    with pytest.raises(ValueError, match="existing checkpoint"):
         deploy_module.deploy(manager, {})
     assert calls == []
 
 
-def test_staging_rechecks_bytes_and_removes_mismatch(deploy_module, deployment, tmp_path):
+def test_staging_copies_replacement_without_expected_digest(deploy_module, deployment, tmp_path):
     manager, _, _, checkpoint = deployment
+    checkpoint.write_bytes(b"replacement checkpoint")
     destination = tmp_path / "staging"
-    with pytest.raises(ValueError, match="while staging"):
-        deploy_module.stage_sources(destination, manager.root, checkpoint=checkpoint, expected_sha256="c" * 64)
-    assert not (destination / Path(deploy_module.CHECKPOINT).name).exists()
+    deploy_module.stage_sources(destination, manager.root, checkpoint=checkpoint)
+    assert (destination / Path(deploy_module.CHECKPOINT).name).read_bytes() == b"replacement checkpoint"
 
 
-def test_fingerprint_includes_weights_source_and_nuclio_version(deploy_module, deployment):
+def test_fingerprint_includes_model_selection_source_and_nuclio_version(deploy_module, deployment):
     manager, _, _, _ = deployment
-    def fingerprint(digest=None, version="1.16.3", function=None):
+    def fingerprint(source=None, version="1.16.3", function=None):
         return deploy_module.function_image(version, manager.root,
-            checkpoint_sha256=digest or manager.values["SAM31_CHECKPOINT_SHA256"],
+            checkpoint_source=source or manager.values["SAM31_CHECKPOINT_HOST"],
             function=function or deploy_module.FUNCTION)
     initial = fingerprint()
-    assert initial != fingerprint(digest="c" * 64)
+    assert initial != fingerprint(source="/models/another.pt")
     assert initial != fingerprint(version="1.17.0")
     assert initial != fingerprint(function=deploy_module.IMAGE_FUNCTION)
     (manager.root / deploy_module.SHARED / "geometry.py").write_text("# changed\n")
@@ -388,7 +386,7 @@ def test_existing_image_reused_with_exact_env_and_identity(deploy_module, deploy
     manager, calls, definitions, checkpoint = deployment
     name = deploy_module.FUNCTION
     image = deploy_module.function_image("1.16.3", manager.root,
-        checkpoint_sha256=manager.values["SAM31_CHECKPOINT_SHA256"], function=name)
+        checkpoint_source=manager.values["SAM31_CHECKPOINT_HOST"], function=name)
     manager.functions = lambda: [{"Id": "running", "State": {"Running": True}, "Mounts": [],
         "Config": {"Image": image, "Labels": {"nuclio.io/function-name": name},
                    "Env": [f"{k}={v}" for k, v in deploy_module.runtime_environment(manager.values).items()]}}]
@@ -417,11 +415,13 @@ def test_load_model_hashes_and_loads_same_file_descriptor(modules, monkeypatch, 
         reads.append(stream.read())
         return {}
     monkeypatch.setattr(torch, "load", load)
-    model, digest = modules.temporal.load_model(checkpoint, expected)
+    model, digest = modules.temporal.load_model(checkpoint)
     assert model is fake and digest == expected and reads == [b"approved fixture"]
-    with pytest.raises(ValueError, match="SHA256"):
-        modules.temporal.load_model(checkpoint, "0" * 64)
-    assert len(reads) == 1
+    checkpoint.write_bytes(b"replacement fixture")
+    _, replacement = modules.temporal.load_model(checkpoint)
+    assert replacement != digest and len(reads) == 2
+    policy = modules.temporal.MemoryPolicy(6, 15)
+    assert modules.temporal.model_identity(digest, policy, False) != modules.temporal.model_identity(replacement, policy, False)
 
 
 @pytest.mark.parametrize("count", [1, 4, 16])
@@ -448,3 +448,17 @@ def test_compatibility_entrypoint_preserves_mode_order(monkeypatch, mode):
     with pytest.raises(RuntimeError, match="delegated"):
         runpy.run_path(str(ROOT / "components/sam31/deploy.py"), run_name="__main__")
     assert calls[0][2:] == ["deploy-sam31", "--env-file", "/tmp/deployment.env", mode]
+
+
+def test_normal_deploy_rebuilds_even_with_matching_running_image(deploy_module, deployment):
+    manager, calls, definitions, checkpoint = deployment
+    name = deploy_module.FUNCTION
+    image = deploy_module.function_image("1.16.3", manager.root,
+        checkpoint_source=manager.values["SAM31_CHECKPOINT_HOST"], function=name)
+    manager.functions = lambda: [{"Id": "running", "State": {"Running": True}, "Mounts": [],
+        "Config": {"Image": image, "Labels": {"nuclio.io/function-name": name},
+                   "Env": [f"{k}={v}" for k, v in deploy_module.runtime_environment(manager.values).items()]}}]
+    checkpoint.write_bytes(b"new weights at the same path")
+    deploy_module.deploy(manager, {}, mode="tracker")
+    assert len(definitions) == 1
+    assert any(c[:2] == ["nuctl", "deploy"] and "--run-image" not in c for c in calls)

@@ -98,7 +98,7 @@ def tracking_weights(expected_keys, checkpoint):
     return selected
 
 
-def load_model(checkpoint, expected_sha256):
+def load_model(checkpoint):
     if not torch.cuda.is_available():
         raise RuntimeError("SAM3.1 requires a CUDA GPU")
     from sam3.model_builder import build_sam3_multiplex_video_model
@@ -108,10 +108,9 @@ def load_model(checkpoint, expected_sha256):
         raise ValueError("The SAM3.1 image is missing its approved checkpoint; rebuild the function image")
     with checkpoint.open("rb") as source:
         digest = hashlib.file_digest(source, "sha256").hexdigest()
-        if digest != expected_sha256:
-            raise ValueError("SAM3.1 checkpoint SHA256 does not match SAM31_CHECKPOINT_SHA256")
         source.seek(0)
-        # Load the same opened file that was verified, not a newly resolved path.
+        # The content identity belongs to the same file that is loaded. It is
+        # used to reject old Redis state after a model change, not to approve weights.
         weights = torch.load(source, map_location="cpu", weights_only=True)
     model = build_sam3_multiplex_video_model(
         checkpoint_path=None, load_from_HF=False, multiplex_count=MAX_OBJECTS,

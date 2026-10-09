@@ -45,8 +45,7 @@ spec:
       - kind: RUN
         value: mkdir -p /opt/nuclio/checkpoints && curl --fail --location --retry
           3 https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt
-          -o /opt/nuclio/checkpoints/sam2.1_hiera_small.pt && sha256sum /opt/nuclio/checkpoints/sam2.1_hiera_small.pt
-          > /opt/nuclio/checkpoints/SHA256SUMS && python -m pip freeze > /opt/nuclio/build-requirements.txt
+          -o /opt/nuclio/checkpoints/sam2.1_hiera_small.pt && python -m pip freeze > /opt/nuclio/build-requirements.txt
       - kind: RUN
         value: python -c "import sys, torch; assert sys.version_info[:2] == (3, 11),
           sys.version; assert torch.__version__.split('+')[0] == '2.6.0', torch.__version__;

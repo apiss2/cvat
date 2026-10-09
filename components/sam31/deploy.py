@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: MIT
 """Build and deploy SAM3.1 image/tracker functions through the common manager.
 
-Approved weights are build inputs, not runtime bind mounts. Source, checkpoint
-SHA256 and the Nuclio version identify each image. Authentication tokens and
+Weights are build inputs, not runtime bind mounts. Source, model selection and
+Nuclio version identify the image tag; normal deployment always rebuilds so a
+replacement at the same source path cannot reuse stale weights. Authentication tokens and
 Redis credentials are never staged into the image build context.
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import sys
 import tempfile
 
@@ -43,35 +45,21 @@ def sources(root: Path) -> dict[str, bytes]:
 
 
 def stage_sources(destination: Path, root: Path = ROOT, *,
-                  checkpoint: Path | None = None, expected_sha256: str | None = None) -> None:
+                  checkpoint: Path | None = None) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     for name, content in sources(root).items():
         (destination / name).write_bytes(content)
-    if checkpoint is None:
-        return  # --run-image must not require the original build input.
-    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or ""):
-        raise ValueError("Invalid checkpoint SHA256")
-    target = destination / Path(CHECKPOINT).name
-    digest = hashlib.sha256()
-    try:
-        # Hash the actual staged bytes, not just the source before it was copied.
-        with checkpoint.open("rb") as source, target.open("xb") as output:
-            for chunk in iter(lambda: source.read(8 * 1024**2), b""):
-                digest.update(chunk)
-                output.write(chunk)
-        if digest.hexdigest() != expected_sha256:
-            raise ValueError("SAM3.1 checkpoint SHA256 mismatch while staging")
+    if checkpoint is not None:
+        target = destination / Path(CHECKPOINT).name
+        shutil.copyfile(checkpoint, target)
         target.chmod(0o444)
-    except BaseException:
-        target.unlink(missing_ok=True)
-        raise
 
 
-def function_image(version: str, root: Path = ROOT, *, checkpoint_sha256: str,
+def function_image(version: str, root: Path = ROOT, *, checkpoint_source: str = "",
                    function: str = FUNCTION) -> str:
-    if function not in FUNCTIONS or not re.fullmatch(r"[0-9a-f]{64}", checkpoint_sha256):
-        raise ValueError("Invalid SAM3.1 function or checkpoint SHA256")
-    digest = hashlib.sha256(version.encode() + b"\0" + checkpoint_sha256.encode())
+    if function not in FUNCTIONS:
+        raise ValueError("Unknown SAM3.1 function")
+    digest = hashlib.sha256(version.encode() + b"\0" + checkpoint_source.encode())
     files = sources(root)
     for relative in ("components/sam31/function-gpu.json", "components/sam31/deploy.py",
                      "components/extensions/manage.py"):
@@ -82,12 +70,9 @@ def function_image(version: str, root: Path = ROOT, *, checkpoint_sha256: str,
 
 
 def validate_settings(values: dict[str, str], root: Path = ROOT, *,
-                      verify_file: bool = True, require_sha256: bool = True) -> Path | None:
+                      verify_file: bool = True) -> Path | None:
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", values.get("SAM31_REDIS_PASSWORD", "")):
         raise ValueError("SAM31_REDIS_PASSWORD must contain 32..128 ASCII letters, digits, _ or -")
-    sha256 = values.get("SAM31_CHECKPOINT_SHA256", "")
-    if (verify_file or require_sha256 or sha256) and not re.fullmatch(r"[0-9a-f]{64}", sha256):
-        raise ValueError("Set SAM31_CHECKPOINT_SHA256 to the approved checkpoint SHA256")
     if not re.fullmatch(r"[0-9]+|GPU-[A-Za-z0-9-]+", values.get("SAM31_GPU_DEVICE") or "0"):
         raise ValueError("SAM31_GPU_DEVICE must be one numeric device ID or GPU UUID")
     if not re.fullmatch(r"[1-9][0-9]*(?:[kKmMgG][bB]?)?", values.get("SAM31_REDIS_MAXMEMORY") or "2gb"):
@@ -110,14 +95,8 @@ def validate_settings(values: dict[str, str], root: Path = ROOT, *,
     if checkpoint == root.resolve() or root.resolve() in checkpoint.parents:
         raise ValueError("Keep source checkpoint weights outside the checkout")
     if verify_file:
-        if not checkpoint.is_file():
+        if not checkpoint.is_file() or not checkpoint.stat().st_size:
             raise ValueError("SAM31_CHECKPOINT_HOST must name an existing checkpoint file for image builds")
-        digest = hashlib.sha256()
-        with checkpoint.open("rb") as source:
-            for chunk in iter(lambda: source.read(8 * 1024**2), b""):
-                digest.update(chunk)
-        if digest.hexdigest() != values["SAM31_CHECKPOINT_SHA256"]:
-            raise ValueError("SAM3.1 checkpoint SHA256 mismatch")
     return checkpoint
 
 
@@ -126,7 +105,6 @@ def runtime_environment(values: dict[str, str], function: str = FUNCTION) -> dic
         raise ValueError("Unknown SAM3.1 function")
     result = {
         "SAM31_CHECKPOINT": CHECKPOINT,
-        "SAM31_CHECKPOINT_SHA256": values["SAM31_CHECKPOINT_SHA256"],
         "HF_HUB_OFFLINE": "1",
         "CUDA_VISIBLE_DEVICES": values.get("SAM31_GPU_DEVICE") or "0",
     }
@@ -182,7 +160,7 @@ def deploy(manager, model: dict, *, force: bool = False, no_build: bool = False,
     selected = list(FUNCTIONS) if mode == "all" else [IMAGE_FUNCTION if mode == "image" else FUNCTION]
     version = manager.nuctl_check(model)
     images = {name: function_image(version, manager.root,
-                                  checkpoint_sha256=manager.values["SAM31_CHECKPOINT_SHA256"], function=name)
+                                  checkpoint_source=manager.values.get("SAM31_CHECKPOINT_HOST", ""), function=name)
               for name in selected}
     manager.guard_function_ownership(selected)
     if no_build:
@@ -194,7 +172,7 @@ def deploy(manager, model: dict, *, force: bool = False, no_build: bool = False,
     for name in selected:
         item = current.get(name)
         environment = runtime_environment(manager.values, name)
-        if (not force and item and item["State"]["Running"]
+        if (no_build and not force and item and item["State"]["Running"]
                 and item["Config"]["Image"] == images[name]
                 and all(f"{key}={value}" in item["Config"].get("Env", []) for key, value in environment.items())
                 and checkpoint_matches(item)):
@@ -221,8 +199,7 @@ def deploy(manager, model: dict, *, force: bool = False, no_build: bool = False,
         template = json.loads((manager.root / "components/sam31/function-gpu.json").read_text())
         with tempfile.TemporaryDirectory(dir=manager.state, prefix="sam31-source-") as staging:
             source = Path(staging)
-            stage_sources(source, manager.root, checkpoint=None if no_build else checkpoint,
-                          expected_sha256=manager.values["SAM31_CHECKPOINT_SHA256"])
+            stage_sources(source, manager.root, checkpoint=None if no_build else checkpoint)
             for name in pending:
                 rendered = render_function(template, manager.values, images[name], name)
                 # Secret runtime configuration must stay outside the source directory.

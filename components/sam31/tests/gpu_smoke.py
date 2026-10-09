@@ -78,7 +78,7 @@ def main():
     from state_codec import StateCodec
 
     checkpoint = os.environ.get("SAM31_CHECKPOINT", CHECKPOINT)
-    model, digest = load_model(checkpoint, os.environ["SAM31_CHECKPOINT_SHA256"])
+    model, digest = load_model(checkpoint)
     check_image_prompts(model)
     bounded, reference = TemporalVideo(model), TemporalVideo(model, prune=False)
     codec = StateCodec(model_identity(digest, bounded.policy, bounded.bf16), max_bytes=int(os.getenv("SAM31_STATE_MAX_BYTES", str(256 * 1024**2))))
