@@ -193,7 +193,9 @@ def settings(path: Path, root: Path = ROOT) -> dict[str, str]:
     ):
         raise OperationError("Invalid SAM2_REDIS_MAXMEMORY (example: 2gb)")
     if "sam31" in selected:
-        checkpoint = sam31_deploy.validate_settings(values, root, verify_file=False)
+        checkpoint = sam31_deploy.validate_settings(
+            values, root, verify_file=False, require_sha256=False,
+        )
         values["SAM31_CHECKPOINT_HOST"] = str(checkpoint) if checkpoint is not None else ""
         if "sam2" in selected and values["SAM31_REDIS_VOLUME"] == values["SAM2_REDIS_VOLUME"]:
             raise OperationError("SAM2 and SAM3.1 must use separate Redis volumes")

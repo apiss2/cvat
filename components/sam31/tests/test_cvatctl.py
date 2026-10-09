@@ -94,6 +94,45 @@ def test_checkpoint_required_for_deploy_but_not_for_stop_settings(cli, manager):
         cli.sam31_deploy.validate_settings(manager.values, ROOT)
 
 
+@pytest.mark.parametrize("sha256", [None, ""])
+@pytest.mark.parametrize("saved", [False, True])
+def test_status_without_checkpoint_sha256(cli, manager, monkeypatch, sha256, saved):
+    values = {"CVAT_EXTENSIONS": "sam31", "SAM31_REDIS_PASSWORD": "s" * 48}
+    if sha256 is not None:
+        values["SAM31_CHECKPOINT_SHA256"] = sha256
+    manager.env_file.write_text("\n".join(f"{key}={value}" for key, value in values.items()))
+    if saved:
+        cli.atomic_json(manager.state / "active.json", {"identity": {}})
+    calls = []
+    monkeypatch.setattr(cli.Manager, "assert_identity", lambda self, record: None)
+    monkeypatch.setattr(cli.Manager, "configuration", lambda self: {})
+    monkeypatch.setattr(cli.Manager, "compose", lambda self, *args, **kwargs: ["compose", *args])
+    monkeypatch.setattr(cli.Manager, "run", lambda self, command, **kwargs: calls.append(command))
+    monkeypatch.setattr(cli.Manager, "functions", lambda self: [])
+    monkeypatch.setattr(sys, "argv", ["cvatctl", "--env-file", str(manager.env_file),
+                                     "--state-dir", str(manager.state), "status"])
+    cli.main()
+    assert calls == [["compose", "ps", "--all"]]
+
+
+@pytest.mark.parametrize("sha256", [None, "", "invalid"])
+@pytest.mark.parametrize("no_build", [False, True])
+def test_deploy_requires_checkpoint_sha256_before_external_commands(manager, sha256, no_build):
+    manager.values.pop("SAM31_CHECKPOINT_SHA256")
+    if sha256 is not None:
+        manager.values["SAM31_CHECKPOINT_SHA256"] = sha256
+    manager.nuctl_check = lambda model: pytest.fail("must reject checkpoint SHA256 first")
+    with pytest.raises(ValueError, match="SAM31_CHECKPOINT_SHA256"):
+        manager.deploy({}, feature="sam31", no_build=no_build)
+
+
+def test_settings_reject_invalid_checkpoint_sha256(cli, manager):
+    text = manager.env_file.read_text().replace(manager.values["SAM31_CHECKPOINT_SHA256"], "invalid")
+    manager.env_file.write_text(text)
+    with pytest.raises(ValueError, match="SAM31_CHECKPOINT_SHA256"):
+        cli.settings(manager.env_file)
+
+
 def test_checkpoint_checksum_checked_before_nuctl(cli, manager):
     Path(manager.values["SAM31_CHECKPOINT_HOST"]).write_bytes(b"changed")
     manager.nuctl_check = lambda model: pytest.fail("must reject checkpoint first")

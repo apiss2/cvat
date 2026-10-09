@@ -82,10 +82,11 @@ def function_image(version: str, root: Path = ROOT, *, checkpoint_sha256: str,
 
 
 def validate_settings(values: dict[str, str], root: Path = ROOT, *,
-                      verify_file: bool = True) -> Path | None:
+                      verify_file: bool = True, require_sha256: bool = True) -> Path | None:
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", values.get("SAM31_REDIS_PASSWORD", "")):
         raise ValueError("SAM31_REDIS_PASSWORD must contain 32..128 ASCII letters, digits, _ or -")
-    if not re.fullmatch(r"[0-9a-f]{64}", values.get("SAM31_CHECKPOINT_SHA256", "")):
+    sha256 = values.get("SAM31_CHECKPOINT_SHA256", "")
+    if (verify_file or require_sha256 or sha256) and not re.fullmatch(r"[0-9a-f]{64}", sha256):
         raise ValueError("Set SAM31_CHECKPOINT_SHA256 to the approved checkpoint SHA256")
     if not re.fullmatch(r"[0-9]+|GPU-[A-Za-z0-9-]+", values.get("SAM31_GPU_DEVICE") or "0"):
         raise ValueError("SAM31_GPU_DEVICE must be one numeric device ID or GPU UUID")
