@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 import os
 from pathlib import Path
-from protocol import serve
+from protocol import MAX_OBJECTS, serve
 
 
 def init_context(context):
@@ -12,13 +12,13 @@ def init_context(context):
     from redis_store import RedisStore
     from redis_tracker import RedisTracker
     require_gpu()
-    store = RedisStore.from_env()  # Fail closed: no process-local fallback if Redis fails.
+    store = RedisStore.from_env("SAM2")  # Fail closed: no process-local fallback if Redis fails.
     predictor = build_sam2_video_predictor(MODEL_CONFIG, CHECKPOINT, device="cuda", apply_postprocessing=False)
     video = TemporalVideo(predictor)
     config_path = Path(sam2.__file__).parent / MODEL_CONFIG
     identity = model_identity(CHECKPOINT, config_path, video.policy)
     context.user_data.operation = RedisTracker(
-        video, store, identity, max_objects=int(os.getenv("SAM2_MAX_OBJECTS", "4")),
+        video, store, identity, max_objects=int(os.getenv("SAM2_MAX_OBJECTS", str(MAX_OBJECTS))),
     )
     context.logger.info("SAM2 tracker initialized (Redis state, single-frame track_step)")
 

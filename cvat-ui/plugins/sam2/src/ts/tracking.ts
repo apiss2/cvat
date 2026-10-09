@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Pure orchestration, isolated from CVAT classes for deterministic contract tests.
+import { MAX_TRACKING_OBJECTS, MAX_TRACKING_FRAMES } from './selection';
+
 export interface Polygon { type: 'polygon'; points: number[]; }
 export interface Keyframe { frame: number; points: number[]; outside: boolean; }
 export interface FrameMeta { width: number; height: number; deleted: boolean; }
@@ -11,6 +13,7 @@ export interface Transport {
     wait?(milliseconds: number): Promise<void>; // Test seam for retry delays.
 }
 export interface TrackingInput {
+    trackerName?: string;
     seeds: Polygon[];
     start: number;
     stop: number;
@@ -20,11 +23,11 @@ export interface TrackingInput {
     height: number;
 }
 
-function validateReply(reply: TrackerReply, count: number, width: number, height: number): void {
+function validateReply(reply: TrackerReply, count: number, width: number, height: number, name: string): void {
     if (!reply || !Array.isArray(reply.states) || !Array.isArray(reply.shapes) ||
         reply.states.length !== count || reply.shapes.length !== count ||
         reply.states.some((state) => typeof state !== 'string' || !state.length)) {
-        throw new Error('Invalid SAM2 tracker response; signed states and shapes must match the seeds.');
+        throw new Error(`Invalid ${name} tracker response; signed states and shapes must match the seeds.`);
     }
     for (const shape of reply.shapes) {
         if (shape === null) continue;
@@ -32,7 +35,7 @@ function validateReply(reply: TrackerReply, count: number, width: number, height
             shape.points.length < 6 || shape.points.length % 2 || shape.points.length > 20000 ||
             shape.points.some((point, index) => !Number.isFinite(point) || point < 0 ||
                 point > (index % 2 ? height : width))) {
-            throw new Error('SAM2 returned an invalid polygon.');
+            throw new Error(`${name} returned an invalid polygon.`);
         }
     }
 }
@@ -65,9 +68,9 @@ export async function track(
     cancelled: () => boolean,
     progress: (message: string, percent: number) => void,
 ): Promise<Keyframe[][] | null> {
-    const { seeds, start, stop, span, width, height } = input;
-    if (!seeds.length || seeds.length > 4) throw new Error('Select between one and four polygon shapes.');
-    if (!Number.isInteger(span) || span < 1 || span > 1000) throw new Error('Frames to track must be 1..1000.');
+    const { seeds, start, stop, span, width, height, trackerName = 'SAM2' } = input;
+    if (!seeds.length || seeds.length > MAX_TRACKING_OBJECTS) throw new Error(`Select between 1 and ${MAX_TRACKING_OBJECTS} polygon shapes.`);
+    if (!Number.isInteger(span) || span < 1 || span > MAX_TRACKING_FRAMES) throw new Error(`Frames to track must be 1..${MAX_TRACKING_FRAMES}.`);
     const frameNumbers = [...new Set(input.frameNumbers)].sort((a, b) => a - b);
     if (!frameNumbers.includes(start)) throw new Error('The seed frame does not belong to this job.');
     const end = Math.min(stop, start + span);
@@ -81,7 +84,7 @@ export async function track(
     if (cancelled()) return null;
     let response = await transport.call({ frame: start, shapes: seeds });
     if (cancelled()) return null;
-    validateReply(response, seeds.length, width, height);
+    validateReply(response, seeds.length, width, height, trackerName);
     // Preserve the user's exact seed contour, not the model's reconstruction of it.
     const results = seeds.map((seed) => [{ frame: start, points: [...seed.points], outside: false }]);
     let processed = 0;
@@ -97,7 +100,7 @@ export async function track(
             if (!continued) return null;
             response = continued;
             if (cancelled()) return null;
-            validateReply(response, seeds.length, width, height);
+            validateReply(response, seeds.length, width, height, trackerName);
             response.shapes.forEach((shape, index) => {
                 const previous = results[index][results[index].length - 1];
                 const points = shape?.points ?? previous.points;
@@ -107,7 +110,7 @@ export async function track(
             });
             processed += 1;
         }
-        progress(`SAM2 tracking: frame ${frame}`, Math.floor(((i + 1) / targets.length) * 99));
+        progress(`${trackerName} tracking: frame ${frame}`, Math.floor(((i + 1) / targets.length) * 99));
     }
     if (!processed) throw new Error('All later frames in the selected range are deleted.');
     // CVAT extrapolates the last visible keyframe. Explicitly terminate the new track

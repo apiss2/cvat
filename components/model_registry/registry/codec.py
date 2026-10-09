@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from .schema import Manifest, PolygonSettings
-from .sdk import Box, Mask
+from .sdk import Box, Mask, Tag
 
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_PIXELS = 16_000_000
@@ -211,12 +211,23 @@ def encode_results(results, manifest: Manifest, shape: tuple[int, ...]) -> list[
         return output
 
     if not isinstance(results, (list, tuple)) or len(results) > MAX_OBJECTS:
-        raise ValueError("predict must return a binary (N, H, W) numpy array or at most 2000 Box values")
+        raise ValueError("predict must return a binary (N, H, W) numpy array or at most 2000 Box, Tag or legacy Mask values")
     mask_values = 0
+    tag_ids: set[int] = set()
     for item in results:
-        if not isinstance(item, (Box, Mask)):
-            raise TypeError("detection results must be registry.sdk.Box (legacy segmentation Mask is also accepted)")
+        if not isinstance(item, (Box, Mask, Tag)):
+            raise TypeError("results must be registry.sdk.Box, Tag or legacy Mask")
         label, score = _class_and_score(item, labels)
+        if isinstance(item, Tag):
+            if label.type != "tag":
+                raise ValueError("Tag class_id must refer to a tag label")
+            if item.class_id in tag_ids:
+                raise ValueError("duplicate Tag class_id for the same image")
+            tag_ids.add(item.class_id)
+            if len(output) >= MAX_OBJECTS:
+                raise ValueError("predict output exceeds 2000 objects")
+            output.append({"label": label.name, "confidence": score, "type": "tag"})
+            continue
         if isinstance(item, Mask):
             # Compatibility for stored packages. New segmentation models return
             # an ndarray. Neither legacy Mask scores nor Box scores are filtered.
@@ -239,5 +250,7 @@ def encode_results(results, manifest: Manifest, shape: tuple[int, ...]) -> list[
             raise ValueError("box contains NaN or infinity")
         if not (0 <= x1 < x2 <= w and 0 <= y1 < y2 <= h):
             raise ValueError("box must be nonempty and in original image coordinates")
+        if len(output) >= MAX_OBJECTS:
+            raise ValueError("predict output exceeds 2000 objects")
         output.append({"label": label.name, "confidence": score, "type": "rectangle", "points": [x1, y1, x2, y2]})
     return output

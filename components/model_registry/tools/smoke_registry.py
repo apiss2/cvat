@@ -98,15 +98,21 @@ def main():
     def upload(kind, model=None, expected=None):
         boundary = '----registry-smoke-' + secrets.token_hex(12)
         parts = []
-        for name, value in [('model_id', model), ('expected_revision', expected)]:
+        directory = ROOT / 'examples' / kind
+        for name, value in [('expected_revision', expected),
+                            ('manifest', (directory / 'manifest.json').read_text(encoding='utf-8'))]:
             if value:
                 parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
-        parts.extend([
-            f'--{boundary}\r\nContent-Disposition: form-data; name="package"; filename="demo.zip"\r\nContent-Type: application/zip\r\n\r\n'.encode(),
-            (ROOT / 'examples' / f'{kind}-demo.zip').read_bytes(),
-            f'\r\n--{boundary}--\r\n'.encode(),
-        ])
-        operation = request('POST', '/api/models', b''.join(parts), 'multipart/form-data; boundary=' + boundary)
+        for field, filename, content_type in [('code', 'model.py', 'text/plain'),
+                                               ('weights', 'model.onnx', 'application/octet-stream'),
+                                               ('sample', 'sample.png', 'image/png')]:
+            parts.extend([
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n'.encode(),
+                (directory / filename).read_bytes(), b'\r\n',
+            ])
+        parts.append(f'--{boundary}--\r\n'.encode())
+        path = f'/api/models/{model}/update' if model else '/api/upload'
+        operation = request('POST', path, b''.join(parts), 'multipart/form-data; boundary=' + boundary)
         if not model:
             created.append(operation['model_id'])
         end = time.monotonic() + 210

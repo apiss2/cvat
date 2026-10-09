@@ -76,8 +76,8 @@ test('out-of-range seed rejected',async()=>{
 test('seed at end of job rejected',async()=>{
     await assert.rejects(()=>run({...input(),start:15},transport()),/no later frames/);
 });
-for(const span of [0,-1,1001,1.2,NaN]) test(`invalid span ${span}`,async()=>{
-    await assert.rejects(()=>run({...input(),span},transport()),/1..1000/);
+for(const span of [0,-1,10001,1.2,NaN]) test(`invalid span ${span}`,async()=>{
+    await assert.rejects(()=>run({...input(),span},transport()),/1..10000/);
 });
 test('invalid state/shape counts rejected',async()=>{
     await assert.rejects(()=>run(input(),transport({reply:()=>({states:[],shapes:[polygon]})})),/response/);
@@ -99,8 +99,8 @@ test('multiple objects keep consistent state and trajectory order',async()=>{
     assert.deepEqual(t.calls[1].states,['a','b']);
 });
 test('object limit enforced without requests',async()=>{
-    const i=input();i.seeds=Array(5).fill(polygon);const t=transport();
-    await assert.rejects(()=>run(i,t),/one and four/);assert.equal(t.calls.length,0);
+    const i=input();i.seeds=Array(17).fill(polygon);const t=transport();
+    await assert.rejects(()=>run(i,t),/1 and 16/);assert.equal(t.calls.length,0);
 });
 
 const {continueWithRetry}=require(path.join(process.env.SAM2_TEST_BUILD,'tracking.js'));
@@ -153,4 +153,17 @@ test('large result exceeds coordinate budget without returning partial tracks',a
     const i={...input(),start:0,stop:200,span:150,frameNumbers:Array.from({length:201},(_,n)=>n)};
     const t=transport({reply:()=>({states:['s'],shapes:[huge]})});
     await assert.rejects(()=>run(i,t),/too large/);
+});
+
+for(const count of [5,16]) test(`${count} objects remain ordered through continuation`,async()=>{
+    const seeds=Array.from({length:count},()=>structuredClone(polygon));
+    const states=seeds.map((_,n)=>`signed-${n}`);
+    const t=transport({reply:()=>({states,shapes:seeds})});
+    const result=await run({...input(),seeds},t);
+    assert.equal(result.length,count);assert.deepEqual(t.calls[1].states,states);
+});
+for(const span of [1001,10000]) test(`forward tracking accepts ${span} frame indices`,async()=>{
+    const i={...input(),start:0,stop:span,span,frameNumbers:Array.from({length:span+1},(_,n)=>n)};
+    const result=await run(i,transport());
+    assert.equal(result[0].length,span+1);assert.equal(result[0].at(-1).frame,span);
 });

@@ -11,7 +11,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +21,7 @@ from .auth import Auth, owner
 from .config import Settings
 from .http_limits import GuardMiddleware
 from .packages import MAX_ARCHIVE
+from .partial_updates import install_partial_updates
 from .runtime import Busy, DockerRuntime, RuntimeFailure
 from .schema import InvokeRequest, Manifest, function_id
 from .service import Gone, Service
@@ -130,14 +131,13 @@ def create_app(settings: Settings | None = None, runtime=None, service: Service 
     def get_model(model_id: str, request: Request):
         return describe_visible(service.store.model(model_id), request.state.user)
 
-    def check_update(request, model_id, expected):
-        if model_id:
-            record = service.store.model(model_id)
-            owner(request.state.user, record)
-            if record["deleted"]:
-                raise Gone("Model deleted")
-            if record["active_revision"] != (expected or None):
-                raise Conflict("Model changed; refresh before updating")
+    async def registration_fields(request: Request) -> None:
+        form = await request.form()
+        allowed = {"manifest", "code", "weights", "sample"}
+        if set(form) - allowed:
+            raise HTTPException(422, "Registration accepts only manifest, code, weights and sample; use the model update endpoint for updates")
+        if any(len(form.getlist(key)) != 1 for key in allowed - {"weights"}):
+            raise HTTPException(422, "Registration requires exactly one manifest, code and sample")
 
     def save_upload(src: UploadFile, dst, limit: int) -> int:
         count = 0
@@ -154,21 +154,8 @@ def create_app(settings: Settings | None = None, runtime=None, service: Service 
         os.close(fd)
         return Path(name)
 
-    @app.post("/api/models", status_code=202)
-    def upload_archive(request: Request, package: UploadFile = File(...), model_id: str = Form(""), expected_revision: str = Form("")):
-        check_update(request, model_id, expected_revision)
-        path = temporary_archive()
-        try:
-            with path.open("wb") as stream:
-                save_upload(package, stream, MAX_ARCHIVE)
-            return service.submit(path, request.state.user.name, model_id or None, expected_revision or None)
-        except BaseException:
-            path.unlink(missing_ok=True)
-            raise
-
-    @app.post("/api/upload", status_code=202)
-    def upload_files(request: Request, manifest: str = Form(...), code: UploadFile = File(...), weights: list[UploadFile] = File(...), sample: UploadFile = File(...), model_id: str = Form(""), expected_revision: str = Form("")):
-        check_update(request, model_id, expected_revision)
+    @app.post("/api/upload", status_code=202, dependencies=[Depends(registration_fields)])
+    def upload_files(request: Request, manifest: str = Form(...), code: UploadFile = File(...), weights: list[UploadFile] = File(...), sample: UploadFile = File(...)):
         if len(manifest) > 256 * 1024:
             raise HTTPException(413, "Manifest too large")
         parsed = Manifest.model_validate_json(manifest)
@@ -190,7 +177,7 @@ def create_app(settings: Settings | None = None, runtime=None, service: Service 
                 for weight in weights:
                     with archive.open(weight.filename, "w", force_zip64=True) as dst:
                         total += save_upload(weight, dst, MAX_ARCHIVE - total)
-            return service.submit(path, request.state.user.name, model_id or None, expected_revision or None)
+            return service.submit(path, request.state.user.name)
         except BaseException:
             path.unlink(missing_ok=True)
             raise
@@ -252,4 +239,5 @@ def create_app(settings: Settings | None = None, runtime=None, service: Service 
         result = service.infer(identifier, body.model_dump(exclude_none=True), rid)
         return JSONResponse(result, headers={"X-Request-ID": rid})
 
+    install_partial_updates(app, service, settings)
     return app

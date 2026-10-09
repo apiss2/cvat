@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse
 
-from conftest import FakeRuntime, ROOT, SESSIONS, TOKENS
+from conftest import FakeRuntime, ROOT, SESSIONS, TOKENS, model_files
 from registry.auth import Auth
 from registry.config import Settings
 from registry.manager import create_app
@@ -166,7 +166,7 @@ def test_registry_has_no_credential_or_session_management_endpoints(cvat_ctx, pa
 def test_mutations_reject_csrf_before_parsing_upload_or_forwarding_cookie(cvat_ctx, headers):
     ctx = cvat_ctx
     cvat_login(ctx)
-    response = ctx['client'].post(PREFIX+'/api/models',
+    response = ctx['client'].post(PREFIX+'/api/upload',
                                   headers={**headers, 'Content-Length': str(3*1024**3)}, content=b'x')
     assert response.status_code == 403
     assert ctx['cvat'].calls == []
@@ -175,7 +175,7 @@ def test_mutations_reject_csrf_before_parsing_upload_or_forwarding_cookie(cvat_c
 def test_authenticated_same_origin_upload_is_limited_after_authentication(cvat_ctx):
     ctx = cvat_ctx
     cvat_login(ctx)
-    response = ctx['client'].post(PREFIX+'/api/models',
+    response = ctx['client'].post(PREFIX+'/api/upload',
                                   headers={**mutation_headers(), 'Content-Length': str(3*1024**3)}, content=b'x')
     assert response.status_code == 413
     assert len(ctx['cvat'].calls) == 1
@@ -188,9 +188,9 @@ def test_upload_accepts_current_identity_and_clients_without_identity_hint(cvat_
     supplied = mutation_headers()
     if expected_id is not None:
         supplied['X-Registry-User-ID'] = expected_id
-    response = ctx['client'].post(PREFIX+'/api/models', headers=supplied, files={
-        'package': ('model.zip', (ROOT/'examples/segmentation-demo.zip').read_bytes(), 'application/zip'),
-    })
+    response = ctx['client'].post(PREFIX+'/api/upload', headers=supplied,
+                                  data={'manifest':(ROOT/'examples/segmentation/manifest.json').read_text(encoding='utf-8')},
+                                  files=model_files())
     assert response.status_code == 202, response.text
     assert response.json()['owner'] == 'alice'
     assert len(ctx['cvat'].calls) == 1
@@ -224,8 +224,8 @@ def test_stale_or_nonexact_identity_rejected_before_reading_upload_body(
 
     scope = {
         'type': 'http', 'asgi': {'version': '3.0'}, 'http_version': '1.1',
-        'method': 'POST', 'scheme': 'https', 'path': '/api/models',
-        'raw_path': b'/api/models', 'query_string': b'',
+        'method': 'POST', 'scheme': 'https', 'path': '/api/upload',
+        'raw_path': b'/api/upload', 'query_string': b'',
         'headers': [(key.lower().encode(), value.encode()) for key, value in headers.items()],
         'client': ('127.0.0.1', 1), 'server': ('cvat.example', 443),
     }
@@ -240,7 +240,7 @@ def test_stale_or_nonexact_identity_rejected_before_reading_upload_body(
 
 
 def test_cross_origin_preflight_never_grants_browser_access(cvat_ctx):
-    response = cvat_ctx['client'].options(PREFIX+'/api/models', headers={
+    response = cvat_ctx['client'].options(PREFIX+'/api/upload', headers={
         'Origin': 'https://attacker.example', 'Access-Control-Request-Method': 'POST',
         'Access-Control-Request-Headers': 'X-Registry-Request',
     })

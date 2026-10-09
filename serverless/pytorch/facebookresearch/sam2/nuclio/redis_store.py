@@ -1,23 +1,19 @@
 # SPDX-License-Identifier: MIT
-"""One Redis hash per multi-object tracking run; optimistic, atomic revision CAS.
-
-No lease lock can expire while a GPU call is running. The CAS checks the revision
-at commit time. A completed response is stored with the state to support retries.
-"""
+"""Shared Redis state storage with explicit model namespaces and atomic revisions."""
 from dataclasses import dataclass
 import json
 import os
 import re
-from protocol import ProtocolError, MAX_PIXELS
+from protocol import ProtocolError, MAX_PIXELS, MAX_OBJECTS
 
-CREATE = """-- sam2-create
+CREATE = """-- tracker-create
 if redis.call('EXISTS', KEYS[1]) ~= 0 then return 0 end
 redis.call('HSET', KEYS[1], 'revision', '0', 'payload', ARGV[1],
            'meta', ARGV[2], 'request', '', 'shapes', ARGV[3])
 redis.call('EXPIRE', KEYS[1], ARGV[4])
 return 1
 """
-CAS = """-- sam2-cas
+CAS = """-- tracker-cas
 local revision = redis.call('HGET', KEYS[1], 'revision')
 if not revision then return {-1, ''} end
 local current = tonumber(revision)
@@ -48,7 +44,7 @@ class Record:
 
 class RedisStore:
     def __init__(self, client, *, ttl=28800, prefix="cvat:sam2:",
-                 max_bytes=64 * 1024 * 1024, errors=(OSError, TimeoutError)):
+                 max_bytes=256 * 1024 * 1024, errors=(OSError, TimeoutError)):
         if type(ttl) is not int or not 60 <= ttl <= 604800:
             raise ValueError("State TTL must be 60..604800 seconds")
         if not re.fullmatch(r"[a-zA-Z0-9:_-]{1,100}", prefix):
@@ -57,21 +53,25 @@ class RedisStore:
         self.max_bytes, self.errors = max_bytes, errors
 
     @classmethod
-    def from_env(cls):
+    def from_env(cls, namespace: str):
         import redis
+        if namespace not in ("SAM2", "SAM31"):
+            raise ValueError("Unknown tracker namespace")
+        def setting(name, default=None):
+            return os.getenv(namespace + "_" + name, default)
         client = redis.Redis(
-            host=os.getenv("SAM2_REDIS_HOST", "sam2_redis"),
-            port=int(os.getenv("SAM2_REDIS_PORT", "6379")),
-            db=int(os.getenv("SAM2_REDIS_DB", "0")),
-            username=os.getenv("SAM2_REDIS_USERNAME") or None,
-            password=os.getenv("SAM2_REDIS_PASSWORD") or None,
-            ssl=os.getenv("SAM2_REDIS_TLS", "false").lower() == "true",
+            host=setting("REDIS_HOST", namespace.lower() + "_redis"),
+            port=int(setting("REDIS_PORT", "6379")),
+            db=int(setting("REDIS_DB", "0")),
+            username=setting("REDIS_USERNAME") or None,
+            password=setting("REDIS_PASSWORD") or None,
+            ssl=setting("REDIS_TLS", "false").lower() == "true",
             socket_connect_timeout=5, socket_timeout=30, decode_responses=False,
             health_check_interval=30,
         )
-        store = cls(client, ttl=int(os.getenv("SAM2_SESSION_TTL_SECONDS", "28800")),
-                    prefix=os.getenv("SAM2_REDIS_PREFIX", "cvat:sam2:"),
-                    max_bytes=int(os.getenv("SAM2_STATE_MAX_BYTES", str(64 * 1024 * 1024))),
+        store = cls(client, ttl=int(setting("SESSION_TTL_SECONDS", "28800")),
+                    prefix=setting("REDIS_PREFIX", f"cvat:{namespace.lower()}:"),
+                    max_bytes=int(setting("STATE_MAX_BYTES", str(256 * 1024 * 1024))),
                     errors=(redis.exceptions.RedisError, OSError, TimeoutError))
         store._call(client.ping)
         return store
@@ -85,11 +85,11 @@ class RedisStore:
         try:
             return method(*args)
         except self.errors as exc:
-            raise ProtocolError("SAM2 state storage is unavailable; retry the same request", 503) from exc
+            raise ProtocolError("Tracking state storage is unavailable; retry the same request", 503) from exc
 
     def _check_payload(self, payload):
         if not isinstance(payload, bytes) or len(payload) > self.max_bytes:
-            raise ProtocolError("Temporal memory exceeds SAM2_STATE_MAX_BYTES", 413)
+            raise ProtocolError("Temporal memory exceeds the configured state limit", 413)
 
     def create(self, sid, payload, meta, shapes):
         self._check_payload(payload)
@@ -104,7 +104,7 @@ class RedisStore:
             if set(fields) != {b"revision", b"payload", b"meta", b"request", b"shapes"}:
                 raise ValueError("Unexpected state fields")
             self._check_payload(fields[b"payload"])
-            if len(fields[b"meta"]) > 1024 or len(fields[b"shapes"]) > 2 * 1024 * 1024:
+            if len(fields[b"meta"]) > 1024 or len(fields[b"shapes"]) > 8 * 1024 * 1024:
                 raise ValueError("Oversized state metadata")
             revision = int(fields[b"revision"])
             meta = json.loads(fields[b"meta"])
@@ -115,7 +115,7 @@ class RedisStore:
             if not isinstance(meta, dict) or set(meta) != {"identity", "count", "width", "height"}:
                 raise ValueError("Invalid metadata")
             if (not isinstance(meta["identity"], str) or not re.fullmatch(r"[0-9a-f]{64}", meta["identity"]) or
-                    type(meta["count"]) is not int or not 1 <= meta["count"] <= 4 or
+                    type(meta["count"]) is not int or not 1 <= meta["count"] <= MAX_OBJECTS or
                     len(shapes) != meta["count"]):
                 raise ValueError("Invalid model or object count")
             if any(type(meta[key]) is not int or meta[key] <= 0 for key in ("width", "height")) or meta["width"] * meta["height"] > MAX_PIXELS:
@@ -126,7 +126,7 @@ class RedisStore:
                 raise ValueError("Invalid request fingerprint")
             return Record(revision, fields[b"payload"], meta, request, shapes)
         except (ValueError, TypeError, KeyError, UnicodeError) as exc:
-            raise ProtocolError("Stored SAM2 state is invalid", 409) from exc
+            raise ProtocolError("Stored tracking state is invalid", 409) from exc
 
     def commit(self, sid, expected, request, payload, shapes):
         self._check_payload(payload)

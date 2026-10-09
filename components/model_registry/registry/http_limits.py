@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
+import re
 from fastapi import HTTPException, Request
 from starlette.responses import JSONResponse
 
@@ -24,7 +25,11 @@ class GuardMiddleware:
         root_path = scope.get("root_path", "").rstrip("/")
         if root_path and path.startswith(root_path + "/"):
             path = path[len(root_path):]
-        limit = (2 * 1024**3 + 2 * 1024**2) if path in ("/api/models", "/api/upload") and request.method == "POST" else self.max_bytes
+        is_upload = request.method == "POST" and (
+            path == "/api/upload"
+            or re.fullmatch(r"/api/models/[0-9a-f]{20}/update", path) is not None
+        )
+        limit = (2 * 1024**3 + 2 * 1024**2) if is_upload else self.max_bytes
         started = False
 
         async def guarded_send(message):
