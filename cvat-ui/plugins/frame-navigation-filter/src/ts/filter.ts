@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-interface AnnotationSession {
-    annotations: {
-        get(frame: number, allTracks: boolean, filters: object[]): Promise<unknown>;
-    };
-}
-
-// Only the Job display API is intercepted. Search, export and Task APIs retain
-// their original filters. Re-entering with [] preserves all other core checks.
+// Only Job.annotations.get is intercepted. Search, export and Task APIs retain
+// their original filters. Defer the read to core so every hook runs once and
+// other enter hooks can still prevent the method before it has any side effects.
 export function createNavigationFilterPlugin(enabled: () => boolean) {
     return {
         name: 'Frame navigation filter',
@@ -19,17 +14,16 @@ export function createNavigationFilterPlugin(enabled: () => boolean) {
                         annotations: {
                             get: {
                                 async enter(
-                                    this: AnnotationSession,
                                     _plugin: unknown,
                                     frame: number,
                                     allTracks: boolean,
                                     filters: object[],
-                                ): Promise<{ preventMethodCallWithReturn: unknown } | undefined> {
+                                ): Promise<{ methodArguments: unknown[] } | undefined> {
                                     if (!enabled() || !Array.isArray(filters) || !filters.length) {
                                         return undefined;
                                     }
                                     return {
-                                        preventMethodCallWithReturn: await this.annotations.get(frame, allTracks, []),
+                                        methodArguments: [frame, allTracks, []],
                                     };
                                 },
                             },
