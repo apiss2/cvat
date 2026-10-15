@@ -12,9 +12,11 @@ import Select from 'antd/lib/select';
 import Space from 'antd/lib/space';
 import Table from 'antd/lib/table';
 import {
-    buildMapping, buildPlan, compatible, executePlan, readLabels,
-    type API, type Condition, type Frame, type LabelSpec, type Model, type Plan, type Report, type Scope,
+    buildMapping, buildPlan, executePlan, readLabels,
+    type API, type Condition, type Frame, type LabelSpec, type Mapping, type Model, type Plan, type Report, type Scope,
 } from './engine';
+import { MappingEditor } from './mapper';
+import { supportsThreshold, thresholdParameters } from './model-options';
 
 export interface DialogHandle { focus(): void; dispose(): void }
 export interface DialogOptions {
@@ -51,7 +53,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
         const [models, setModels] = useState<Model[]>([]);
         const [labels, setLabels] = useState<LabelSpec[]>([]);
         const [modelId, setModelId] = useState<string>();
-        const [choices, setChoices] = useState<Record<string, string>>({});
+        const [choices, setChoices] = useState<Mapping>({});
         const [condition, setCondition] = useState<Condition>({ mode: 'any', labelIds: [] });
         const [threshold, setThreshold] = useState<number | null>(0.5);
         const [convert, setConvert] = useState(false);
@@ -60,6 +62,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
         const [report, setReport] = useState<Report>();
         const [ran, setRan] = useState(false);
         const model = models.find((item) => String(item.id) === modelId);
+        const thresholdEditable = !!model && supportsThreshold(model);
         let mappingValid = false;
         if (model) {
             try { buildMapping(model.labels, labels, choices); mappingValid = true; } catch { /* Show selectors below. */ }
@@ -67,7 +70,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
 
         useEffect(() => {
             let alive = true;
-            Promise.all([options.loadModels(), readLabels(options.api, options.scope)])
+            Promise.all([options.loadModels(), readLabels(options.api, options.scope, () => session.cancelled)])
                 .then(([available, targetLabels]) => {
                     if (!alive) return;
                     setModels(available.filter((item) => item.kind === 'detector'));
@@ -97,7 +100,8 @@ export function openDialog(options: DialogOptions): DialogHandle {
             } catch (reason) { if (!session.disposed) setError(String(reason)); } finally { finish(); }
         };
         const run = async (): Promise<void> => {
-            if (!plan || !model || threshold === null || session.busy) return;
+            if (!plan || !model || session.disposed || session.busy || !mappingValid ||
+                (thresholdEditable && threshold === null)) return;
             start(); setRan(true); setReport({ outcomes: [], cancelled: false });
             try {
                 await executePlan(options.api, plan, new Set(selected), model, { ...choices }, threshold, convert,
@@ -107,15 +111,14 @@ export function openDialog(options: DialogOptions): DialogHandle {
         };
         const selectModel = (id: string): void => {
             setModelId(id);
-            const next = models.find((item) => String(item.id) === id);
-            setChoices(Object.fromEntries((next?.labels ?? [])
-                .filter((item) => labels.some((label) => label.name === item.name && compatible(item, label)))
-                .map((item) => [item.name, item.name])));
+            // Remount MappingEditor by model ID and discard the previous model's mapping.
+            setChoices({});
         };
         const downloadReport = (): void => {
             const body = JSON.stringify({
                 scope: options.scope, condition: plan?.condition, model: model?.id,
-                selected: [...selected], threshold, conv_mask_to_poly: convert, report,
+                selected: [...selected], mapping: choices, ...(model ? thresholdParameters(model, threshold) : {}),
+                conv_mask_to_poly: convert, report,
             }, null, 2);
             const url = URL.createObjectURL(new Blob([body], { type: 'application/json' }));
             const link = document.createElement('a');
@@ -156,22 +159,22 @@ export function openDialog(options: DialogOptions): DialogHandle {
                             <Select value={modelId} onChange={selectModel} placeholder='モデルを選択'
                                 options={models.map((item) => ({ value: String(item.id), label: item.name }))} />
                         </Form.Item>
-                        {model?.labels.map((item) => <Form.Item key={item.name} label={`出力先: ${item.name} (${item.type})`}>
-                            <Select allowClear placeholder='出力しない' value={choices[item.name] || undefined}
-                                onChange={(name?: string) => setChoices({ ...choices, [item.name]: name ?? '' })}
-                                options={labels.filter((label) => compatible(item, label))
-                                    .map((label) => ({ value: label.name, label: label.name }))} />
-                        </Form.Item>)}
-                        <Form.Item label='信頼度の閾値（0から1）'>
+                        {model && <Form.Item label='出力ラベルと属性の対応'>
+                            <MappingEditor key={String(model.id)} model={model} labels={labels}
+                                disabled={busy || loading || ran} onChange={setChoices} />
+                        </Form.Item>}
+                        {thresholdEditable && <Form.Item label='信頼度の閾値（0から1）'>
                             <InputNumber value={threshold} min={0} max={1} step={0.05} onChange={setThreshold} />
-                        </Form.Item>
+                        </Form.Item>}
+                        {model && !thresholdEditable && <Alert type='info'
+                            message='このモデルの検出条件は変更できません。' />}
                         <Checkbox checked={convert} onChange={(event) => setConvert(event.target.checked)}>マスクをポリゴンに変換</Checkbox>
                     </Form>
                     <Space wrap>
                         <Button onClick={() => { void preview(); }} disabled={busy || loading ||
                             (condition.mode !== 'untagged' && !condition.labelIds.length)}>対象をプレビュー</Button>
                         <Button type='primary' onClick={() => { void run(); }} disabled={busy || loading || !plan ||
-                            !selected.size || !mappingValid || threshold === null || ran}>選択画像に実行</Button>
+                            !selected.size || !mappingValid || (thresholdEditable && threshold === null) || ran}>選択画像に実行</Button>
                         {busy && <Button danger disabled={stopping} onClick={() => {
                             session.cancelled = true; setStopping(true);
                         }}>{stopping ? '現在の通信の終了を待って停止します' : '中止'}</Button>}

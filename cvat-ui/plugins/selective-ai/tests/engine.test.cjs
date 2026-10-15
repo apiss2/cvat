@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const engine = require('./load.cjs')('engine.ts');
+const load = require('./load.cjs');
+const engine = load('engine.ts', { './model-options': load('model-options.ts') });
 const { selectFrames, buildPlan, executePlan, checkedOutput, buildMapping, getAll } = engine;
 const scope = { type: 'task', id: 5 };
 const condition = { mode: 'any', labelIds: [1] };
 const model = { id: 'onnx-model-r1', name: 'model', kind: 'detector', labels: [{ name: 'seg', type: 'mask' }] };
-const choices = { seg: 'mask' };
+const choices = { seg: { name: 'mask', attributes: {} } };
 const clone = (value) => structuredClone(value);
 
 function fixture() {
@@ -45,7 +46,7 @@ function fixture() {
 async function run(f, opts = {}) {
     const plan = opts.plan ?? await buildPlan(f.api, scope, condition);
     return executePlan(f.api, plan, opts.selected ?? new Set(plan.frames.map((row) => row.key)),
-        opts.model ?? model, opts.choices ?? choices, opts.threshold ?? 0.5, false,
+        opts.model ?? model, opts.choices ?? choices, ('threshold' in opts ? opts.threshold : 0.5), false,
         opts.cancelled ?? (() => false), opts.progress ?? (() => {}));
 }
 
@@ -164,7 +165,7 @@ test('classification tags can be saved on untagged frames without clearing masks
     const f = fixture(); const oldMask = clone(f.data.shapes[0]);
     const plan = await buildPlan(f.api, scope, { mode: 'untagged', labelIds: [] });
     f.api.infer = async (_, __, args) => ({ tags: [{ frame: args.frame, label_id: 1, source: 'auto' }], shapes: [], tracks: [] });
-    const report = await run(f, { plan, model: { ...model, labels: [{ name: 'A', type: 'tag' }] }, choices: { A: 'A' } });
+    const report = await run(f, { plan, model: { ...model, labels: [{ name: 'A', type: 'tag' }] }, choices: { A: { name: 'A', attributes: {} } } });
     assert.equal(report.outcomes[0].status, 'saved'); assert.deepEqual(f.data.shapes[0], oldMask);
     assert.equal(f.data.tags.at(-1).frame, 3);
 });
@@ -225,7 +226,135 @@ test('invalid selection, threshold, interactor or empty mapping performs no infe
 test('mapping preserves same-name attributes and recursively maps skeleton children', () => {
     const model = [{ name: 'body', type: 'skeleton', sublabels: [{ name: 'point', type: 'points', attributes: [{ name: 'visible' }] }] }];
     const labels = [{ name: 'person', type: 'skeleton', sublabels: [{ name: 'point', type: 'points', attributes: [{ name: 'visible' }] }] }];
-    assert.deepEqual(buildMapping(model, labels, { body: 'person' }), { body: { name: 'person', attributes: {},
-        sublabels: { point: { name: 'point', attributes: { visible: 'visible' } } } } });
-    assert.throws(() => buildMapping([{ name: 'mask', type: 'mask' }], [{ name: 'tag', type: 'tag' }], { mask: 'tag' }));
+    const selected = { body: { name: 'person', attributes: {},
+        sublabels: { point: { name: 'point', attributes: { visible: 'visible' } } } } };
+    assert.deepEqual(buildMapping(model, labels, selected), selected);
+    assert.throws(() => buildMapping([{ name: 'mask', type: 'mask' }], [{ name: 'tag', type: 'tag' }], { mask: { name: 'tag', attributes: {} } }));
+});
+
+for (const [sourceType, targetType] of [['any', 'skeleton'], ['skeleton', 'any']]) {
+    test(`incompatible ${sourceType} -> ${targetType} is rejected before inference`, async () => {
+        const f = fixture();
+        f.labels.push({ id: 11, name: 'target', type: targetType });
+        const source = { name: 'source', type: sourceType };
+        const target = { name: 'target', type: targetType };
+        assert.equal(engine.compatible(source, target), false);
+        const mapping = { source: { name: 'target', attributes: {}, sublabels: {} } };
+        assert.throws(() => buildMapping([source], [target], mapping), /ラベル対応/);
+        const report = await run(f, { model: { ...model, labels: [source] }, choices: mapping });
+        assert.match(report.error, /ラベル対応/);
+        assert.equal(f.calls.length, 0); assert.equal(f.writes.length, 0);
+    });
+}
+
+test('ordinary any and mask/polygon compatibility remains available', () => {
+    for (const [source, target] of [['any', 'tag'], ['rectangle', 'any'], ['any', 'any'],
+        ['mask', 'polygon'], ['polygon', 'mask'], ['skeleton', 'skeleton']]) {
+        assert.equal(engine.compatible({ type: source }, { type: target }), true);
+    }
+});
+
+for (const path of ['/labels', '/tasks']) {
+    test(`preview cancellation during ${path} page 1 prevents page 2 and further reads`, async () => {
+        const f = fixture(); let cancelled = false; const reads = []; const get = f.api.get;
+        f.api.get = async (url, params) => {
+            reads.push([url, params.page]);
+            if (url === path) {
+                cancelled = true;
+                return { count: 101, next: 'page2', results: Array.from({ length: 100 }, (_, i) => ({
+                    ...(path === '/labels' ? f.labels[0] : f.task), id: i + 1,
+                })) };
+            }
+            return get(url, params);
+        };
+        await assert.rejects(buildPlan(f.api, { type: 'project', id: 7 }, condition, () => cancelled), /中止/);
+        assert.deepEqual(reads.filter(([url]) => url === path), [[path, 1]]);
+        assert.equal(reads.at(-1)[0], path);
+        assert.equal(f.calls.length + f.writes.length, 0);
+    });
+}
+
+test('cancellation before preview sends no request', async () => {
+    const f = fixture();
+    await assert.rejects(buildPlan(f.api, scope, condition, () => true), /中止/);
+    assert.equal(f.gets.length, 0);
+});
+
+test('pagination checks cancellation before starting each next page', async () => {
+    let checks = 0; let requests = 0;
+    const api = { get: async () => {
+        requests++; return { count: 2, next: 'page2', results: [{ id: 1 }] };
+    } };
+    await assert.rejects(getAll(api, '/tasks', {}, () => ++checks === 3), /中止/);
+    assert.equal(requests, 1);
+});
+
+for (const stopAt of ['/tasks/5', '/tasks/5/data/meta', '/tasks/5/annotations']) {
+    test(`preview cancellation after ${stopAt} stops before the next operation`, async () => {
+        const f = fixture(); let cancelled = false; const get = f.api.get;
+        f.api.get = async (...args) => {
+            const response = await get(...args);
+            if (args[0] === stopAt) cancelled = true;
+            return response;
+        };
+        await assert.rejects(buildPlan(f.api, scope, condition, () => cancelled), /中止/);
+        assert.equal(f.gets.at(-1)[0], stopAt);
+        assert.equal(f.calls.length + f.writes.length, 0);
+    });
+}
+
+for (const stopAt of ['/labels', '/lambda/requests', '/tasks/5', '/tasks/5/data/meta', '/tasks/5/annotations']) {
+    test(`execution cancellation after ${stopAt} is not reported as failure and sends no inference`, async () => {
+        const f = fixture(); const plan = await buildPlan(f.api, scope, condition);
+        let cancelled = false; const get = f.api.get;
+        f.api.get = async (...args) => {
+            const response = await get(...args);
+            if (args[0] === stopAt) cancelled = true;
+            return response;
+        };
+        const report = await run(f, { plan, cancelled: () => cancelled });
+        assert.equal(report.cancelled, true); assert.equal(report.error, undefined);
+        assert.deepEqual(report.outcomes, []); assert.equal(f.gets.at(-1)[0], stopAt);
+        assert.equal(f.calls.length + f.writes.length, 0);
+    });
+}
+
+test('registry requests omit the ineffective threshold, including a stale/null form value', async () => {
+    for (const threshold of [0, 0.8, null, NaN]) {
+        const f = fixture();
+        const report = await run(f, { model: { ...model, id: 'mr-0123456789abcdef0123-0123456789abcdef' }, threshold });
+        assert.equal(report.error, undefined);
+        assert.equal(f.calls.length, 2);
+        assert.ok(f.calls.every((call) => !Object.hasOwn(call.args, 'threshold')));
+    }
+});
+
+test('ordinary Nuclio requests retain configured thresholds, including zero', async () => {
+    for (const threshold of [0, 0.75, 1]) {
+        const f = fixture(); const report = await run(f, { threshold });
+        assert.equal(report.error, undefined);
+        assert.ok(f.calls.every((call) => call.args.threshold === threshold));
+    }
+    const f = fixture(); const report = await run(f, { threshold: null });
+    assert.match(report.error, /閾値/); assert.equal(f.calls.length, 0);
+});
+
+test('explicit renamed attributes reach inference and deleted attributes fail closed', async () => {
+    const f = fixture(); f.labels[2].attributes = [{ name: 'reviewed' }];
+    const withAttribute = { ...model, labels: [{ ...model.labels[0], attributes: [{ name: 'visible' }] }] };
+    const mapping = { seg: { name: 'mask', attributes: { visible: 'reviewed' } } };
+    const report = await run(f, { model: withAttribute, choices: mapping });
+    assert.equal(report.error, undefined); assert.deepEqual(f.calls[0].args.mapping, mapping);
+    f.labels[2].attributes = []; f.calls.length = 0;
+    const failed = await run(f, { model: withAttribute, choices: mapping });
+    assert.match(failed.error, /属性対応/); assert.equal(f.calls.length, 0);
+});
+
+test('explicit skeleton-point mappings preserve different names and reject stale children', () => {
+    const models = [{ name: 'body', type: 'skeleton', sublabels: [{ name: 'head', type: 'points' }] }];
+    const targets = [{ name: 'person', type: 'skeleton', sublabels: [{ name: 'nose', type: 'points' }] }];
+    const selected = { body: { name: 'person', attributes: {}, sublabels: { head: { name: 'nose', attributes: {} } } } };
+    assert.deepEqual(buildMapping(models, targets, selected), selected);
+    targets[0].sublabels = [];
+    assert.throws(() => buildMapping(models, targets, selected), /ラベル対応/);
 });

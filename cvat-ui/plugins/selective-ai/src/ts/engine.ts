@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { thresholdParameters } from './model-options';
 
 export interface Scope { type: 'task' | 'project'; id: number }
 export interface Condition { mode: 'any' | 'all' | 'none' | 'untagged'; labelIds: number[] }
@@ -7,7 +8,8 @@ export interface LabelSpec {
     name: string;
     type: string;
     parent?: number | null;
-    attributes?: { name: string }[];
+    color?: string;
+    attributes?: { name: string; input_type?: string; values?: string[] }[];
     sublabels?: LabelSpec[];
 }
 export interface Model { id: string | number; name: string; kind: string; labels: LabelSpec[] }
@@ -31,7 +33,7 @@ export interface Mapping { [name: string]: MappingItem }
 export interface API {
     get<T>(path: string, params?: Record<string, string | number>): Promise<T>;
     infer(taskId: number, modelId: string | number, args: {
-        frame: number; threshold: number; mapping: Mapping; conv_mask_to_poly: boolean;
+        frame: number; threshold?: number; mapping: Mapping; conv_mask_to_poly: boolean;
     }): Promise<Collection>;
     append(taskId: number, data: Collection): Promise<void>;
 }
@@ -48,15 +50,29 @@ export function validateCondition(condition: Condition): void {
     }
 }
 
+class CancelledError extends Error {
+    constructor() { super('処理を中止しました。'); }
+}
+
+async function checkedGet<T>(
+    api: API, path: string, params: Record<string, string | number>, cancelled: () => boolean,
+): Promise<T> {
+    if (cancelled()) throw new CancelledError();
+    const result = await api.get<T>(path, params);
+    if (cancelled()) throw new CancelledError();
+    return result;
+}
+
 export async function getAll<T extends { id: number }>(
     api: API, path: string, params: Record<string, string | number>,
+    cancelled: () => boolean = () => false,
 ): Promise<T[]> {
     const result: T[] = [];
     const ids = new Set<number>();
     let expected: number | undefined;
     for (let page = 1; ; page++) {
-        const data = await api.get<{ count: number; next: string | null; results: T[] }>(
-            path, { ...params, page_size: 100, page },
+        const data = await checkedGet<{ count: number; next: string | null; results: T[] }>(
+            api, path, { ...params, page_size: 100, page }, cancelled,
         );
         if (!Number.isSafeInteger(data.count) || data.count < 0 || !Array.isArray(data.results) ||
             (expected !== undefined && data.count !== expected)) {
@@ -76,9 +92,11 @@ export async function getAll<T extends { id: number }>(
     }
 }
 
-export async function readLabels(api: API, scope: Scope): Promise<LabelSpec[]> {
+export async function readLabels(
+    api: API, scope: Scope, cancelled: () => boolean = () => false,
+): Promise<LabelSpec[]> {
     if (!positiveID(scope.id) || !['task', 'project'].includes(scope.type)) throw new Error('対象IDが不正です。');
-    return (await getAll<LabelSpec & { id: number }>(api, '/labels', { [`${scope.type}_id`]: scope.id }))
+    return (await getAll<LabelSpec & { id: number }>(api, '/labels', { [`${scope.type}_id`]: scope.id }, cancelled))
         .filter((label) => !label.parent);
 }
 
@@ -132,16 +150,16 @@ function checkTask(task: TaskInfo, scope: Scope): void {
 export async function buildPlan(
     api: API, scope: Scope, condition: Condition, cancelled: () => boolean = () => false,
 ): Promise<Plan> {
-    checkLabels(await readLabels(api, scope), condition);
-    const tasks = scope.type === 'task' ? [await api.get<TaskInfo>(`/tasks/${scope.id}`)] :
-        await getAll<TaskInfo>(api, '/tasks', { project_id: scope.id, sort: 'id' });
+    checkLabels(await readLabels(api, scope, cancelled), condition);
+    const tasks = scope.type === 'task' ? [await checkedGet<TaskInfo>(api, `/tasks/${scope.id}`, {}, cancelled)] :
+        await getAll<TaskInfo>(api, '/tasks', { project_id: scope.id, sort: 'id' }, cancelled);
     const frames: Frame[] = [];
     for (const task of tasks) {
-        if (cancelled()) throw new Error('プレビューを中止しました。');
+        if (cancelled()) throw new CancelledError();
         checkTask(task, scope);
-        const meta = await api.get<Meta>(`/tasks/${task.id}/data/meta`);
+        const meta = await checkedGet<Meta>(api, `/tasks/${task.id}/data/meta`, {}, cancelled);
         if (meta.size !== task.size) throw new Error(`Task #${task.id}: フレーム数が変更されています。`);
-        const annotations = await api.get<Collection>(`/tasks/${task.id}/annotations`);
+        const annotations = await checkedGet<Collection>(api, `/tasks/${task.id}/annotations`, {}, cancelled);
         for (const frame of selectFrames(meta, annotations.tags, condition)) {
             frames.push({
                 key: `${task.id}:${frame}`, taskId: task.id, frame,
@@ -150,38 +168,47 @@ export async function buildPlan(
         }
         // Do not retain masks/shapes or image pixels in a project-wide plan.
     }
-    if (cancelled()) throw new Error('プレビューを中止しました。');
+    if (cancelled()) throw new CancelledError();
     return { scope: { ...scope }, condition: { ...condition, labelIds: [...condition.labelIds] }, tasks, frames };
 }
 
 export function compatible(model: LabelSpec, target: LabelSpec): boolean {
-    return model.type === target.type || model.type === 'any' || target.type === 'any' ||
+    return model.type === target.type ||
+        (model.type === 'any' && target.type !== 'skeleton') ||
+        (target.type === 'any' && model.type !== 'skeleton') ||
         (['mask', 'polygon'].includes(model.type) && ['mask', 'polygon'].includes(target.type));
 }
 
+// Validate the existing LabelsMapper's explicit selection against freshly read
+// labels. Never silently rebuild it by name: that would lose attribute/point
+// selections and could turn an empty mapping into the server's auto-mapping.
 export function buildMapping(
-    models: LabelSpec[], targets: LabelSpec[], choices: Record<string, string>,
+    models: LabelSpec[], targets: LabelSpec[], choices: Mapping, allowEmpty = false,
 ): Mapping {
     const pairs: [string, MappingItem][] = [];
-    for (const model of models) {
-        const name = Object.prototype.hasOwnProperty.call(choices, model.name) ? choices[model.name] : undefined;
-        if (!name) continue;
-        const target = targets.find((label) => label.name === name);
-        if (!target || !compatible(model, target)) throw new Error(`ラベル対応が不正です: ${model.name}`);
-        const attributes = Object.fromEntries((model.attributes ?? [])
-            .filter((attr) => target.attributes?.some((candidate) => candidate.name === attr.name))
-            .map((attr) => [attr.name, attr.name]));
-        const item: MappingItem = { name, attributes };
-        if (model.type === 'skeleton') {
-            if (target.type !== 'skeleton') throw new Error('SkeletonにはSkeletonラベルを対応付けてください。');
-            item.sublabels = buildMapping(model.sublabels ?? [], target.sublabels ?? [],
-                Object.fromEntries((model.sublabels ?? [])
-                    .filter((child) => target.sublabels?.some((other) => other.name === child.name && compatible(child, other)))
-                    .map((child) => [child.name, child.name])));
+    for (const [modelName, choice] of Object.entries(choices)) {
+        const model = models.find((label) => label.name === modelName);
+        const target = targets.find((label) => label.name === choice?.name);
+        if (!model || !target || !compatible(model, target)) {
+            throw new Error(`ラベル対応が不正です: ${modelName}`);
         }
-        pairs.push([model.name, item]);
+        const attributes = Object.entries(choice.attributes);
+        for (const [source, destination] of attributes) {
+            if (!model.attributes?.some((attr) => attr.name === source) ||
+                !target.attributes?.some((attr) => attr.name === destination)) {
+                throw new Error(`属性対応が不正です: ${modelName}.${source}`);
+            }
+        }
+        const item: MappingItem = { name: target.name, attributes: Object.fromEntries(attributes) };
+        if (model.type === 'skeleton') {
+            if (!choice.sublabels) throw new Error('Skeleton要素の対応が必要です。');
+            item.sublabels = buildMapping(model.sublabels ?? [], target.sublabels ?? [], choice.sublabels, true);
+        } else if (choice.sublabels !== undefined) {
+            throw new Error('Skeleton以外のラベルに要素の対応は指定できません。');
+        }
+        pairs.push([modelName, item]);
     }
-    if (!pairs.length) throw new Error('出力ラベルを1個以上対応付けてください。');
+    if (!pairs.length && !allowEmpty) throw new Error('出力ラベルを1個以上対応付けてください。');
     return Object.fromEntries(pairs);
 }
 
@@ -206,7 +233,7 @@ export function checkedOutput(data: Collection, frame: number, allowedLabels: Se
 
 export async function executePlan(
     api: API, plan: Plan, selected: Set<string>, model: Model,
-    choices: Record<string, string>, threshold: number, convMaskToPoly: boolean,
+    choices: Mapping, threshold: number | null, convMaskToPoly: boolean,
     cancelled: () => boolean, progress: (report: Report) => void,
 ): Promise<Report> {
     const report: Report = { outcomes: [], cancelled: false };
@@ -214,13 +241,12 @@ export async function executePlan(
     let saving = false;
     const publish = (): void => progress({ ...report, outcomes: [...report.outcomes] });
     try {
-        if (model.kind !== 'detector' || !Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
-            throw new Error('単一画像用モデルと0から1の閾値を指定してください。');
-        }
+        if (model.kind !== 'detector') throw new Error('単一画像用モデルを指定してください。');
+        const parameters = thresholdParameters(model, threshold);
         const known = new Set(plan.frames.map((frame) => frame.key));
         if (!selected.size || [...selected].some((key) => !known.has(key))) throw new Error('対象フレームの選択が不正です。');
         if (cancelled()) { report.cancelled = true; return report; }
-        const labels = await readLabels(api, plan.scope);
+        const labels = await readLabels(api, plan.scope, cancelled);
         checkLabels(labels, plan.condition);
         const mapping = buildMapping(model.labels, labels, choices);
         const mappedNames = new Set(Object.values(mapping).map((item) => item.name));
@@ -230,17 +256,17 @@ export async function executePlan(
             if (!targets.length) continue;
             if (cancelled()) { report.cancelled = true; break; }
             current = undefined;
-            const requests = await api.get<{ status: string; function: { task: number } }[]>('/lambda/requests');
+            const requests = await checkedGet<{ status: string; function: { task: number } }[]>(api, '/lambda/requests', {}, cancelled);
             if (!Array.isArray(requests)) throw new Error('実行中の自動アノテーションを確認できません。');
             if (requests.some((request) => request.function?.task === task.id &&
                 ['queued', 'started', 'deferred', 'scheduled'].includes(request.status))) {
                 throw new Error(`Task #${task.id}: 通常の自動アノテーションが実行中です。`);
             }
-            const latest = await api.get<TaskInfo>(`/tasks/${task.id}`);
+            const latest = await checkedGet<TaskInfo>(api, `/tasks/${task.id}`, {}, cancelled);
             checkTask(latest, plan.scope);
-            const meta = await api.get<Meta>(`/tasks/${task.id}/data/meta`);
+            const meta = await checkedGet<Meta>(api, `/tasks/${task.id}/data/meta`, {}, cancelled);
             if (latest.size !== task.size || meta.size !== task.size) throw new Error(`Task #${task.id}: フレーム数が変更されています。`);
-            const annotations = await api.get<Collection>(`/tasks/${task.id}/annotations`);
+            const annotations = await checkedGet<Collection>(api, `/tasks/${task.id}/annotations`, {}, cancelled);
             const eligible = new Set(selectFrames(meta, annotations.tags, plan.condition));
             for (const target of targets) {
                 if (cancelled()) { report.cancelled = true; break; }
@@ -251,7 +277,7 @@ export async function executePlan(
                     continue;
                 }
                 const result = await api.infer(task.id, model.id, {
-                    frame: target.frame, threshold, mapping, conv_mask_to_poly: convMaskToPoly,
+                    frame: target.frame, ...parameters, mapping, conv_mask_to_poly: convMaskToPoly,
                 });
                 if (cancelled()) { report.cancelled = true; break; }
                 const output = checkedOutput(result, target.frame, allowed);
@@ -268,9 +294,13 @@ export async function executePlan(
             if (report.cancelled) break;
         }
     } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        report.error = saving ? `${message} 保存結果が不明な可能性があります。自動再試行は行いません。対象フレームを確認してください。` : message;
-        if (current) report.outcomes.push({ taskId: current.taskId, frame: current.frame, status: 'failed' });
+        if (error instanceof CancelledError) {
+            report.cancelled = true;
+        } else {
+            const message = error instanceof Error ? error.message : String(error);
+            report.error = saving ? `${message} 保存結果が不明な可能性があります。自動再試行は行いません。対象フレームを確認してください。` : message;
+            if (current) report.outcomes.push({ taskId: current.taskId, frame: current.frame, status: 'failed' });
+        }
     }
     if (cancelled()) report.cancelled = true;
     publish();
