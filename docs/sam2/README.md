@@ -1,59 +1,31 @@
-# SAM2の機能と導入
+# SAM2の画像Segmentationと追跡
 
-## 目的と対象
+[ドキュメントの入口](../README.md)
 
-この拡張は、CVAT CommunityにSAM2の画像分割と動画追跡を追加します。画像と動画のNuclio関数、追跡状態を保存する専用Redis、動画操作用のUIプラグインに分け、CVAT本体へモデルや専用APIを組み込みません。
+SAM2は標準のAI Toolsで点や矩形からマスクを作り、追跡プラグインでポリゴンまたはマスクから新しいポリゴントラックを作成します。画像用と追跡用の関数は別で、追跡状態は専用Redisへ保存します。
 
-## 利用できる機能
+| 目的 | 文書 |
+|---|---|
+| 画像にマスクを付ける | このページの操作説明 |
+| 複数フレームを追跡する | [SAM2とSAM3.1の共通操作](../annotation/tracking.md) |
+| 初回導入、機能選択 | [導入と共通設定](../extensions/installation.md) |
+| モデルサイズや学習済み重みを選ぶ | [モデルの選択と配備](../extensions/model-selection.md) |
+| 推論、状態保存、検証方法を調べる | [設計と検証](design.md) |
 
-画像分割では、標準AI Toolsから`SAM2 (GPU)`を選び、正例点、負例点、矩形からマスクを生成します。関数IDは`pth-sam2-interactor`です。
+## 画像にマスクを作成する
 
-動画追跡では、注釈アクション`SAM2: track polygon shapes`を実行し、現在フレームのポリゴン図形を前方へ追跡します。関数IDは`pth-sam2-tracker`です。全処理が成功した後にポリゴントラックへ置き換え、標準のUndoとSaveを使用します。動画機能は既存の注釈アクション登録先を維持しており、AI Toolsの表示構成を変更する機能は含めません。
+2DジョブのAI ToolsでSAM2 (GPU)を選択し、保存先ラベルを指定します。対象内に正例点、除外したい場所に負例点を置きます。矩形による範囲指定も使用できます。表示されたマスクを確認して確定し、必要な修正後にSaveで保存します。
 
-## ファイルの配置
+画像用関数はマスクを返します。追跡結果のポリゴンとは異なり、マスクの穴や分離した領域を表現できます。画像の推論を実行しただけではアノテーションの保存は完了しません。
 
-```text
-serverless/pytorch/facebookresearch/sam2/nuclio/  推論と状態管理
-serverless/pytorch/facebookresearch/sam2/tests/   単体試験、GPU確認、Redis確認
-cvat-ui/plugins/sam2/                            動画追跡UIと試験
-components/sam2/                                UIと専用RedisのCompose
-```
+## 追跡の対象と制限
 
-状態の保存形式、競合時の動作、UI反映の順序は[設計](design.md)に記載しています。推論状態はCVATのアノテーションとは別であり、Redisへ保存しただけでは利用者の注釈保存は完了しません。
+追跡には開始フレームのロックされていないポリゴンまたはマスクを使用します。順方向と逆方向に対応し、対象数と範囲の上限は[共通操作](../annotation/tracking.md)に記載しています。両端を含み、削除済みフレームは飛ばします。既存トラックの延長やブラウザーを閉じた後の途中再開はできません。
 
-## 導入と運用
+全範囲に成功した場合だけ、選択図形を新しいポリゴントラックへ置き換えます。Undoでまとめて取り消せますが、Saveは手動です。追跡の出力は最大の外周だけになるため、マスクの穴や他の分離領域は保持しません。詳しい操作と注意事項は[共通操作](../annotation/tracking.md)を参照してください。
 
-導入は[共通運用手順](../extensions/README.md)に従います。共通の設定ファイルで`CVAT_EXTENSIONS`に`sam2`を含めます。管理コマンドは有効機能からUIプラグインを選び、公式`Dockerfile.ui`でビルドします。
+## 配備と保守
 
-```bash
-./components/extensions/cvatctl up
-./components/extensions/cvatctl check
-```
+共通の.envのCVAT_EXTENSIONSへsam2を追加します。画像用と追跡用の関数、UIプラグイン、専用Redisはcvatctlが選択します。新規構築では共通手順でビルドし、upで関数を配備します。既存環境の更新と停止は[更新手順](../extensions/update.md)に従います。
 
-更新は[更新手順](../extensions/update.md)に従います。`up`は必要なときに画像関数と追跡関数をデプロイします。停止ではdashboardだけでなく関数コンテナも対象にします。
-
-## 確認方法
-
-単体試験はNuclioの`tests`とUIプラグインの`tests`で実行します。
-CPUでの単体試験には専用のPython環境を使います。
-
-```bash
-python3.11 -m venv /srv/cvat-test-envs/sam2
-/srv/cvat-test-envs/sam2/bin/python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
-/srv/cvat-test-envs/sam2/bin/python -m pip install -r serverless/pytorch/facebookresearch/sam2/tests/requirements.txt
-/srv/cvat-test-envs/sam2/bin/python -m pytest serverless/pytorch/facebookresearch/sam2/tests -q
-node cvat-ui/plugins/sam2/tests/run-tests.cjs
-```
-
-UI試験には、完全なCVATチェックアウトに依存関係をインストールし、`tsc`へPATHを通したNode.js環境を使います。
-CPUの単体試験はSAM2のモデル重みを使用した実推論を保証しません。
-
-`cvatctl check`は、UIの実イメージ、関数の登録と稼働、外部ポート非公開を調べます。これは実GPUの推論結果を保証する試験ではありません。
-
-実GPU、実Redis、画面操作で画像分割と動画追跡を確認します。特に、キャンセル時の不変性、全処理成功後の置換、Undo、Save後の再読込を確認します。
-
-## 制限と保守対象
-
-動画機能は2Dジョブ、1回あたり1から4物体、開始フレームから最大1000フレーム先の前方追跡を対象にします。入力はポリゴン図形です。既存トラックの延長、逆方向追跡、ブラウザを閉じた後の途中再開は対象外です。
-
-SAM2、PyTorch、モデル重み、状態形式を変更した場合は、保存状態の互換性を確認します。関数のHTTPポートと専用Redisはホストへ公開せず、CVATからdashboard経由で呼び出します。dashboardの管理用ポートはループバックに限定します。モデル取得時の内容ハッシュは記録しますが、配布元が提示した既知のハッシュとの照合は現実装に含まれません。
+[推論コード](../../serverless/pytorch/facebookresearch/sam2/nuclio/)、[UIプラグイン](../../cvat-ui/plugins/sam2/)、[ビルドとCompose設定](../../components/sam2/)を分離しています。cvatctl checkは構成と稼働の確認であり、実GPUでの推論品質の検証ではありません。
