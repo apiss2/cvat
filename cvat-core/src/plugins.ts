@@ -10,6 +10,9 @@ const plugins = [];
 export interface APIWrapperEnterOptions {
     preventMethodCall?: boolean;
     preventMethodCallWithReturn?: unknown;
+    // Replace only the implementation's arguments. All hooks receive the original arguments.
+    // The last supplied array wins; call prevention and replacement returns still take precedence.
+    methodArguments?: readonly unknown[];
 }
 
 export default class PluginRegistry {
@@ -25,6 +28,13 @@ export default class PluginRegistry {
                 const options: APIWrapperEnterOptions | undefined = await pluginDecorators
                     .enter.call(this, plugin, ...args);
                 if (options instanceof Object) {
+                    if ('methodArguments' in options) {
+                        if (!Array.isArray(options.methodArguments)) {
+                            throw new ArgumentError('Plugin methodArguments must be an array');
+                        }
+                        aggregatedOptions.methodArguments = [...options.methodArguments];
+                    }
+
                     if ('preventMethodCallWithReturn' in options) {
                         aggregatedOptions.preventMethodCallWithReturn = options.preventMethodCallWithReturn;
                     }
@@ -40,7 +50,9 @@ export default class PluginRegistry {
         if ('preventMethodCallWithReturn' in aggregatedOptions) {
             result = aggregatedOptions.preventMethodCallWithReturn;
         } else if (!aggregatedOptions.preventMethodCall) {
-            result = await wrappedFunc.implementation.call(this, ...args);
+            result = await wrappedFunc.implementation.call(
+                this, ...(aggregatedOptions.methodArguments ?? args),
+            );
         }
 
         for (const plugin of pluginList) {
