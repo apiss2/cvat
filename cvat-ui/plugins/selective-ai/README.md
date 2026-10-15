@@ -4,19 +4,19 @@ An opt-in client plugin for the fork's existing ONNX/Nuclio model registry. A ne
 
 ## Enable
 
-Append `plugins/selective-ai` to the existing root `.env` setting `CVAT_CLIENT_PLUGINS`, separated by `:`. Preserve all existing entries. The extension manager already preserves custom client plugins. Rebuild the UI and restart using the existing `./cvatctl build` and `./cvatctl up` procedure. For direct UI development, use `CLIENT_PLUGINS` instead. Merging alone does not enable an existing deployment.
+Add `selective_ai` to `CVAT_EXTENSIONS` in the existing `.env`, preserving the other selected extensions. For ONNX models registered through this fork, also select `model_registry`. For example:
 
 ```dotenv
-CVAT_CLIENT_PLUGINS=plugins/selective-ai
+CVAT_EXTENSIONS=model_registry,selective_ai
 ```
 
-When both independent plugins are installed:
+When also using the independent navigation-only filter, add `frame_navigation_filter` to that selection. These examples are not replacements for existing SAM2, SAM3.1, UltraSAM or ITGformat selections.
 
-```dotenv
-CVAT_CLIENT_PLUGINS=plugins/frame-navigation-filter:plugins/selective-ai
-```
+`cvatctl` selects the UI plugin and the existing Nuclio configuration needed by the inference API. It does not deploy a detector or require a GPU just because `selective_ai` is selected. Ordinary Nuclio models can be used without `model_registry`; registering and deploying the chosen model remains a separate prerequisite.
 
-Removing the plugin path and rebuilding removes this feature. No database migration or backend deployment change is required.
+Do not enable this managed plugin through `CVAT_CLIENT_PLUGINS`: managed paths there are replaced by the `CVAT_EXTENSIONS` selection. Unrelated custom paths remain supported. For a running deployment, save annotations and use `bash components/extensions/cvatctl down` before changing the selection, then `config`, `up` and `check` through the same wrapper. `up` rebuilds the UI; `build` can also be run separately. See the [shared deployment instructions](../../../components/extensions/README.md).
+
+Removing `selective_ai` and rebuilding disables the feature. Merging or editing `.env` alone does not change an existing UI. Reload the browser after deployment. For direct UI development only, append `plugins/selective-ai` to `CLIENT_PLUGINS`, preserving other entries. No database migration is required.
 
 ## Operation
 
@@ -30,7 +30,7 @@ Removing the plugin path and rebuilding removes this feature. No database migrat
 
 ## Isolation and safety
 
-Only files under this plugin directory are changed. The menu factories use `projectActions.items` / `taskActions.items` and the existing `plugins.ready` entrypoint; they do not modify upstream menu code or copy the original automatic-annotation dialog. `mapper.tsx` imports the existing `components/model-runner-modal/labels-mapper` and its styles, with a thin data adapter. The mapper's input arrays are memoized to avoid resetting selections on progress/threshold renders; its controls are hidden while running without unmounting their state. The standard component itself is unchanged.
+The feature implementation stays under this plugin directory; deployment selection is managed in `components/extensions/manage.py`. The menu factories use `projectActions.items` / `taskActions.items` and the existing `plugins.ready` entrypoint; they do not modify upstream menu code or copy the original automatic-annotation dialog. `mapper.tsx` imports the existing `components/model-runner-modal/labels-mapper` and its styles, with a thin data adapter. The mapper's input arrays are memoized to avoid resetting selections on progress/threshold renders; its controls are hidden while running without unmounting their state. The standard component itself is unchanged.
 
 The adapter uses CVAT's shared authenticated Axios instance with the API base from `core.config.backendAPI`. The organization is pinned when opening the dialog. Changing user/organization invalidates the dialog and prevents further requests/saves from the old run; in-flight requests cannot be rolled back. No tokens are requested, persisted, or placed in the report. CVAT's normal per-endpoint authorization remains in effect.
 
