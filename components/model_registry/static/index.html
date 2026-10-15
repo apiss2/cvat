@@ -36,7 +36,7 @@
         <div class="page-heading"><div><p class="eyebrow">MODEL REGISTRATION</p><h1 id="form-title">モデルの新規登録</h1><p>ファイルをアップロードすると、試験推論の成功後にモデルが公開されます。</p></div><a class="text-link" href="#models">モデル一覧に戻る</a></div>
         <form id="register-form">
             <div class="panel form-panel"><div class="form-section-heading"><span class="step-number" aria-hidden="true">1</span><div><h2>基本情報</h2><p>モデルの用途と、問い合わせ先を伝えます。</p></div></div>
-                <div class="fields-row"><label>モデル名 <span class="required">必須</span><input id="name" maxlength="128" placeholder="例: 製品表面の傷検出" required></label><label>モデルの種類<select id="model-kind"><option value="polygon">Segmentation（polygon出力）</option><option value="rectangle">Detection（矩形出力）</option></select></label></div>
+                <div class="fields-row"><label>モデル名 <span class="required">必須</span><input id="name" maxlength="128" placeholder="例: 製品表面の傷検出" required></label><label>モデルの種類<select id="model-kind"><option value="polygon">Segmentation（polygon出力）</option><option value="rectangle">Detection（矩形出力）</option><option value="tag">Classification（画像タグ出力）</option></select></label></div>
                 <label>説明<textarea id="description" rows="3" maxlength="4000" placeholder="対象、得意な条件、使うときの注意点など"></textarea></label>
                 <label>作者の連絡先 <span class="optional">任意</span><input id="author-contact" maxlength="512" placeholder="社内メールアドレス、内線など" aria-describedby="contact-help"></label><p id="contact-help" class="help">連絡先はログインした利用者全員に表示されます。</p>
             </div>
@@ -55,7 +55,6 @@
                 <div class="form-actions"><button id="submit-model" class="primary" type="submit">検証して公開</button><button id="cancel-update" class="secondary" type="button" hidden>更新を取り消す</button><span>試験推論が成功すると、CVATから利用できます。</span></div><progress id="upload-progress" max="100" value="0" aria-label="アップロードの進捗" hidden></progress>
             </div>
         </form>
-        <details class="panel zip-panel"><summary>ZIPでまとめて登録する</summary><p>manifest.json、model.py、宣言したONNXファイル、sample.pngまたはsample.jpgをZIP直下に配置します。ZIP内の設定を使用します。フォームが更新状態の場合は同じモデルを更新します。</p><form id="zip-form"><label class="file-field">モデルのZIP<input id="package" type="file" accept=".zip" required></label><button id="submit-zip" class="secondary" type="submit">ZIPを検証して公開</button></form></details>
     </section>
     <pre id="operation" aria-live="polite"></pre>
     <section id="detail" class="detail-section" hidden aria-labelledby="detail-title">
@@ -63,7 +62,7 @@
         <div class="panel detail-summary"><div class="detail-meta"><p id="detail-info"></p><p id="detail-contact"></p></div><p id="detail-description"></p><h2>出力ラベル</h2><pre id="detail-labels"></pre><p id="detail-polygon" class="help"></p></div>
         <div id="owner-detail">
             <div class="panel form-panel"><h2>公開する版</h2><p class="help">保持されている版に戻す場合は、切り替える前に試験推論で結果を確認できます。</p><div class="revision-controls"><label>保持されている版<select id="revision"></select></label><button id="rollback" class="secondary" type="button">選択した版を公開する</button></div></div>
-            <div class="panel form-panel"><h2>試験推論</h2><p class="help">選択した版のモデルで画像を推論し、結果を確認します。</p><form id="test-form"><label class="file-field">試験する画像<input id="test-image" type="file" accept=".png,.jpg,.jpeg" required></label><button type="submit" id="test-button" class="primary">選択した版で推論</button></form><canvas id="preview" aria-label="試験推論の結果" hidden></canvas><pre id="test-result"></pre></div>
+            <div class="panel form-panel"><h2>試験推論</h2><p class="help">選択した版のモデルで画像を推論し、結果を確認します。</p><form id="test-form"><label class="file-field">試験する画像<input id="test-image" type="file" accept=".png,.jpg,.jpeg" required></label><button type="submit" id="test-button" class="primary">選択した版で推論</button></form><canvas id="preview" aria-label="試験推論の結果" hidden></canvas><p id="test-tags" role="status" aria-live="polite"></p><pre id="test-result"></pre></div>
             <div class="panel form-panel"><div class="section-heading"><div><h2>処理ログ</h2><p class="help">直近200件を表示します。入力画像自体はログに保存しません。</p></div><div class="button-group"><button id="refresh-logs" class="secondary" type="button">ログを更新</button><button id="download-logs" class="secondary" type="button">ログを保存</button></div></div><pre id="logs"></pre></div>
         </div>
     </section>
@@ -71,5 +70,6 @@
 </main>
 <footer>CVAT モデル管理 <span>チームのONNXモデルを共有するワークスペース</span></footer>
 <script src="./static/app.js" defer></script>
+<script src="./static/updates.js" defer></script>
 </body>
 </html>
