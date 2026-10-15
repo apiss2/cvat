@@ -15,7 +15,7 @@ class StrictModel(BaseModel):
 class OutputLabel(StrictModel):
     id: Annotated[int, Field(ge=0, le=2**31 - 1)]
     name: Annotated[str, Field(min_length=1, max_length=128)]
-    type: Literal["rectangle", "polygon", "tag"]
+    type: Literal["rectangle", "polygon"]
 
     @model_validator(mode="before")
     @classmethod
@@ -92,8 +92,6 @@ def function_metadata(model_id: str, revision: str, manifest: dict, namespace: s
             "labels": {"nuclio.io/project-name": "cvat"},
             "annotations": {
                 "name": m.name,
-                # CVAT's detector protocol accepts both shapes and image tags.
-                # Classification is a label/output type, not a new function kind.
                 "type": "detector",
                 "spec": json.dumps([v.model_dump() for v in m.labels], ensure_ascii=False),
                 "version": "1",
