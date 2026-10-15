@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Compile production files against a deliberately small CVAT contract fixture, then
-// test orchestration and action logic. This is NOT a complete CVAT build or browser test.
+// Compile action/orchestration against a small CVAT contract fixture. The React
+// dialog additionally needs a real CVAT UI build and browser integration test.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -8,7 +8,7 @@ const { execFileSync } = require('node:child_process');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cvat-sam2-tests-'));
 const fixture = `
 declare module 'cvat-core-wrapper' {
-    export enum ActionParameterType { NUMBER='number' }
+    export enum ActionParameterType { NUMBER='number', SELECT='select', CHECKBOX='checkbox' }
     export enum ObjectType { SHAPE='shape', TRACK='track', TAG='tag' }
     export enum ShapeType { POLYGON='polygon', MASK='mask', RECTANGLE='rectangle' }
     export enum Source { SEMI_AUTO='semi-auto', AUTO='auto', MANUAL='manual' }
@@ -28,11 +28,11 @@ declare module 'cvat-core-wrapper' {
         abstract get name():string;
         abstract get parameters():Parameters|null;
     }
-    export interface ObjectState { clientID:number;objectType:ObjectType;shapeType:ShapeType;outside:boolean;lock:boolean; export():Promise<Shape|Track>; }
+    export interface ObjectState { clientID:number;objectType:ObjectType;shapeType:ShapeType;outside:boolean;lock:boolean;rotation:number;points:number[];attributes:Record<number,string>;occluded:boolean;zOrder:number; export():Promise<Shape|Track>; }
     export class Task { size:number; }
     export class Job {
-        id:number;taskId:number;dimension:'2d'|'3d';stopFrame:number;
-        labels:{id:number;attributes:{id:number;mutable:boolean}[]}[];
+        id:number;taskId:number;dimension:'2d'|'3d';startFrame:number;stopFrame:number;
+        labels:{id:number;attributes:{id:number;mutable:boolean;defaultValue:string}[]}[];
         annotations:{get(frame:number,allTracks:boolean,filters:object[]):Promise<ObjectState[]>};
         frames:{frameNumbers():Promise<number[]>;get(frame:number):Promise<{width:number;height:number;deleted:boolean}>};
     }
@@ -42,28 +42,23 @@ declare module 'cvat-core-wrapper' {
         actions:{register(action:BaseCollectionAction):Promise<void>;unregister(action:BaseCollectionAction):Promise<void>};
     }
 }
-declare module 'components/plugins-entrypoint' {
-    import { CVATCore } from 'cvat-core-wrapper';
-    export type ComponentBuilder = (args:{core:CVATCore})=>{name:string;destructor:CallableFunction};
-    export type PluginEntryPoint = (builder:ComponentBuilder)=>void;
-}
 `;
 try {
     fs.writeFileSync(path.join(temp,'fixture.d.ts'), fixture);
     const source = path.resolve(__dirname, '../src/ts');
-    execFileSync(process.env.TSC || 'tsc', ['--strict','--target','ES2022','--module','commonjs','--jsx','react',
+    execFileSync(process.execPath, [process.env.TSC || require.resolve('typescript/bin/tsc'), '--strict','--target','ES2022','--module','commonjs',
         '--skipLibCheck','--rootDir',source,'--outDir',path.join(temp,'built'),
-        path.join(temp,'fixture.d.ts'),path.join(source,'tracking.ts'),path.join(source,'action.ts'),path.join(source,'index.tsx')],{stdio:'inherit'});
-    console.log('PASS: TypeScript strict compile against CVAT contract fixture (not full CVAT).');
+        path.join(temp,'fixture.d.ts'),...['tracking.ts','action.ts','selection.ts'].map(name=>path.join(source,name))],{stdio:'inherit'});
+    console.log('PASS: TypeScript strict action/orchestration contract compile (not full CVAT UI).');
     const modules=path.join(temp,'built','node_modules','cvat-core-wrapper');
     fs.mkdirSync(modules,{recursive:true});
     fs.writeFileSync(path.join(modules,'index.js'), `
         class BaseCollectionAction {} class Job {} class Task {}
-        module.exports={BaseCollectionAction,Job,Task,ActionParameterType:{NUMBER:'number'},
+        module.exports={BaseCollectionAction,Job,Task,ActionParameterType:{NUMBER:'number',SELECT:'select',CHECKBOX:'checkbox'},
             ObjectType:{SHAPE:'shape',TRACK:'track',TAG:'tag'},ShapeType:{POLYGON:'polygon',MASK:'mask',RECTANGLE:'rectangle'},
             Source:{SEMI_AUTO:'semi-auto',AUTO:'auto',MANUAL:'manual'}};
     `);
-    execFileSync(process.execPath, ['--test',path.join(__dirname,'tracking.test.cjs'),path.join(__dirname,'action.test.cjs')],{
+    execFileSync(process.execPath, ['--test','--test-concurrency=1',...['tracking.test.cjs','action.test.cjs','selection.test.cjs','extension.test.cjs'].map(name=>path.join(__dirname,name))],{
         stdio:'inherit',env:{...process.env,SAM2_TEST_BUILD:path.join(temp,'built')},
     });
 } finally { fs.rmSync(temp,{recursive:true,force:true}); }
