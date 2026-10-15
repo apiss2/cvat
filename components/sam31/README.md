@@ -61,6 +61,8 @@ The adapter pins Meta's SAM repository to
 shared visual backbone; text/detection heads are not instantiated. Missing or
 incompatible tracking parameters cause startup to fail. The image uses Python
 3.12, PyTorch 2.10 and CUDA 12.8, with compilation and FlashAttention 3 disabled.
+PyAV 16.0.1 supplies the Python 3.12 binary dependency; psutil is required by the
+upstream model loader. These are SAM3.1 build fixes, independent of AV1 support.
 A compatible NVIDIA driver/container runtime and matching nuctl are required.
 
 One batched encoder/tracking step handles one to 16 fixed polygon seeds per
