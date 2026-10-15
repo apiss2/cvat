@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 """CVAT pixel coordinates and row-major, zero-first RLE (NOT COCO RLE)."""
+import math
 import numpy as np
 from PIL import Image, ImageDraw
 from protocol import ProtocolError
@@ -42,6 +43,39 @@ def mask_shape(mask):
     if flat[0]:
         runs.insert(0, 0)
     return {"type": "mask", "points": runs + [x0, y0, x1, y1], "attributes": []}
+
+def seed_mask(shape, size):
+    if not isinstance(shape, dict) or shape.get("type") not in ("polygon", "mask"):
+        raise ProtocolError("Tracker seeds must be typed polygons or masks")
+    if shape["type"] == "polygon":
+        return polygon_mask(shape, size)
+    points = shape.get("points")
+    if (not isinstance(points, list) or not 5 <= len(points) <= 2_000_004
+            or any(type(value) not in (int, float) or value < 0 or value > 2**53 - 1
+                   or not math.isfinite(value) or value != int(value) for value in points)):
+        raise ProtocolError("Mask points must be bounded nonnegative integer CVAT RLE")
+    # CVAT serializes point arrays as floats; accept integral values such as 9.0.
+    points = [int(value) for value in points]
+    left, top, right, bottom = points[-4:]
+    width, height = size
+    if right < left or bottom < top or right >= width or bottom >= height:
+        raise ProtocolError("Mask bounds lie outside the image")
+    runs = points[:-4]
+    area = (right - left + 1) * (bottom - top + 1)
+    if sum(runs) != area:
+        raise ProtocolError("Mask RLE length does not match its bounds")
+    cropped = np.zeros(area, dtype=np.bool_)
+    offset = 0
+    for index, run in enumerate(runs):
+        if index % 2:
+            cropped[offset:offset + run] = True
+        offset += run
+    if not cropped.any():
+        raise ProtocolError("Mask does not cover any pixels")
+    result = np.zeros((height, width), dtype=np.bool_)
+    result[top:bottom + 1, left:right + 1] = cropped.reshape(bottom - top + 1, right - left + 1)
+    return result
+
 
 def polygon_mask(shape, size):
     if not isinstance(shape, dict) or shape.get("type") != "polygon":
