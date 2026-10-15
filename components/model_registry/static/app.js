@@ -14,7 +14,7 @@ function signedOut() {
     authEpoch++; user = null; selected = null; editing = null; models = []; activeOperation = ''; detailSequence++;
     $('workspace').hidden = true; $('operation').hidden = true; $('access-panel').hidden = false; $('account').hidden = true; $('identity').textContent = ''; $('avatar').textContent = '';
     $('models').replaceChildren();
-    for (const id of ['logs', 'test-result', 'operation', 'detail-title', 'detail-info', 'detail-contact', 'detail-description', 'detail-labels', 'detail-polygon', 'catalog-count']) $(id).textContent = '';
+    for (const id of ['logs', 'test-result', 'test-summary', 'operation', 'detail-title', 'detail-info', 'detail-contact', 'detail-description', 'detail-labels', 'detail-polygon', 'catalog-count']) $(id).textContent = '';
     for (const id of ['model-count', 'published-count', 'my-model-count']) $(id).textContent = '0';
     $('search').value = ''; $('revision').replaceChildren(); $('preview').hidden = true; $('preview').width = 0; $('preview').height = 0; $('test-form').reset();
     $('submit-model').disabled = false; $('submit-zip').disabled = false; $('upload-progress').hidden = true; resetForm();
@@ -25,7 +25,7 @@ function accessError(status) {
         401: ['CVATのセッションを確認できません', 'CVATへ戻ってアカウントの状態を確認し、モデル管理を開き直してください。'],
         403: ['CVATのアカウントを利用できません', '管理者にアカウントと権限の確認を依頼してください。'],
         429: ['CVATへのアクセスが一時的に制限されています', 'しばらく待ってから再試行してください。'],
-        502: ['CVATとの連携に失敗しました', 'CVATがモデル管理サーバーからの接続を受け付けませんでした。管理者に接続設定の確認を依頼してください。'],
+        502: ['CVATとの連携に失敗しました', 'モデル管理を読み込めませんでした。再試行しても改善しない場合は、管理者に確認を依頼してください。'],
     };
     const [title, help] = messages[status] || ['CVATとの接続を確認できません', '時間をおいて再試行してください。改善しない場合は管理者に接続設定の確認を依頼してください。'];
     $('access-title').textContent = title; $('access-help').textContent = help;
@@ -53,7 +53,7 @@ function button(text, handler) { const b = document.createElement('button'); b.t
 function kindChanged() {
     const segmentation = $('model-kind').value === 'polygon'; $('polygon-options').hidden = !segmentation;
     for (const id of ['min-distance', 'spacing-percent', 'min-area']) $(id).disabled = !segmentation;
-    $('label-help').textContent = segmentation ? 'Segmentationの返却値は二値配列 (N,H,W) です。Nの各面を、下のラベルの上からの順番に対応付けます。判定に使うしきい値はmodel.pyに記述します。' : 'Detectionの返却値はBoxの配列です。Boxのclass_idを、登録するクラスIDに対応付けます。信頼度の判定と重複した矩形の除去はmodel.pyに記述します。';
+    $('label-help').textContent = segmentation ? '識別する領域のラベルを、モデルが出力する順に上から登録してください。クラスIDと順番が分からない場合は、モデルの作成者に確認してください。' : '検出する物体ごとに、モデルで使用するクラスIDとラベル名を登録してください。クラスIDが分からない場合は、モデルの作成者に確認してください。';
 }
 function labelRow(value = { id: 0, name: '' }) {
     const row = document.createElement('div'); row.className = 'label-row';
@@ -87,7 +87,7 @@ function renderModels() {
         if (model.manifest?.description) { const description = document.createElement('span'); description.className = 'model-description'; description.textContent = model.manifest.description; name.append(description); }
         const kind = document.createElement('td'); const badge = document.createElement('span'); badge.className = 'model-type';
         const types = new Set((model.manifest?.labels || []).map((label) => label.type));
-        badge.textContent = types.size > 1 ? 'Mixed' : types.has('polygon') ? 'Segmentation' : types.has('rectangle') ? 'Detection' : '未設定'; kind.append(badge);
+        badge.textContent = types.size > 1 ? '複数の種類' : types.has('polygon') ? '領域分割' : types.has('rectangle') ? '物体検出' : '未設定'; kind.append(badge);
         const author = document.createElement('td'); const owner = document.createElement('span'); owner.className = 'model-owner'; owner.textContent = model.owner; author.append(owner);
         const contact = document.createElement('span'); contact.className = 'model-contact'; contact.textContent = model.manifest?.author_contact || '連絡先は未設定'; author.append(contact);
         const status = document.createElement('td'); const pill = document.createElement('span'); pill.className = `status ${model.deleted ? '' : pending ? 'pending' : model.active_revision ? 'published' : op?.status === 'failed' ? 'failed' : ''}`; pill.textContent = state; status.append(pill);
@@ -96,7 +96,7 @@ function renderModels() {
     }
     $('catalog-count').textContent = query ? `${models.length}件中 ${count}件を表示` : `${count}件のモデル`;
     if (!count) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 5; td.className = 'empty-state';
-        const title = document.createElement('strong'); title.textContent = query ? '一致するモデルがありません' : '最初のモデルを登録しましょう';
+        const title = document.createElement('strong'); title.textContent = query ? '一致するモデルがありません' : '登録されたモデルがありません';
         const help = document.createElement('span'); help.textContent = query ? '別のモデル名や作者で検索してください。' : '登録して公開したモデルは、この一覧からチームに共有されます。';
         td.append(title, help); tr.append(td); $('models').append(tr);
     }
@@ -150,12 +150,12 @@ async function selectModel(id) {
     selected = model; $('detail').hidden = false; $('detail-title').textContent = model.manifest?.name || model.id;
     $('detail-info').textContent = `作者: ${model.owner} / 公開中の版: ${model.active_revision || 'なし'}${model.deleted ? ' / 削除済み' : ''}`;
     $('detail-contact').textContent = `連絡先: ${model.manifest?.author_contact || '未設定'}`; $('detail-description').textContent = model.manifest?.description || '';
-    $('detail-labels').textContent = (model.manifest?.labels || []).map((label, index) => `${index}: ${label.name} (ID=${label.id}, ${label.type})`).join('\n');
+    $('detail-labels').textContent = (model.manifest?.labels || []).map((label, index) => `${index + 1}. ${label.name}（クラスID: ${label.id}）`).join('\n');
     const polygon = model.manifest?.polygon;
-    $('detail-polygon').textContent = polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `Polygon変換: 最小距離 ${polygon.min_distance_px} px、周長比 ${polygon.spacing_percent}%、最小面積 ${polygon.min_area_px} px²` : '';
+    $('detail-polygon').textContent = polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `輪郭の設定: 頂点間の最小距離 ${polygon.min_distance_px} px、輪郭の長さに対する頂点の間隔 ${polygon.spacing_percent}%、残す領域の最小面積 ${polygon.min_area_px} px²` : '';
     const managed = Boolean(model.can_manage); $('owner-detail').hidden = !managed;
     for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = Boolean(model.deleted); }
-    $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
+    $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-summary').textContent = ''; $('preview').hidden = true;
     if (managed) {
         for (const rev of model.revisions || []) { const option = document.createElement('option'); option.value = rev.revision; option.textContent = `${rev.revision} ${rev.revision === model.active_revision ? '(公開中)' : '(保持中)'} ${rev.manifest.name}`; $('revision').append(option); }
         $('revision').value = model.active_revision || '';
@@ -191,10 +191,11 @@ async function sendPackage(path, form) {
         activeOperation = operation.id; notice('公開前の検証を開始しました。');
         while (activeOperation && user) {
             if (epoch !== authEpoch) throw new StaleSession();
-            const status = await api(`/api/operations/${activeOperation}`); $('operation').textContent = `${status.status}\n${status.detail}\nモデルID=${status.model_id}\n版=${status.revision}\n処理ID=${status.id}`;
+            const status = await api(`/api/operations/${activeOperation}`);
+            $('operation').textContent = ({ queued: '検証の開始を待っています。', validating: '試験画像でモデルを検証しています。', succeeded: '検証が完了し、モデルを公開しました。', failed: '検証に失敗しました。モデルの詳細画面で処理ログを確認してください。' })[status.status] || '登録処理を進めています。';
             if (['succeeded', 'failed'].includes(status.status)) {
                 activeOperation = ''; await refresh();
-                notice(status.status === 'succeeded' ? '公開しました。CVATのモデル一覧は通常5秒以内に更新されます。' : '検証に失敗しました。処理ログを確認してください。', status.status !== 'succeeded');
+                notice(status.status === 'succeeded' ? '公開しました。CVATのモデル一覧から選択して利用できます。' : '検証に失敗しました。処理ログを確認してください。', status.status !== 'succeeded');
                 if (status.status === 'succeeded') resetForm();
                 location.hash = `model/${status.model_id}`; break;
             }
@@ -221,7 +222,7 @@ $('register-form').addEventListener('submit', (event) => { event.preventDefault(
 $('zip-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => { const data = new FormData(); data.set('package', $('package').files[0]); await sendPackage('/api/models', data); }); });
 $('update-model').addEventListener('click', () => { if (selected?.can_manage && !selected.deleted) { resetForm(selected); location.hash = 'register'; } });
 $('delete-model').addEventListener('click', () => run(async () => {
-    if (!selected?.can_manage || !confirm('このモデルの全ての版を無効にします。実行中の一括推論は次の画像から失敗する場合があります。削除しますか？')) return;
+    if (!selected?.can_manage || !confirm('削除すると、このモデルのすべての版を使えなくなります。実行中の自動アノテーションも途中で止まる場合があります。削除しますか？')) return;
     const id = selected.id; await api(`/api/models/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: selected.active_revision }) });
     await refresh(); await selectModel(id); notice('モデルを無効にしました。');
 }));
@@ -245,7 +246,7 @@ async function preview(file, result, modelId) {
 $('test-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
     if (!selected?.can_manage) return; const model = selected; const file = $('test-image').files[0]; $('test-button').disabled = true;
     try { const result = await api(`/api/models/${model.id}/test?revision=${encodeURIComponent($('revision').value)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: await base64File(file) }) });
-        if (selected?.id === model.id) { $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: result.results.length, results: result.results }, null, 2); await preview(file, result.results, model.id); }
+        if (selected?.id === model.id) { $('test-summary').textContent = result.results.length ? `対象を${result.results.length}件検出しました。画像上の位置と輪郭を確認してください。` : '対象は検出されませんでした。画像とモデルの組合せを確認してください。'; $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: result.results.length, results: result.results }, null, 2); await preview(file, result.results, model.id); }
     } finally { $('test-button').disabled = Boolean(selected?.deleted || !selected?.active_revision); await refreshLogs(); }
 }); });
 $('refresh-logs').addEventListener('click', () => run(refreshLogs));

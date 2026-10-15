@@ -31,13 +31,13 @@ export class SAM2TrackAction extends BaseCollectionAction {
         };
     }
     async init(instance: Job | Task, parameters: Record<string, string | number>): Promise<void> {
-        if (!(instance instanceof Job)) throw new Error('Run SAM2 tracking inside a 2D annotation job.');
-        if (instance.dimension !== '2d') throw new Error('SAM2 tracking supports 2D jobs only.');
+        if (!(instance instanceof Job)) throw new Error('2D画像のアノテーション画面で、追跡するポリゴンを選択してください。');
+        if (instance.dimension !== '2d') throw new Error('SAM2の追跡は2D画像で利用できます。');
         this.instance = instance;
         this.span = Number(parameters['Frames to track']);
         const { models } = await this.core.lambda.list();
         this.model = models.find((model) => model.id === FUNCTION_ID && model.kind === 'tracker') ?? null;
-        if (!this.model) throw new Error(`Deploy the Nuclio function ${FUNCTION_ID} first.`);
+        if (!this.model) throw new Error('SAM2の追跡モデルを利用できません。管理者にモデルの有効化を依頼してください。');
     }
     async destroy(): Promise<void> {
         // The standard tracker API has no release operation. Redis TTL cleanup
@@ -61,18 +61,18 @@ export class SAM2TrackAction extends BaseCollectionAction {
         for (const shape of shapes) {
             const current = states.find((state: ObjectState) => state.clientID === shape.clientID);
             if (!current || !this.isApplicableForObject(current)) {
-                throw new Error('A seed was removed, locked, or changed. No tracking result has been applied.');
+                throw new Error('選択したポリゴンが削除、ロック、または変更されました。追跡結果は適用されていません。対象を選び直してください。');
             }
             const exported = await current.export() as Shape;
             for (const key of ['points', 'attributes', 'label_id', 'group', 'frame', 'rotation', 'occluded', 'z_order'] as const) {
                 if (JSON.stringify(exported[key]) !== JSON.stringify(shape[key])) {
-                    throw new Error('A seed changed during tracking. No tracking result has been applied.');
+                    throw new Error('追跡中に選択したポリゴンが変更されました。追跡結果は適用されていません。内容を確認してやり直してください。');
                 }
             }
         }
     }
     async run({ collection, frameData, cancelled, onProgress }: Input): Promise<Output> {
-        if (!this.instance || !this.model) throw new Error('SAM2 action is not initialized.');
+        if (!this.instance || !this.model) throw new Error('追跡を開始できません。追跡の操作を開き直してください。');
         if (cancelled()) return noChanges();
         const instance = this.instance;
         const model = this.model;
@@ -98,7 +98,7 @@ export class SAM2TrackAction extends BaseCollectionAction {
         if (cancelled()) return noChanges();
         const tracks = seeds.map((seed, index): Track => {
             const label = instance.labels.find((candidate) => candidate.id === seed.label_id);
-            if (!label) throw new Error('The seed label no longer exists.');
+            if (!label) throw new Error('選択したポリゴンのラベルが削除されました。ラベルを確認してやり直してください。');
             const mutableIDs = new Set(label.attributes.filter((attribute) => attribute.mutable).map((attribute) => attribute.id));
             return {
                 label_id: seed.label_id, group: seed.group, frame: seed.frame,
@@ -111,7 +111,7 @@ export class SAM2TrackAction extends BaseCollectionAction {
                 })),
             };
         });
-        onProgress('SAM2 tracking complete', 100);
+        onProgress('SAM2の追跡が完了しました。結果を確認して保存してください。', 100);
         // BaseCollectionAction commits both sides as one undoable annotation action.
         // Saving to the server remains the user's normal Save operation.
         return {

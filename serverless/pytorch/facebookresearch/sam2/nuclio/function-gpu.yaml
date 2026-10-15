@@ -11,8 +11,8 @@ metadata:
     min_neg_points: '0'
     startswith_box: 'true'
     startswith_box_optional: 'true'
-    help_message: Select an object with positive points; exclude regions with negative
-      points. Optional box prompt. GPU inference returns a full CVAT mask.
+    help_message: 対象に含める点と除外する点を指定して輪郭を調整してください。
+      最初に対象を矩形で囲むこともできます。
 spec:
   runtime: python:3.11
   eventTimeout: 120s

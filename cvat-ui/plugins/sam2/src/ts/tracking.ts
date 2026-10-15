@@ -24,7 +24,7 @@ function validateReply(reply: TrackerReply, count: number, width: number, height
     if (!reply || !Array.isArray(reply.states) || !Array.isArray(reply.shapes) ||
         reply.states.length !== count || reply.shapes.length !== count ||
         reply.states.some((state) => typeof state !== 'string' || !state.length)) {
-        throw new Error('Invalid SAM2 tracker response; signed states and shapes must match the seeds.');
+        throw new Error('追跡結果を読み込めませんでした。結果は適用されていません。追跡をやり直してください。');
     }
     for (const shape of reply.shapes) {
         if (shape === null) continue;
@@ -32,7 +32,7 @@ function validateReply(reply: TrackerReply, count: number, width: number, height
             shape.points.length < 6 || shape.points.length % 2 || shape.points.length > 20000 ||
             shape.points.some((point, index) => !Number.isFinite(point) || point < 0 ||
                 point > (index % 2 ? height : width))) {
-            throw new Error('SAM2 returned an invalid polygon.');
+            throw new Error('追跡結果に不正な輪郭が含まれています。結果は適用されていません。');
         }
     }
 }
@@ -66,17 +66,17 @@ export async function track(
     progress: (message: string, percent: number) => void,
 ): Promise<Keyframe[][] | null> {
     const { seeds, start, stop, span, width, height } = input;
-    if (!seeds.length || seeds.length > 4) throw new Error('Select between one and four polygon shapes.');
-    if (!Number.isInteger(span) || span < 1 || span > 1000) throw new Error('Frames to track must be 1..1000.');
+    if (!seeds.length || seeds.length > 4) throw new Error('追跡するポリゴンを1個から4個選択してください。');
+    if (!Number.isInteger(span) || span < 1 || span > 1000) throw new Error('追跡範囲は、開始位置の1フレーム先から1000フレーム先までの間で指定してください。');
     const frameNumbers = [...new Set(input.frameNumbers)].sort((a, b) => a - b);
-    if (!frameNumbers.includes(start)) throw new Error('The seed frame does not belong to this job.');
+    if (!frameNumbers.includes(start)) throw new Error('このジョブ内の画像で、追跡を開始するポリゴンを選択してください。');
     const end = Math.min(stop, start + span);
     const targets = frameNumbers.filter((frame) => frame > start && frame <= end);
-    if (!targets.length) throw new Error('There are no later frames in the selected range.');
+    if (!targets.length) throw new Error('選択した範囲に追跡先の画像がありません。開始位置か追跡範囲を変更してください。');
     if (cancelled()) return null;
     const seedMeta = await transport.frame(start);
     if (seedMeta.deleted || seedMeta.width !== width || seedMeta.height !== height) {
-        throw new Error('The seed frame is deleted or its dimensions changed.');
+        throw new Error('開始画像が削除されたか、画像の大きさが変更されました。画面を再読み込みして対象を選び直してください。');
     }
     if (cancelled()) return null;
     let response = await transport.call({ frame: start, shapes: seeds });
@@ -92,7 +92,7 @@ export async function track(
         const meta = await transport.frame(frame);
         if (cancelled()) return null;
         if (!meta.deleted) {
-            if (meta.width !== width || meta.height !== height) throw new Error('Video frame dimensions changed.');
+            if (meta.width !== width || meta.height !== height) throw new Error('画像の大きさが途中で変わるため、追跡を中止しました。結果は適用されていません。');
             const continued = await continueWithRetry({ frame, states: response.states }, transport, cancelled);
             if (!continued) return null;
             response = continued;
@@ -102,14 +102,14 @@ export async function track(
                 const previous = results[index][results[index].length - 1];
                 const points = shape?.points ?? previous.points;
                 coordinateCount += points.length;
-                if (coordinateCount > 2_000_000) throw new Error('Tracking result is too large; choose a shorter range.');
+                if (coordinateCount > 2_000_000) throw new Error('追跡結果が大きすぎるため、適用できません。追跡範囲を短くしてください。');
                 results[index].push({ frame, points: [...points], outside: shape === null });
             });
             processed += 1;
         }
-        progress(`SAM2 tracking: frame ${frame}`, Math.floor(((i + 1) / targets.length) * 99));
+        progress(`SAM2で追跡中: フレーム ${frame}`, Math.floor(((i + 1) / targets.length) * 99));
     }
-    if (!processed) throw new Error('All later frames in the selected range are deleted.');
+    if (!processed) throw new Error('選択した範囲の追跡先画像はすべて削除されています。追跡範囲を変更してください。');
     // CVAT extrapolates the last visible keyframe. Explicitly terminate the new track
     // at the first available, non-deleted frame beyond the requested range.
     for (const frame of frameNumbers.filter((number) => number > end && number <= stop)) {

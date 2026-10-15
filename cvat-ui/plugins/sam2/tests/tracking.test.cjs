@@ -25,7 +25,7 @@ test('forward tracker uses shapes once, signed states thereafter, closes track a
     assert.deepEqual(t.calls[0],{frame:10,shapes:[polygon]});
     assert.deepEqual(t.calls[1],{frame:11,states:['signed-state-1']});
     assert.deepEqual(result[0].map(k=>k.frame),[10,11,12,13,14]);
-    assert.equal(result[0].at(-1).outside,true);assert.deepEqual(i,snapshot);
+    assert.equal(result[0].at(-1).frame,14);assert.equal(result[0].at(-1).outside,true);assert.deepEqual(i,snapshot);
 });
 test('sparse job numbering, nonzero start, deleted frames and deleted boundary',async()=>{
     const i={...input(),span:5,stop:20,frameNumbers:[20,10,12,12,15,18]}; const t=transport({deleted:[12,18]});
@@ -61,32 +61,32 @@ test('cancel while checking boundary discards completed inference results',async
     assert.equal(await run(input(),t,()=>cancelled),null);
 });
 test('frame-size change stops before mismatched frame inference',async()=>{
-    const t=transport({meta:{12:{width:30}}});await assert.rejects(()=>run(input(),t),/dimensions/);
+    const t=transport({meta:{12:{width:30}}});await assert.rejects(()=>run(input(),t),/画像の大きさが途中で変わる/);
     assert.deepEqual(t.calls.map(c=>c.frame),[10,11]);
 });
 test('deleted seed is rejected before initialization',async()=>{
-    const t=transport({deleted:[10]});await assert.rejects(()=>run(input(),t),/seed frame/);assert.equal(t.calls.length,0);
+    const t=transport({deleted:[10]});await assert.rejects(()=>run(input(),t),/開始画像が削除/);assert.equal(t.calls.length,0);
 });
 test('all later frames deleted is an error, not a success',async()=>{
-    await assert.rejects(()=>run(input(),transport({deleted:[11,12,13]})),/All later frames/);
+    await assert.rejects(()=>run(input(),transport({deleted:[11,12,13]})),/追跡先画像はすべて削除/);
 });
 test('out-of-range seed rejected',async()=>{
-    await assert.rejects(()=>run({...input(),start:1},transport()),/does not belong/);
+    await assert.rejects(()=>run({...input(),start:1},transport()),/このジョブ内の画像/);
 });
 test('seed at end of job rejected',async()=>{
-    await assert.rejects(()=>run({...input(),start:15},transport()),/no later frames/);
+    await assert.rejects(()=>run({...input(),start:15},transport()),/追跡先の画像がありません/);
 });
 for(const span of [0,-1,1001,1.2,NaN]) test(`invalid span ${span}`,async()=>{
-    await assert.rejects(()=>run({...input(),span},transport()),/1..1000/);
+    await assert.rejects(()=>run({...input(),span},transport()),/1フレーム先から1000フレーム先/);
 });
 test('invalid state/shape counts rejected',async()=>{
-    await assert.rejects(()=>run(input(),transport({reply:()=>({states:[],shapes:[polygon]})})),/response/);
+    await assert.rejects(()=>run(input(),transport({reply:()=>({states:[],shapes:[polygon]})})),/追跡結果を読み込めません/);
 });
 test('unsigned state objects are never accepted by UI',async()=>{
-    await assert.rejects(()=>run(input(),transport({reply:()=>({states:[{id:'token'}],shapes:[polygon]})})),/signed states/);
+    await assert.rejects(()=>run(input(),transport({reply:()=>({states:[{id:'token'}],shapes:[polygon]})})),/追跡結果を読み込めません/);
 });
 test('bad polygon response rejected',async()=>{
-    await assert.rejects(()=>run(input(),transport({reply:()=>({states:['signed'],shapes:[{type:'mask',points:[1,2,3]}]})})),/polygon/);
+    await assert.rejects(()=>run(input(),transport({reply:()=>({states:['signed'],shapes:[{type:'mask',points:[1,2,3]}]})})),/不正な輪郭/);
 });
 test('inference failure rejects instead of returning partial trajectories',async()=>{
     const i=input(),snapshot=structuredClone(i);await assert.rejects(()=>run(i,transport({errorAt:12})),/server failure/);
@@ -100,7 +100,7 @@ test('multiple objects keep consistent state and trajectory order',async()=>{
 });
 test('object limit enforced without requests',async()=>{
     const i=input();i.seeds=Array(5).fill(polygon);const t=transport();
-    await assert.rejects(()=>run(i,t),/one and four/);assert.equal(t.calls.length,0);
+    await assert.rejects(()=>run(i,t),/1個から4個/);assert.equal(t.calls.length,0);
 });
 
 const {continueWithRetry}=require(path.join(process.env.SAM2_TEST_BUILD,'tracking.js'));
@@ -152,5 +152,5 @@ test('large result exceeds coordinate budget without returning partial tracks',a
     const huge={type:'polygon',points:Array.from({length:20000},(_,n)=>n%2?10:8)};
     const i={...input(),start:0,stop:200,span:150,frameNumbers:Array.from({length:201},(_,n)=>n)};
     const t=transport({reply:()=>({states:['s'],shapes:[huge]})});
-    await assert.rejects(()=>run(i,t),/too large/);
+    await assert.rejects(()=>run(i,t),/追跡範囲を短く/);
 });

@@ -9,8 +9,8 @@ metadata:
     spec: '[]'
     min_pos_points: '1'
     min_neg_points: '0'
-    help_message: Select an ultrasound object with positive points and exclude regions
-      with negative points. Up to 128 total points. Image annotation only.
+    help_message: 超音波画像で、対象に含める点と除外する点を指定して輪郭を調整します。
+      点は合計128個までです。画像ごとに指定してください。
 spec:
   runtime: python:3.10
   handler: main:handler
