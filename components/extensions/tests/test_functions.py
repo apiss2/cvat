@@ -64,6 +64,7 @@ def deployment(values, source_root, tmp_path, monkeypatch):
             assert config.parent == state and source not in config.parents
             assert config.stat().st_mode & 0o077 == 0
             body = json.loads(config.read_text()); definitions.append(body)
+            assert (body["spec"]["build"].get("mode") == "neverBuild") == ("--run-image" in command)
             assert "volumes" not in body["spec"] and values["HF_TOKEN"] not in config.read_text()
             assert all(values["HF_TOKEN"] not in p.read_text() for p in source.glob("*.py"))
             name = body["metadata"]["name"]

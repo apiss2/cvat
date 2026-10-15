@@ -96,7 +96,8 @@ def test_model_change_invalidates_config_but_token_change_does_not(manager):
     assert "SAM31_CHECKPOINT_HOST" not in repr(saved)
 
 
-def test_up_keeps_all_functions_and_starts_both_redis_before_restore(manager):
+@pytest.mark.parametrize("restored", [set(), {"sam2"}])
+def test_up_keeps_all_functions_and_starts_both_redis_before_restore(manager, restored):
     calls = []
     manager.prepare_registry = lambda: None
     manager.configuration = lambda: {"services": {}}
@@ -106,7 +107,7 @@ def test_up_keeps_all_functions_and_starts_both_redis_before_restore(manager):
     manager.ensure_network = lambda: None
     manager.ensure_volume = lambda feature: calls.append(["volume", feature])
     manager.compose = lambda *args: ["compose", *args]
-    manager.restore_functions = lambda: calls.append(["restore"])
+    manager.restore_functions = lambda: calls.append(["restore"]) or restored
     manager.deploy = lambda model, **kwargs: calls.append(["deploy", kwargs])
     def run(command, **kwargs):
         calls.append(command)
@@ -117,6 +118,10 @@ def test_up_keeps_all_functions_and_starts_both_redis_before_restore(manager):
     assert "sam2_redis" in calls[waited] and "sam31_redis" in calls[waited]
     assert waited < calls.index(["restore"])
     assert {call[1]["feature"] for call in calls if call[0] == "deploy"} == {"sam2", "sam31", "ultrasam"}
+    for call in calls:
+        if call[0] == "deploy":
+            assert call[1]["force"] == (call[1]["feature"] in restored)
+            assert call[1]["no_build"] is True
     saved = json.loads((manager.state/"active.json").read_text())
     assert set(saved["function_environment"]) == set(f.OWNERS)
 
@@ -127,7 +132,7 @@ def test_disabled_family_not_restored(cli, manager):
     cli.atomic_json(manager.state/"suspended.json", saved)
     manager.functions = lambda: [{"Id": "old"}]
     manager.run = lambda *a, **k: pytest.fail("disabled function must remain stopped")
-    manager.restore_functions()
+    assert manager.restore_functions() == set()
     assert json.loads((manager.state/"suspended.json").read_text()) == saved
 
 

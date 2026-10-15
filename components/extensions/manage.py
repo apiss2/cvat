@@ -893,10 +893,11 @@ class Manager:
             "CVAT and selected extension services/workers stopped. Model data, volumes and shared network retained."
         )
 
-    def restore_functions(self) -> None:
+    def restore_functions(self) -> set[str]:
+        restored = set()
         suspended = read_json(self.state / "suspended.json")
         if not suspended:
-            return
+            return restored
         self.assert_identity(suspended)
         available = {item["Id"] for item in self.functions()}
         for identifier, record in list(suspended["containers"].items()):
@@ -913,10 +914,12 @@ class Manager:
                 restart += f":{policy['MaximumRetryCount']}"
             self.run(["docker", "update", "--restart=" + restart, identifier])
             self.run(["docker", "start", identifier], stream=True)
+            restored.add(owner)
             del suspended["containers"][identifier]
             atomic_json(self.state / "suspended.json", suspended)
         if not suspended["containers"]:
             (self.state / "suspended.json").unlink(missing_ok=True)
+        return restored
 
     def nuctl_check(self, model: dict[str, Any]) -> str:
         image = model["services"]["nuclio"]["image"]
@@ -1081,10 +1084,11 @@ class Manager:
                 ),
                 stream=True,
             )
-        self.restore_functions()
+        restored = self.restore_functions()
         self.run(self.compose("up", "-d", "--no-build"), stream=True)
         for feature in function_features:
-            self.deploy(model, no_build=no_build, feature=feature)
+            # A restarted container can have a new IP; refresh Nuclio routing.
+            self.deploy(model, force=feature in restored, no_build=no_build, feature=feature)
             for image in self.function_images(function_version, feature).values():
                 images[image] = self.run(
                     [

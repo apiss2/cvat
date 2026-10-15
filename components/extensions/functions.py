@@ -299,6 +299,8 @@ def deploy(manager, model: dict, *, feature: str, mode="all", force=False, no_bu
                 manager.run(["nuctl", "create", "project", "cvat", *common], stream=True)
             for name in pending:
                 definition = render_function(name, manager.values, images[name], manager.root)
+                if no_build:
+                    definition["spec"]["build"]["mode"] = "neverBuild"
                 fd, config = tempfile.mkstemp(dir=manager.state, prefix=feature + "-", suffix=".json")
                 try:
                     with os.fdopen(fd, "w") as target:
