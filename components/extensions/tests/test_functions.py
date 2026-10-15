@@ -18,10 +18,12 @@ from components.extensions import functions as f
 
 
 @pytest.fixture
-def values():
+def values(tmp_path):
+    checkpoint = tmp_path / "sam31.weights"
+    checkpoint.write_bytes(b"local weights")
     return {**f.DEFAULTS, "CVAT_NETWORK_NAME": "test_cvat", "NUCLIO_NAMESPACE": "test",
             "SAM2_REDIS_PASSWORD": "a" * 48, "SAM31_REDIS_PASSWORD": "b" * 48,
-            "HF_TOKEN": "hf_private_test_token"}
+            "HF_TOKEN": "hf_private_test_token", "SAM31_CHECKPOINT_HOST": str(checkpoint)}
 
 
 @pytest.fixture
@@ -94,27 +96,22 @@ def test_sam2_named_model_pair(model, values):
     assert environment["SAM2_CHECKPOINT"].endswith(model + ".pt")
 
 
-@pytest.mark.parametrize("feature", ["sam2", "sam31"])
 @pytest.mark.parametrize("value", [None, ""])
-def test_default_model(feature, value, values):
+def test_default_model(value, values):
+    feature = "sam2"
     key = feature.upper()+"_MODEL"
     values.pop(key)
     if value is not None: values[key] = value
     assert f.model_environment(feature, values)[key] == f.DEFAULTS[key]
 
 
-@pytest.mark.parametrize("model", ["facebook/sam3.1", "team/ultrasound-multiplex"])
-def test_sam31_named_repository(model, values):
-    values["SAM31_MODEL"] = model
-    assert f.model_environment("sam31", values)["SAM31_MODEL"] == model
-    assert "SAM31_CHECKPOINT_HOST" not in values
+def test_sam31_uses_embedded_checkpoint_not_repository(values):
+    assert f.model_environment("sam31", values) == {"SAM31_CHECKPOINT": "/opt/nuclio/sam3.1_multiplex.pt"}
 
 
-@pytest.mark.parametrize("feature,model", [("sam2", "unknown"), ("sam31", "/tmp/model.pt"),
-    ("sam31", "https://host/model"), ("sam31", "owner/model/extra"), ("sam31", "../model")])
-def test_invalid_models_rejected(feature, model, values):
-    values[feature.upper()+"_MODEL"] = model
-    with pytest.raises(ValueError): f.model_environment(feature, values)
+def test_invalid_sam2_model_rejected(values):
+    values["SAM2_MODEL"] = "unknown"
+    with pytest.raises(ValueError): f.model_environment("sam2", values)
 
 
 @pytest.mark.parametrize("name", list(f.OWNERS))
@@ -155,6 +152,10 @@ def test_existing_image_reused_without_download(deployment, feature):
         "Env": [f"{k}={v}" for k,v in f.runtime_environment(name, manager.values).items()]}}
         for name,image in images.items()]
     f.deploy(manager, {}, feature=feature)
+    if feature == "sam31":
+        assert len(definitions) == len(images) and downloads == ["sam31"]
+        definitions.clear(); downloads.clear()
+        f.deploy(manager, {}, feature=feature, no_build=True)
     assert not definitions and not downloads
     f.deploy(manager, {}, feature=feature, force=True)
     assert len(definitions) == len(images)
@@ -190,9 +191,10 @@ def test_image_fingerprint_includes_model_source_recipe_not_token(values, source
     first = f.image_names("1.16.3", "sam31", values, source_root)
     values["HF_TOKEN"] = "changed credential"
     assert first == f.image_names("1.16.3", "sam31", values, source_root)
-    values["SAM31_MODEL"] = "team/finetuned"
+    original = values["SAM31_CHECKPOINT_HOST"]
+    values["SAM31_CHECKPOINT_HOST"] = original + ".other"
     assert first != f.image_names("1.16.3", "sam31", values, source_root)
-    values["SAM31_MODEL"] = f.DEFAULTS["SAM31_MODEL"]
+    values["SAM31_CHECKPOINT_HOST"] = original
     (source_root/f.SHARED/"geometry.py").write_text("# changed\n")
     assert first != f.image_names("1.16.3", "sam31", values, source_root)
     assert first != f.image_names("1.17.0", "sam31", values, source_root)
@@ -207,8 +209,8 @@ def test_unrelated_mount_allowed(values):
     assert f.checkpoint_matches({"Mounts": [{"Destination": "/tmp"}]}, f.model_environment("sam31", values))
 
 
-@pytest.mark.parametrize("feature", ["sam2", "sam31"])
-def test_download_named_weights_and_token_not_redirected(feature, values, tmp_path, monkeypatch):
+def test_download_sam2_weights_without_credentials(values, tmp_path, monkeypatch):
+    feature = "sam2"
     requests = []
     def open_request(request, timeout):
         requests.append(request)
@@ -218,25 +220,25 @@ def test_download_named_weights_and_token_not_redirected(feature, values, tmp_pa
     f.download_checkpoint(feature, values, tmp_path)
     request = requests[0]
     assert request.full_url.startswith("https://")
-    assert request.has_header("Authorization") == (feature == "sam31")
+    assert not request.has_header("Authorization")
     redirected = f.HTTPSRedirectHandler().redirect_request(request, None, 302, "", {}, "https://cdn.example/weights?signature=x")
     assert not redirected.has_header("Authorization")
     assert len(list(tmp_path.rglob("*.pt"))) == 1
     target = next(tmp_path.rglob("*.pt"))
     assert target.read_bytes() == b"weights" and target.stat().st_mode & 0o222 == 0
-    if feature == "sam31": assert "/facebook/sam3.1/resolve/main/sam3.1_multiplex.pt" in request.full_url
+    assert "dl.fbaipublicfiles.com/segment_anything_2/" in request.full_url
 
 
 def test_no_downgrade_redirect():
     with pytest.raises(ValueError, match="HTTPS"):
-        f.HTTPSRedirectHandler().redirect_request(Request("https://huggingface.co/a/b"), None, 302, "", {}, "http://cdn.example/file")
+        f.HTTPSRedirectHandler().redirect_request(Request("https://example.com/a/b"), None, 302, "", {}, "http://cdn.example/file")
 
 
 @pytest.mark.parametrize("content,length", [(b"", "0"), (b"partial", "100"), (b"weights", "bad")])
 def test_download_rejects_empty_truncated_invalid_length(values, tmp_path, monkeypatch, content, length):
     response = io.BytesIO(content); response.headers = {"Content-Length": length}
     monkeypatch.setattr(f, "build_opener", lambda *args: SimpleNamespace(open=lambda *a, **k: response))
-    with pytest.raises(ValueError): f.download_checkpoint("sam31", values, tmp_path)
+    with pytest.raises(ValueError): f.download_checkpoint("sam2", values, tmp_path)
     assert not list(tmp_path.rglob("*.pt"))
 
 
@@ -244,23 +246,25 @@ def test_download_rejects_empty_truncated_invalid_length(values, tmp_path, monke
 def test_download_error_does_not_expose_token(values, tmp_path, monkeypatch, code):
     def fail(*args, **kwargs): raise HTTPError("https://host/?token="+values["HF_TOKEN"], code, "private", {}, None)
     monkeypatch.setattr(f, "build_opener", lambda *args: SimpleNamespace(open=fail))
-    with pytest.raises(ValueError) as error: f.download_checkpoint("sam31", values, tmp_path)
+    with pytest.raises(ValueError) as error: f.download_checkpoint("sam2", values, tmp_path)
     assert values["HF_TOKEN"] not in str(error.value) and not list(tmp_path.rglob("*.pt"))
 
 
-def test_optional_sam2_local_weights(values, tmp_path, monkeypatch):
+@pytest.mark.parametrize("feature", ["sam2", "sam31"])
+def test_optional_local_weights(values, tmp_path, monkeypatch, feature):
     source = tmp_path/"custom.pt"; source.write_bytes(b"local")
-    values["SAM2_CHECKPOINT_HOST"] = str(source)
+    values[feature.upper() + "_CHECKPOINT_HOST"] = str(source)
     monkeypatch.setattr(f, "build_opener", lambda *args: pytest.fail("local model must not download"))
     target = tmp_path/"staging"
-    f.download_checkpoint("sam2", values, target, tmp_path/"checkout")
+    f.download_checkpoint(feature, values, target, tmp_path/"checkout")
     assert next(target.rglob("*.pt")).read_bytes() == b"local"
 
 
-def test_optional_sam2_missing_file_allowed_only_for_no_build(values, tmp_path):
-    values["SAM2_CHECKPOINT_HOST"] = str(tmp_path/"missing.pt")
-    assert f.local_checkpoint(values, tmp_path/"checkout") is not None
-    with pytest.raises(ValueError): f.local_checkpoint(values, tmp_path/"checkout", verify_file=True)
+@pytest.mark.parametrize("feature", ["sam2", "sam31"])
+def test_optional_missing_file_allowed_only_for_no_build(values, tmp_path, feature):
+    values[feature.upper() + "_CHECKPOINT_HOST"] = str(tmp_path/"missing.pt")
+    assert f.local_checkpoint(values, tmp_path/"checkout", feature=feature) is not None
+    with pytest.raises(ValueError): f.local_checkpoint(values, tmp_path/"checkout", verify_file=True, feature=feature)
 
 
 def test_shared_redis_namespace_is_explicit(monkeypatch, values):
@@ -279,3 +283,35 @@ def test_shared_redis_namespace_is_explicit(monkeypatch, values):
     assert connections[0]["host"] == "sam2_redis" and connections[1]["host"] == "sam31_redis"
     assert connections[0]["password"] == "a"*48 and connections[1]["password"] == "b"*48
     with pytest.raises(ValueError): store.RedisStore.from_env("unknown")
+
+
+def test_sam31_local_source_changes_image_but_is_not_runtime(values, tmp_path):
+    original = f.image_names("1.16.3", "sam31", values)
+    values["SAM31_CHECKPOINT_HOST"] = str(tmp_path / "merged.pt")
+    assert original != f.image_names("1.16.3", "sam31", values)
+    assert "SAM31_CHECKPOINT_HOST" not in f.runtime_environment("pth-sam31-tracker", values)
+
+
+@pytest.mark.parametrize("source", [None, "", "relative.pt"])
+def test_sam31_missing_source_never_downloads(values, tmp_path, monkeypatch, source):
+    values["SAM31_CHECKPOINT_HOST"] = source or ""
+    monkeypatch.setattr(f, "build_opener", lambda *a: pytest.fail("SAM3.1 must never download"))
+    with pytest.raises(ValueError, match="SAM31_CHECKPOINT_HOST"):
+        f.download_checkpoint("sam31", values, tmp_path / "stage", tmp_path / "checkout")
+    assert not list((tmp_path / "stage").rglob("*.pt"))
+
+
+@pytest.mark.parametrize("kind", ["missing", "empty", "directory"])
+def test_sam31_build_requires_existing_nonempty_file(values, tmp_path, kind):
+    source = tmp_path / "weights.pt"
+    if kind == "empty": source.touch()
+    if kind == "directory": source.mkdir()
+    values["SAM31_CHECKPOINT_HOST"] = str(source)
+    with pytest.raises(ValueError, match="nonempty checkpoint file"):
+        f.local_checkpoint(values, tmp_path / "checkout", feature="sam31", verify_file=True)
+
+
+def test_sam31_checkpoint_inside_checkout_rejected(values, tmp_path):
+    values["SAM31_CHECKPOINT_HOST"] = str(tmp_path / "weights.pt")
+    with pytest.raises(ValueError, match="outside the checkout"):
+        f.local_checkpoint(values, tmp_path, feature="sam31")

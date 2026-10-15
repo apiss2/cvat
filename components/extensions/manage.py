@@ -418,7 +418,7 @@ class Manager:
             ):
                 self.env.pop(key)
         self.env.update(self.values)  # Persistent config wins over old shell exports.
-        self.env.pop("HF_TOKEN", None)  # Only the host downloader may use this credential.
+        self.env.pop("HF_TOKEN", None)  # Do not forward legacy/inherited download credentials.
         self.env["COMPOSE_IGNORE_ORPHANS"] = "true"
 
     def redact(self, text: str) -> str:
@@ -597,7 +597,8 @@ class Manager:
         )
 
     def model_sources(self) -> dict[str, str]:
-        return {"sam2": self.values.get("SAM2_CHECKPOINT_HOST", "")} if "sam2" in self.extensions else {}
+        return {feature: self.values.get(feature.upper() + "_CHECKPOINT_HOST", "")
+                for feature in self.extensions if feature in ("sam2", "sam31")}
 
     def function_environment(self) -> dict[str, dict[str, str]]:
         return {name: gpu_functions.runtime_environment(name, self.values)
@@ -1021,8 +1022,9 @@ class Manager:
     def up(self, *, no_build: bool = False) -> None:
         self.prepare_registry()
         model = self.configuration()
-        if "sam2" in self.extensions:
-            gpu_functions.local_checkpoint(self.values, self.root, verify_file=not no_build)
+        for feature in self.extensions:
+            if feature in ("sam2", "sam31"):
+                gpu_functions.local_checkpoint(self.values, self.root, verify_file=not no_build, feature=feature)
         # Fail before changing containers if managed GPU functions cannot be deployed.
         function_features = [
             name for name in self.extensions if name in FUNCTIONS
@@ -1416,7 +1418,7 @@ def main() -> None:
                 summary["sam2_checkpoint_source"] = manager.values["SAM2_CHECKPOINT_HOST"]
             if "sam31" in manager.extensions:
                 summary["sam31_redis_volume"] = manager.values["SAM31_REDIS_VOLUME"]
-                summary["sam31_model"] = manager.values["SAM31_MODEL"]
+                summary["sam31_checkpoint_source"] = manager.values["SAM31_CHECKPOINT_HOST"]
                 summary["sam31_gpu_device"] = manager.values["SAM31_GPU_DEVICE"]
             if "ultrasam" in manager.extensions:
                 summary["ultrasam_gpu_device"] = manager.values["ULTRASAM_GPU_DEVICE"]
@@ -1490,8 +1492,8 @@ def main() -> None:
                 )
             manager.assert_identity(saved)
             version = manager.nuctl_check(model)
-            if feature == "sam2":
-                gpu_functions.local_checkpoint(manager.values, manager.root, verify_file=True)
+            if feature in ("sam2", "sam31"):
+                gpu_functions.local_checkpoint(manager.values, manager.root, verify_file=True, feature=feature)
             manager.ensure_network()
             if feature in ("sam2", "sam31"):
                 manager.ensure_volume(feature)

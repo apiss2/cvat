@@ -9,14 +9,14 @@ separate from SAM2. Both functions are started by `cvatctl up`.
 on the deployment host.** CPU contracts do not establish accuracy, latency or VRAM
 requirements. No CVAT core or upstream SAM source patch is required.
 
-## Named model and deployment
+## Checkpoint placement and deployment
 
-Add `sam31` to `CVAT_EXTENSIONS` in the existing private deployment `.env`:
+Add `sam31` to `CVAT_EXTENSIONS` in the private deployment `.env` and place the
+compatible merged checkpoint outside the checkout:
 
 ```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,sam31
-SAM31_MODEL=facebook/sam3.1
-HF_TOKEN=
+CVAT_EXTENSIONS=sam2,sam31
+SAM31_CHECKPOINT_HOST=/opt/models/sam3.1_multiplex.pt
 SAM31_REDIS_PASSWORD=<independent 32 to 128 character random password>
 SAM31_REDIS_VOLUME=
 SAM31_REDIS_MAXMEMORY=2gb
@@ -25,41 +25,34 @@ SAM31_SESSION_TTL_SECONDS=28800
 SAM31_GPU_DEVICE=0
 ```
 
-The official model requires Hugging Face access approval. Set `HF_TOKEN` to a
-read-capable credential after obtaining access. **Do not place a checkpoint on
-the deployment host manually.** The common deployer downloads
-`sam3.1_multiplex.pt` from the named repository into a temporary build directory
-and embeds it in both function images. The token is used only by that downloader;
-it is excluded from subprocess environments, build contexts and runtime settings.
+Previously, local checkpoint placement was rejected in favor of automatic
+Hugging Face downloads. Fresh builds consequently needed an HF account, access
+approval and credentials. We now choose pre-placed weights so the deployment
+host can use an already-obtained checkpoint without HF authentication or another
+weight download. Obtain the weight through an authorized source and follow its
+license. Do not commit weights or publish licensed images without authorization.
+See the [deployment decision](../extensions/MODEL_SELECTION.md#sam31-checkpoint-placement).
 
-To select fine-tuned weights, set `SAM31_MODEL=owner/repository` for a repository
-containing the same compatible merged checkpoint format. This changes the weights,
-not the multiplex architecture. Unset/empty `SAM31_MODEL` retains the official
-default. No model-path or expected-SHA compatibility setting is provided.
+`cvatctl` checks the local file before startup and embeds it in both images at
+`/opt/nuclio/sam3.1_multiplex.pt`. It never downloads SAM3.1 weights automatically.
+Runtime uses the embedded weights offline, without host weight mounts. No manual
+expected-SHA setting is required; content identity still rejects old model state.
 
 ```sh
 components/extensions/cvatctl --env-file /path/to/deployment.env down
-# Change model/settings while stopped.
+# Set SAM31_CHECKPOINT_HOST while stopped.
 components/extensions/cvatctl --env-file /path/to/deployment.env up
 components/extensions/cvatctl --env-file /path/to/deployment.env check
-# Explicitly refresh/rebuild both functions, or add image / tracker:
+# Rebuild both functions, or add image / tracker:
 components/extensions/cvatctl --env-file /path/to/deployment.env deploy-sam31
-# Existing-image restart; no weight source or download credential is needed:
+# Restart existing images; the source weight file is not needed:
 components/extensions/cvatctl --env-file /path/to/deployment.env up --no-build
 ```
 
-Only `cvatctl` deploys these functions. It uses the common structured generator
-and `components/sam31/build.json`, not a separate SAM3.1 deployment program.
-See [model selection and common deployment](../extensions/MODEL_SELECTION.md)
-for build/reuse semantics and credential handling. Keep `.env` mode `0600`.
-
-The default Redis volume is `<COMPOSE_PROJECT_NAME>_sam31_redis_data`. It is
-persistent and cannot be shared with SAM2. `cvatctl init` generates independent
-passwords. The manager selects plugins/Compose files, starts and health-checks
-both selected Redis services before restoring functions, and manages status,
-checks, stops and restart policies. To disable SAM3.1, stop first, remove `sam31`
-from the selection, then start again. Disabled functions remain stopped and
-volumes are retained. Do not publish licensed function images without authorization.
+Keep `.env` mode `0600` and its checkpoint path unchanged for `--no-build`.
+Normal builds copy the current local weight, including same-path replacements.
+The default Redis volume is `<COMPOSE_PROJECT_NAME>_sam31_redis_data`; it cannot
+be shared with SAM2. Disabled functions stay stopped and volumes are retained.
 
 ## Model and state contract
 

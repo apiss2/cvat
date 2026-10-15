@@ -33,10 +33,12 @@ def cli(monkeypatch):
 
 @pytest.fixture
 def manager(cli, source_root, tmp_path):
+    checkpoint = tmp_path / "sam31.pt"
+    checkpoint.write_bytes(b"local weights")
     env = tmp_path/"deployment.env"
     env.write_text("CVAT_EXTENSIONS=sam2,sam31,ultrasam\nCOMPOSE_PROJECT_NAME=test\n"
                    "SAM2_REDIS_PASSWORD="+"a"*48+"\nSAM31_REDIS_PASSWORD="+"b"*48+"\n"
-                   "HF_TOKEN=hf_private_test_token\n")
+                   "HF_TOKEN=hf_private_test_token\nSAM31_CHECKPOINT_HOST=" + str(checkpoint) + "\n")
     env.chmod(0o600)
     state = tmp_path/"state"; state.mkdir(mode=0o700)
     instance = cli.Manager(source_root, env, state)
@@ -46,7 +48,7 @@ def manager(cli, source_root, tmp_path):
 
 def test_default_names_and_separate_redis(cli, manager):
     assert manager.values["SAM2_MODEL"] == "sam2.1_hiera_small"
-    assert manager.values["SAM31_MODEL"] == "facebook/sam3.1"
+    assert manager.values["SAM31_CHECKPOINT_HOST"] == str(manager.env_file.parent / "sam31.pt")
     assert manager.values["SAM2_REDIS_VOLUME"] != manager.values["SAM31_REDIS_VOLUME"]
     assert manager.values["SAM2_REDIS_PASSWORD"] != manager.values["SAM31_REDIS_PASSWORD"]
     assert cli.OWNERS["pth-sam31-interactor"] == cli.OWNERS["pth-sam31-tracker"] == "sam31"
@@ -61,11 +63,11 @@ def test_shared_redis_volume_rejected(cli, manager):
 
 def test_hf_credentials_never_reach_subprocesses(cli, manager, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "inherited-secret")
-    monkeypatch.setenv("SAM31_MODEL", "wrong/model")
+    monkeypatch.setenv("SAM31_CHECKPOINT_HOST", "/wrong/path")
     instance = cli.Manager(manager.root, manager.env_file, manager.state)
     assert instance.values["HF_TOKEN"] == "hf_private_test_token"
     assert "HF_TOKEN" not in instance.env
-    assert instance.env["SAM31_MODEL"] == "facebook/sam3.1"
+    assert instance.env["SAM31_CHECKPOINT_HOST"] == manager.values["SAM31_CHECKPOINT_HOST"]
     assert instance.redact("hf_private_test_token") == "<redacted>"
     assert "HF_TOKEN" not in repr(instance.function_environment())
 
@@ -88,12 +90,12 @@ def test_model_change_invalidates_config_but_token_change_does_not(manager):
     assert manager.matches_configuration(saved, saved["model"])
     manager.values["HF_TOKEN"] = "another token"
     assert manager.matches_configuration(saved, saved["model"])
-    for key,value in (("SAM2_MODEL", "sam2.1_hiera_large"), ("SAM31_MODEL", "team/ultrasound"),
+    for key,value in (("SAM2_MODEL", "sam2.1_hiera_large"), ("SAM31_CHECKPOINT_HOST", manager.values["SAM31_CHECKPOINT_HOST"] + ".other"),
                       ("SAM31_GPU_DEVICE", "2"), ("SAM31_REDIS_PASSWORD", "c"*48)):
         old = manager.values[key]; manager.values[key] = value
         assert not manager.matches_configuration(saved, saved["model"]), key
         manager.values[key] = old
-    assert "SAM31_CHECKPOINT_HOST" not in repr(saved)
+    assert saved["model_sources"]["sam31"] == manager.values["SAM31_CHECKPOINT_HOST"]
 
 
 @pytest.mark.parametrize("restored", [set(), {"sam2"}])
@@ -155,3 +157,12 @@ def test_status_never_requires_weights_or_download_credentials(cli, manager, mon
     monkeypatch.setattr(sys, "argv", ["cvatctl", "--env-file", str(manager.env_file), "--state-dir", str(manager.state), "status"])
     cli.main()
     assert calls == [["compose", "ps", "--all"]]
+
+
+def test_sam31_missing_weights_fail_before_startup(manager):
+    manager.prepare_registry = lambda: None
+    manager.configuration = lambda: {"services": {}}
+    manager.values["SAM31_CHECKPOINT_HOST"] = ""
+    manager.run = lambda *a, **k: pytest.fail("Must reject missing weights before changing containers")
+    with pytest.raises(ValueError, match="SAM31_CHECKPOINT_HOST"):
+        manager.up()

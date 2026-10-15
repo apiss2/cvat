@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Model selection, structured Nuclio definitions and one deployment path.
 
-Only the standard library is needed on the deployment host. Named SAM weights
-are downloaded into a private temporary build source, never mounted at runtime.
-Hugging Face credentials are used by the downloader, not by the image builder.
+Only the standard library is needed on the deployment host. SAM2 presets download
+automatically; SAM3.1 uses operator-provided weights. Both are embedded in function
+images, never mounted or downloaded at runtime.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import re
 import shutil
 import tempfile
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,7 +42,7 @@ SAM2_MODELS = {
 }
 DEFAULTS = {
     "SAM2_MODEL": "sam2.1_hiera_small", "SAM2_CHECKPOINT_HOST": "",
-    "SAM31_MODEL": "facebook/sam3.1", "SAM31_GPU_DEVICE": "0",
+    "SAM31_CHECKPOINT_HOST": "", "SAM31_GPU_DEVICE": "0",
     "SAM31_REDIS_MAXMEMORY": "2gb", "SAM31_STATE_MAX_BYTES": str(256 * 1024**2),
     "SAM31_SESSION_TTL_SECONDS": "28800", "ULTRASAM_GPU_DEVICE": "0",
 }
@@ -56,36 +56,36 @@ def model_environment(feature: str, values: dict[str, str]) -> dict[str, str]:
         return {"SAM2_MODEL": name, "SAM2_CONFIG": SAM2_MODELS[name],
                 "SAM2_CHECKPOINT": f"/opt/nuclio/checkpoints/{name}.pt"}
     if feature == "sam31":
-        name = values.get("SAM31_MODEL") or DEFAULTS["SAM31_MODEL"]
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", name):
-            raise ValueError("SAM31_MODEL must be a Hugging Face model name: owner/repository")
-        return {"SAM31_MODEL": name, "SAM31_CHECKPOINT": "/opt/nuclio/sam3.1_multiplex.pt"}
+        return {"SAM31_CHECKPOINT": "/opt/nuclio/sam3.1_multiplex.pt"}
     if feature != "ultrasam":
         raise ValueError(f"Unknown function family: {feature}")
     return {}
 
 
-def local_checkpoint(values: dict[str, str], root: Path, *, verify_file=False) -> Path | None:
-    """An optional SAM2 fine-tuning input; SAM3.1 has no host-checkpoint setting."""
-    raw = values.get("SAM2_CHECKPOINT_HOST", "")
+def local_checkpoint(values: dict[str, str], root: Path, *, verify_file=False, feature="sam2") -> Path | None:
+    """SAM3.1 build input, or optional fine-tuned SAM2 weights."""
+    key = feature.upper() + "_CHECKPOINT_HOST"
+    raw = values.get(key, "")
     if not raw:
+        if feature == "sam31" and verify_file:
+            raise ValueError("Set SAM31_CHECKPOINT_HOST to a compatible merged checkpoint outside the checkout")
         return None
     path = Path(raw).expanduser()
     if not path.is_absolute():
-        raise ValueError("SAM2_CHECKPOINT_HOST must be an absolute path outside the checkout")
+        raise ValueError(f"{key} must be an absolute path outside the checkout")
     path = path.resolve()
     if path == root.resolve() or root.resolve() in path.parents:
         raise ValueError("Keep source checkpoint weights outside the checkout")
     if verify_file and (not path.is_file() or not path.stat().st_size):
-        raise ValueError("SAM2_CHECKPOINT_HOST must name a nonempty checkpoint file")
+        raise ValueError(f"{key} must name a nonempty checkpoint file")
     return path
 
 
 def validate_settings(feature: str, values: dict[str, str], root: Path = ROOT) -> None:
     values.update(model_environment(feature, values))
-    if feature == "sam2":
-        checkpoint = local_checkpoint(values, root)
-        values["SAM2_CHECKPOINT_HOST"] = str(checkpoint) if checkpoint else ""
+    if feature in ("sam2", "sam31"):
+        checkpoint = local_checkpoint(values, root, feature=feature)
+        values[feature.upper() + "_CHECKPOINT_HOST"] = str(checkpoint) if checkpoint else ""
     prefix = feature.upper()
     if feature in ("sam31", "ultrasam"):
         values[prefix + "_GPU_DEVICE"] = values.get(prefix + "_GPU_DEVICE") or "0"
@@ -183,8 +183,8 @@ def stage_sources(destination: Path, feature: str, root: Path = ROOT) -> None:
 
 def image_names(version: str, feature: str, values: dict[str, str], root: Path = ROOT) -> dict[str, str]:
     selection = model_environment(feature, values)
-    if feature == "sam2":
-        selection["source"] = values.get("SAM2_CHECKPOINT_HOST", "")
+    if feature in ("sam2", "sam31"):
+        selection["source"] = values.get(feature.upper() + "_CHECKPOINT_HOST", "")
     digest = hashlib.sha256(version.encode() + b"\0" + json.dumps(selection, sort_keys=True).encode())
     files = sources(feature, root)
     for relative in ("components/extensions/functions.py", f"components/{feature}/build.json"):
@@ -206,18 +206,12 @@ def download_checkpoint(feature: str, values: dict[str, str], destination: Path,
     target = destination / PurePosixPath(environment[feature.upper() + "_CHECKPOINT"]).relative_to("/opt/nuclio")
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        local = local_checkpoint(values, root, verify_file=True) if feature == "sam2" else None
+        local = local_checkpoint(values, root, verify_file=True, feature=feature)
         if local:
             shutil.copyfile(local, target)
         else:
-            if feature == "sam2":
-                url = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/" + environment["SAM2_MODEL"] + ".pt"
-            else:
-                url = "https://huggingface.co/" + quote(environment["SAM31_MODEL"], safe="/") + "/resolve/main/sam3.1_multiplex.pt"
+            url = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/" + environment["SAM2_MODEL"] + ".pt"
             request = Request(url)
-            if feature == "sam31" and values.get("HF_TOKEN"):
-                # urllib does not forward unredirected headers to signed CDN URLs.
-                request.add_unredirected_header("Authorization", "Bearer " + values["HF_TOKEN"])
             with build_opener(HTTPSRedirectHandler()).open(request, timeout=60) as response, target.open("xb") as output:
                 expected = response.headers.get("Content-Length")
                 shutil.copyfileobj(response, output, length=8 * 1024**2)
@@ -226,10 +220,8 @@ def download_checkpoint(feature: str, values: dict[str, str], destination: Path,
         if not target.stat().st_size:
             raise ValueError("Downloaded checkpoint is empty")
         target.chmod(0o444)
-    except (HTTPError, URLError) as exc:
+    except (HTTPError, URLError):
         target.unlink(missing_ok=True)
-        if isinstance(exc, HTTPError) and exc.code in (401, 403):
-            raise ValueError("Model access denied. Obtain access on Hugging Face and set HF_TOKEN in the cvatctl environment file.") from None
         raise ValueError("Model download failed; check connectivity and the selected model name, then retry.") from None
     except BaseException:
         target.unlink(missing_ok=True)
@@ -265,8 +257,8 @@ def deploy(manager, model: dict, *, feature: str, mode="all", force=False, no_bu
     """The caller holds cvatctl's deployment lock and owns Compose lifecycle/state."""
     selected = selected_functions(feature, mode)
     validate_settings(feature, manager.values, manager.root)
-    if feature == "sam2":
-        local_checkpoint(manager.values, manager.root, verify_file=not no_build)
+    if feature in ("sam2", "sam31"):
+        local_checkpoint(manager.values, manager.root, verify_file=not no_build, feature=feature)
     images = image_names(manager.nuctl_check(model), feature, manager.values, manager.root)
     manager.guard_function_ownership(selected)
     if no_build:
@@ -274,7 +266,7 @@ def deploy(manager, model: dict, *, feature: str, mode="all", force=False, no_bu
             manager.run(["docker", "image", "inspect", images[name], "--format", "{{.Id}}"])
     current = {item["Config"]["Labels"]["nuclio.io/function-name"]: item for item in manager.functions()}
     pending = []
-    can_reuse = no_build or not (feature == "sam2" and manager.values.get("SAM2_CHECKPOINT_HOST"))
+    can_reuse = no_build or not manager.values.get(feature.upper() + "_CHECKPOINT_HOST")
     for name in selected:
         item, env = current.get(name), runtime_environment(name, manager.values)
         if (not force and can_reuse and item and item["State"]["Running"] and item["Config"]["Image"] == images[name]
