@@ -44,11 +44,13 @@ def identity_model():
 
 
 def generate(root: Path):
-    for kind, label_type in [("segmentation", "polygon"), ("detection", "rectangle")]:
+    for kind, label_type in [("segmentation", "polygon"), ("detection", "rectangle"), ("classification", "tag")]:
         folder = root / kind
         folder.mkdir(exist_ok=True)
         (folder / "model.onnx").write_bytes(identity_model())
-        (folder / "manifest.json").write_text(json.dumps({"schema_version": 1, "name": "ONNX demo " + kind, "description": "Identity network plus brightness postprocessing; interface test only", "weights": ["model.onnx"], "labels": [{"id": 0, "name": "bright_region", "type": label_type}], "author_contact": "", "polygon": {"min_distance_px": 2.0, "spacing_percent": 1.0, "min_area_px": 10.0}}, indent=2) + "\n")
+        labels = ([{"id": 0, "name": "dark_image", "type": "tag"}, {"id": 1, "name": "bright_image", "type": "tag"}]
+                  if label_type == "tag" else [{"id": 0, "name": "bright_region", "type": label_type}])
+        (folder / "manifest.json").write_text(json.dumps({"schema_version": 1, "name": "ONNX demo " + kind, "description": "Identity network plus brightness postprocessing; interface test only", "weights": ["model.onnx"], "labels": labels, "author_contact": "", "polygon": {"min_distance_px": 2.0, "spacing_percent": 1.0, "min_area_px": 10.0}}, indent=2) + "\n")
         image = Image.new("RGB", (64, 48))
         draw = ImageDraw.Draw(image)
         draw.rectangle((12, 8, 43, 31), fill="white")

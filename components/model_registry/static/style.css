@@ -112,9 +112,6 @@ input[type=file]::file-selector-button { border: 1px solid #cfd9e7; border-radiu
 .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem; border-top: 1px solid #e7edf5; padding-top: 1.3rem; margin-top: 1.2rem; }
 .form-actions span { font-size: .75rem; color: var(--muted); }
 progress { display: block; width: 100%; margin-top: 1rem; accent-color: var(--accent); }
-.zip-panel { padding: 1.2rem 2rem; margin: 1.5rem 0; font-size: .83rem; color: #65748b; }
-summary { cursor: pointer; color: #49607e; font-weight: 600; }
-.zip-panel p { margin-top: 1rem; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; }
 .section-heading .help { margin-bottom: 0; }
 .button-group { display: flex; flex-wrap: wrap; gap: .6rem; }
@@ -183,7 +180,6 @@ footer { max-width: 1200px; margin: 0 auto; padding: 2.5rem 1.5rem 1.5rem; displ
     .fields-row { gap: 0; }
     .fields-row label { flex-basis: 100%; min-width: 0; }
     fieldset { padding: .8rem .8rem .3rem; }
-    .zip-panel { padding: 1rem 1.2rem; }
     .revision-controls { flex-direction: column; align-items: stretch; }
     .session-panel { margin: 2.5rem auto; padding: 2rem 1.2rem; }
     .session-panel h1 { font-size: 1.25rem; }

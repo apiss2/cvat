@@ -30,6 +30,17 @@ class Mask:
 
 
 @dataclass(frozen=True)
+class Tag:
+    """One image/frame-level classification, with no spatial coordinates.
+
+    Return one Tag for single-label classification, distinct Tags for multi-label
+    classification, or an empty list to abstain. Scores are finite values in [0, 1].
+    """
+    class_id: int
+    score: float
+
+
+@dataclass(frozen=True)
 class PredictParams:
     request_id: str
 
@@ -66,12 +77,16 @@ class ModelBase(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def predict(self, image: np.ndarray, params: PredictParams) -> np.ndarray | Sequence[Box]:
+    def predict(self, image: np.ndarray, params: PredictParams) -> np.ndarray | Sequence[Box | Tag | Mask]:
         """Input: RGB uint8 H x W x 3, including CVAT's optional cropped ROI.
 
         Segmentation: return bool/integer 0-or-1 ndarray (N, H, W), in manifest
         label order and original input dimensions. Perform binarization here.
         Detection: return Box values after your own confidence/NMS decisions.
+        Classification: return Tag values after your own top-class/threshold
+        decisions; class_id refers to a manifest label with type="tag". Do not
+        return raw logits/probability arrays. Use [] when no tag should be added.
+        For whole-image classification, do not select a cropped ROI in CVAT.
         """
         raise NotImplementedError
 

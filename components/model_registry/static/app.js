@@ -6,6 +6,7 @@ let user = null, authEpoch = 0, checkingSession = false;
 class StaleSession extends Error {}
 class AccessUnavailable extends Error {}
 let selected = null, editing = null, models = [], activeOperation = '', refreshingEpoch = null, detailSequence = 0;
+let replacementWeights = [];
 const endpoint = (path) => new URL(path.replace(/^\//, ''), base).href;
 function notice(message, error = false) { $('notice').textContent = message; $('notice').classList.toggle('error', error); }
 function authHeaders() { return { 'X-Registry-Request': '1', ...(user ? { 'X-Registry-User-ID': String(user.id) } : {}) }; }
@@ -14,10 +15,10 @@ function signedOut() {
     authEpoch++; user = null; selected = null; editing = null; models = []; activeOperation = ''; detailSequence++;
     $('workspace').hidden = true; $('operation').hidden = true; $('access-panel').hidden = false; $('account').hidden = true; $('identity').textContent = ''; $('avatar').textContent = '';
     $('models').replaceChildren();
-    for (const id of ['logs', 'test-result', 'operation', 'detail-title', 'detail-info', 'detail-contact', 'detail-description', 'detail-labels', 'detail-polygon', 'catalog-count']) $(id).textContent = '';
+    for (const id of ['logs', 'test-result', 'test-tags', 'operation', 'detail-title', 'detail-info', 'detail-contact', 'detail-description', 'detail-labels', 'detail-polygon', 'catalog-count']) $(id).textContent = '';
     for (const id of ['model-count', 'published-count', 'my-model-count']) $(id).textContent = '0';
     $('search').value = ''; $('revision').replaceChildren(); $('preview').hidden = true; $('preview').width = 0; $('preview').height = 0; $('test-form').reset();
-    $('submit-model').disabled = false; $('submit-zip').disabled = false; $('upload-progress').hidden = true; resetForm();
+    $('submit-model').disabled = false; $('upload-progress').hidden = true; resetForm();
 }
 function accessError(status) {
     signedOut(); notice('');
@@ -53,7 +54,7 @@ function button(text, handler) { const b = document.createElement('button'); b.t
 function kindChanged() {
     const segmentation = $('model-kind').value === 'polygon'; $('polygon-options').hidden = !segmentation;
     for (const id of ['min-distance', 'spacing-percent', 'min-area']) $(id).disabled = !segmentation;
-    $('label-help').textContent = segmentation ? 'Segmentationの返却値は二値配列 (N,H,W) です。Nの各面を、下のラベルの上からの順番に対応付けます。判定に使うしきい値はmodel.pyに記述します。' : 'Detectionの返却値はBoxの配列です。Boxのclass_idを、登録するクラスIDに対応付けます。信頼度の判定と重複した矩形の除去はmodel.pyに記述します。';
+    $('label-help').textContent = $('model-kind').value === 'tag' ? 'Classificationの返却値はTagの配列です。Tagのclass_idを登録するクラスIDに対応付け、画像または動画の各フレームにタグを付けます。単一分類は1個、複数分類は複数個、該当なしは空配列を返してください。分類の選択としきい値はmodel.pyに記述します。画像全体を分類する場合はCVATで範囲を切り出さずに実行してください。' : segmentation ? 'Segmentationの返却値は二値配列 (N,H,W) です。Nの各面を、下のラベルの上からの順番に対応付けます。判定に使うしきい値はmodel.pyに記述します。' : 'Detectionの返却値はBoxの配列です。Boxのclass_idを、登録するクラスIDに対応付けます。信頼度の判定と重複した矩形の除去はmodel.pyに記述します。';
 }
 function labelRow(value = { id: 0, name: '' }) {
     const row = document.createElement('div'); row.className = 'label-row';
@@ -66,12 +67,91 @@ function labelRow(value = { id: 0, name: '' }) {
     row.append(button('削除', () => { if ($('labels').children.length <= 1) throw new Error('ラベルは1件以上必要です。'); row.remove(); })); $('labels').append(row);
 }
 function resetForm(model = null) {
-    editing = model; $('register-form').reset(); $('zip-form').reset(); $('labels').replaceChildren();
+    editing = model; $('register-form').reset(); $('labels').replaceChildren();
     $('form-title').textContent = model ? `モデルの更新: ${model.manifest?.name || model.id}` : 'モデルの新規登録';
     $('name').value = model?.manifest?.name || ''; $('description').value = model?.manifest?.description || ''; $('author-contact').value = model?.manifest?.author_contact || '';
-    $('model-kind').value = model?.manifest?.labels?.[0]?.type === 'rectangle' ? 'rectangle' : 'polygon';
+    const labelType = model?.manifest?.labels?.[0]?.type;
+    $('model-kind').value = ['rectangle', 'tag'].includes(labelType) ? labelType : 'polygon';
     const polygon = model?.manifest?.polygon || {}; $('min-distance').value = polygon.min_distance_px ?? 2; $('spacing-percent').value = polygon.spacing_percent ?? 1; $('min-area').value = polygon.min_area_px ?? 10;
     (model?.manifest?.labels || [{ id: 0, name: 'object' }]).forEach(labelRow); $('cancel-update').hidden = !model; kindChanged();
+    const updating = Boolean(model?.active_revision);
+    const panel = $('retained-model-files');
+    panel.hidden = !updating; panel.replaceChildren(); replacementWeights = [];
+    $('weights').parentElement.hidden = updating;
+    for (const id of ['code', 'weights', 'sample']) $(id).required = !updating;
+    $('submit-model').textContent = updating ? '変更を検証して更新' : '検証して公開';
+    if (updating) {
+        const help = document.createElement('p');
+        help.textContent = '未選択のファイルと未変更の設定は公開中の版から引き継ぎます。Pythonコードとサンプル画像も再アップロード不要です。検証に失敗した場合は公開中の版を維持します。';
+        panel.append(help);
+        for (const name of model.manifest.weights) {
+            const label = document.createElement('label');
+            label.textContent = `ONNX: ${name}（同じファイル名で置換、未選択なら引き継ぎ）`;
+            const input = document.createElement('input');
+            input.type = 'file'; input.accept = '.onnx';
+            input.setAttribute('aria-label', `${name}を置換するONNXファイル`);
+            input.addEventListener('change', updateSummary);
+            label.append(input); panel.append(label); replacementWeights.push({ name, input });
+        }
+    }
+    updateSummary();
+}
+function updateSummary() {
+    const summary = $('update-summary');
+    if (!editing?.active_revision) { summary.textContent = ''; return; }
+    const replaced = replacementWeights.filter(({ input }) => input.files.length).map(({ name }) => name);
+    if ($('code').files.length) replaced.push('model.py');
+    if ($('sample').files.length) replaced.push('サンプル画像');
+    summary.textContent = `基準の版: ${editing.active_revision}。置換するファイル: ${replaced.join('、') || 'なし（設定のみ更新可能）'}。その他のファイルは引き継ぎます。`;
+}
+function readModelSettings(previous) {
+    const kind = $('model-kind').value;
+    const labels = [...$('labels').children].map((row) => {
+        const id = Number(row.querySelector('[data-key=id]').value);
+        const previousLabel = previous?.labels.find((label) => label.id === id);
+        // Keep mixed label types unless the user changes the model kind.
+        return { id, name: row.querySelector('[data-key=name]').value.trim(),
+            type: kind === previous?.labels[0]?.type ? (previousLabel?.type || kind) : kind };
+    });
+    const settings = { name: $('name').value.trim(), description: $('description').value,
+        author_contact: $('author-contact').value.trim(), labels };
+    if (kind === 'polygon') settings.polygon = { min_distance_px: Number($('min-distance').value),
+        spacing_percent: Number($('spacing-percent').value), min_area_px: Number($('min-area').value) };
+    return settings;
+}
+async function submitModel() {
+    const model = editing;
+    const updating = Boolean(model?.active_revision);
+    const settings = readModelSettings(updating ? model.manifest : null);
+    const data = new FormData();
+    if (updating) {
+        const patch = {};
+        for (const [key, value] of Object.entries(settings)) {
+            const changed = key === 'polygon' ? Object.keys(value).some((name) => value[name] !== model.manifest.polygon?.[name]) :
+                JSON.stringify(value) !== JSON.stringify(model.manifest[key]);
+            if (changed) patch[key] = value;
+        }
+        if (Object.keys(patch).length) data.set('manifest', JSON.stringify(patch));
+        if ($('code').files.length && $('code').files[0].name !== 'model.py') {
+            throw new Error('Pythonコードのファイル名はmodel.pyにしてください。');
+        }
+    } else {
+        data.set('manifest', JSON.stringify({ schema_version: 1, ...settings,
+            weights: [...$('weights').files].map((weight) => weight.name) }));
+    }
+    for (const id of ['code', 'sample']) if ($(id).files.length) data.set(id, $(id).files[0]);
+    if (updating) {
+        for (const { name, input } of replacementWeights) {
+            if (!input.files.length) continue;
+            if (input.files[0].name !== name) throw new Error(`ONNXファイル名は${name}と一致させてください。`);
+            data.append('weights', input.files[0]);
+        }
+        if (![...data.keys()].length) throw new Error('変更するファイルまたは設定を指定してください。');
+        data.set('expected_revision', model.active_revision);
+    } else {
+        for (const weight of $('weights').files) data.append('weights', weight);
+    }
+    await sendPackage(updating ? `/api/models/${model.id}/update` : '/api/upload', data);
 }
 function renderModels() {
     $('models').replaceChildren(); const query = $('search').value.trim().toLocaleLowerCase(); let count = 0;
@@ -87,7 +167,7 @@ function renderModels() {
         if (model.manifest?.description) { const description = document.createElement('span'); description.className = 'model-description'; description.textContent = model.manifest.description; name.append(description); }
         const kind = document.createElement('td'); const badge = document.createElement('span'); badge.className = 'model-type';
         const types = new Set((model.manifest?.labels || []).map((label) => label.type));
-        badge.textContent = types.size > 1 ? 'Mixed' : types.has('polygon') ? 'Segmentation' : types.has('rectangle') ? 'Detection' : '未設定'; kind.append(badge);
+        badge.textContent = types.size > 1 ? 'Mixed' : types.has('polygon') ? 'Segmentation' : types.has('rectangle') ? 'Detection' : types.has('tag') ? 'Classification' : '未設定'; kind.append(badge);
         const author = document.createElement('td'); const owner = document.createElement('span'); owner.className = 'model-owner'; owner.textContent = model.owner; author.append(owner);
         const contact = document.createElement('span'); contact.className = 'model-contact'; contact.textContent = model.manifest?.author_contact || '連絡先は未設定'; author.append(contact);
         const status = document.createElement('td'); const pill = document.createElement('span'); pill.className = `status ${model.deleted ? '' : pending ? 'pending' : model.active_revision ? 'published' : op?.status === 'failed' ? 'failed' : ''}`; pill.textContent = state; status.append(pill);
@@ -154,8 +234,8 @@ async function selectModel(id) {
     const polygon = model.manifest?.polygon;
     $('detail-polygon').textContent = polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `Polygon変換: 最小距離 ${polygon.min_distance_px} px、周長比 ${polygon.spacing_percent}%、最小面積 ${polygon.min_area_px} px²` : '';
     const managed = Boolean(model.can_manage); $('owner-detail').hidden = !managed;
-    for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = Boolean(model.deleted); }
-    $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
+    for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = Boolean(model.deleted || (id === 'update-model' && !model.active_revision)); }
+    $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-tags').textContent = ''; $('preview').hidden = true;
     if (managed) {
         for (const rev of model.revisions || []) { const option = document.createElement('option'); option.value = rev.revision; option.textContent = `${rev.revision} ${rev.revision === model.active_revision ? '(公開中)' : '(保持中)'} ${rev.manifest.name}`; $('revision').append(option); }
         $('revision').value = model.active_revision || '';
@@ -170,8 +250,7 @@ async function refreshLogs() {
 async function sendPackage(path, form) {
     const epoch = authEpoch;
     if (activeOperation) throw new Error('現在の登録処理が完了してから操作してください。');
-    if (editing) { form.set('model_id', editing.id); form.set('expected_revision', editing.active_revision || ''); }
-    $('submit-model').disabled = true; $('submit-zip').disabled = true; $('upload-progress').value = 0; $('upload-progress').hidden = false; $('operation').textContent = ''; $('operation').hidden = false;
+    $('submit-model').disabled = true; $('upload-progress').value = 0; $('upload-progress').hidden = false; $('operation').textContent = ''; $('operation').hidden = false;
     try {
         const operation = await new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest(); xhr.open('POST', endpoint(path));
@@ -200,7 +279,7 @@ async function sendPackage(path, form) {
             }
             await new Promise((resolve) => setTimeout(resolve, 1500));
         }
-    } finally { if (epoch === authEpoch) { activeOperation = ''; $('submit-model').disabled = false; $('submit-zip').disabled = false; $('upload-progress').hidden = true; } }
+    } finally { if (epoch === authEpoch) { activeOperation = ''; $('submit-model').disabled = false; $('upload-progress').hidden = true; } }
 }
 async function signedIn(account) {
     signedOut(); user = account; $('identity').textContent = `${account.name}${account.admin ? ' (管理者)' : ''}`; $('avatar').textContent = account.name.slice(0, 1).toLocaleUpperCase();
@@ -212,14 +291,9 @@ $('new-model').addEventListener('click', () => { resetForm(); $('operation').tex
 $('register-nav').addEventListener('click', () => { if (!activeOperation) { resetForm(); $('operation').textContent = ''; notice(''); } });
 $('cancel-update').addEventListener('click', () => resetForm()); $('model-kind').addEventListener('change', kindChanged);
 $('add-label').addEventListener('click', () => { const ids = [...$('labels').querySelectorAll('[data-key=id]')].map((x) => Number(x.value)); labelRow({ id: ids.length ? Math.max(...ids) + 1 : 0, name: '' }); });
-$('register-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
-    const weights = [...$('weights').files]; const labels = [...$('labels').children].map((row) => ({ id: Number(row.querySelector('[data-key=id]').value), name: row.querySelector('[data-key=name]').value.trim(), type: $('model-kind').value }));
-    const manifest = { schema_version: 1, name: $('name').value.trim(), description: $('description').value, author_contact: $('author-contact').value.trim(), weights: weights.map((w) => w.name), labels };
-    if ($('model-kind').value === 'polygon') manifest.polygon = { min_distance_px: Number($('min-distance').value), spacing_percent: Number($('spacing-percent').value), min_area_px: Number($('min-area').value) };
-    const data = new FormData(); data.set('manifest', JSON.stringify(manifest)); data.set('code', $('code').files[0]); data.set('sample', $('sample').files[0]); weights.forEach((weight) => data.append('weights', weight)); await sendPackage('/api/upload', data);
-}); });
-$('zip-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => { const data = new FormData(); data.set('package', $('package').files[0]); await sendPackage('/api/models', data); }); });
-$('update-model').addEventListener('click', () => { if (selected?.can_manage && !selected.deleted) { resetForm(selected); location.hash = 'register'; } });
+for (const id of ['code', 'sample']) $(id).addEventListener('change', updateSummary);
+$('register-form').addEventListener('submit', (event) => { event.preventDefault(); run(submitModel); });
+$('update-model').addEventListener('click', () => { if (selected?.can_manage && selected.active_revision && !selected.deleted) { resetForm(selected); location.hash = 'register'; } });
 $('delete-model').addEventListener('click', () => run(async () => {
     if (!selected?.can_manage || !confirm('このモデルの全ての版を無効にします。実行中の一括推論は次の画像から失敗する場合があります。削除しますか？')) return;
     const id = selected.id; await api(`/api/models/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: selected.active_revision }) });
@@ -243,9 +317,17 @@ async function preview(file, result, modelId) {
     canvas.hidden = false;
 }
 $('test-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
-    if (!selected?.can_manage) return; const model = selected; const file = $('test-image').files[0]; $('test-button').disabled = true;
-    try { const result = await api(`/api/models/${model.id}/test?revision=${encodeURIComponent($('revision').value)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: await base64File(file) }) });
-        if (selected?.id === model.id) { $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: result.results.length, results: result.results }, null, 2); await preview(file, result.results, model.id); }
+    if (!selected?.can_manage) return; const model = selected; const file = $('test-image').files[0]; const revision = $('revision').value; $('test-button').disabled = true;
+    $('test-tags').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
+    try { const result = await api(`/api/models/${model.id}/test?revision=${encodeURIComponent(revision)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: await base64File(file) }) });
+        if (selected?.id === model.id) {
+            const tags = result.results.filter((object) => object.type === 'tag');
+            const testedManifest = model.revisions?.find((item) => item.revision === revision)?.manifest || model.manifest;
+            $('test-tags').textContent = tags.length ? `分類タグ: ${tags.map((tag) => `${tag.label}（信頼度 ${tag.confidence.toFixed(3)}）`).join('、')}` :
+                testedManifest?.labels?.some((label) => label.type === 'tag') ? '分類タグ: なし' : '';
+            $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: result.results.length, results: result.results }, null, 2);
+            await preview(file, result.results, model.id);
+        }
     } finally { $('test-button').disabled = Boolean(selected?.deleted || !selected?.active_revision); await refreshLogs(); }
 }); });
 $('refresh-logs').addEventListener('click', () => run(refreshLogs));
