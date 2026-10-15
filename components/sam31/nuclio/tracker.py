@@ -4,7 +4,7 @@ import hashlib
 import secrets
 import threading
 
-from geometry import polygon_mask, polygon_shape
+from geometry import seed_mask, polygon_shape
 from protocol import MAX_OBJECTS, ProtocolError, decode_image
 from state_codec import StateCodec
 
@@ -44,7 +44,7 @@ class Tracker:
         if not states:
             if not seeds:
                 raise ProtocolError("Provide at least one polygon seed")
-            masks = [polygon_mask(seed, image.size) for seed in seeds]
+            masks = [seed_mask(seed, image.size) for seed in seeds]
             with self.model_lock:
                 snapshot, predictions = self.video.initialize(image, masks)
             payload = self.codec.encode(snapshot)

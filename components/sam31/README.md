@@ -85,19 +85,18 @@ mask, retaining holes and disconnected regions. Requests use a fresh one-object
 multiplex state and `run_mem_encoder=False`. Only one image embedding is cached;
 point/mask history is not shared between requests. This function does not use Redis.
 
-For tracking, use **Menu > SAM3.1: ポリゴンを追跡…** in a 2D job. Select one to 16
-unlocked polygon shapes and an inclusive frame range ending at most 10,000 frame
-indices after the start. Both endpoints are included, so a contiguous range can
-contain 10,001 frames. The job bounds, two-million-coordinate browser budget,
-state byte limit and Redis capacity still apply; maxima do not guarantee completion.
+For tracking, use **Menu > SAM3.1: ポリゴンを追跡…** in a 2D job. Select one to
+16 unlocked polygon or mask shapes and a forward/backward range of at most
+10,000 frame indices. Both endpoints are included. Existing tracks cannot be
+extended by this action. The extension uses CVAT's existing action API without
+changing CVAT core. See [tracking operations](TRACKING.md).
 
-The shared dialog provides frame navigation, contour previews, progress and
-cancellation. After success, only selected shapes are replaced as one undoable
-action. Seed geometry, labels, groups and attributes are retained. Other shapes
-and tracks are unchanged. Seed edits during tracking are rejected, deleted frames
-are skipped, and an outside keyframe prevents extrapolation beyond the requested
-range. Saving is manual. Errors or cancellation leave original annotations intact.
-Polygon tracks retain the largest external contour, not holes/disconnected parts.
+After success, selected shapes become new polygon tracks in one undoable action;
+labels, groups and attributes are retained. Other annotations are unchanged.
+Saving remains manual. Errors or cancellation before applying the result leave
+the source shapes intact. Deleted frames are skipped, and outside keyframes close
+the requested range. Masks retain holes and separate regions as seed input;
+output tracks use only the largest external contour. There is no text detection.
 
 ## Verification
 
@@ -105,7 +104,8 @@ Polygon tracks retain the largest external contour, not holes/disconnected parts
 python -m pytest --noconftest -q components/extensions/tests \
   components/sam31/tests/test_runtime.py \
   components/sam31/tests/test_review_limits.py \
-  components/sam31/tests/test_image_parity.py
+  components/sam31/tests/test_image_parity.py \
+  components/sam31/tests/test_mask_seeds.py
 node cvat-ui/plugins/sam2/tests/run-tests.cjs
 node --test components/model_registry/tests/classification-ui.test.cjs
 ```

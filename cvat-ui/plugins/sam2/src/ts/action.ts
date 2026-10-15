@@ -4,8 +4,8 @@ import {
 } from 'cvat-core-wrapper';
 import type { CVATCore, ObjectState, MLModel, Task } from 'cvat-core-wrapper';
 import { track } from './tracking';
-import { MAX_TRACKING_FRAMES } from './selection';
-import type { Polygon, TrackerReply } from './tracking';
+import { MAX_TRACKING_FRAMES, MAX_TRACKING_OBJECTS } from './selection';
+import type { Seed, TrackerReply } from './tracking';
 
 type Input = Parameters<BaseCollectionAction['run']>[0];
 type Output = Awaited<ReturnType<BaseCollectionAction['run']>>;
@@ -28,6 +28,7 @@ export class PolygonTrackAction extends BaseCollectionAction {
     private instance: Job | null = null;
     private model: MLModel | null = null;
     private span = 50;
+    private direction: 1 | -1 = 1;
 
     constructor(core: CVATCore, private readonly definition: TrackerDefinition = SAM2_TRACKER) {
         super();
@@ -37,6 +38,7 @@ export class PolygonTrackAction extends BaseCollectionAction {
     get parameters(): NonNullable<BaseCollectionAction['parameters']> {
         return {
             'Frames to track': { type: ActionParameterType.NUMBER, values: ['1', String(MAX_TRACKING_FRAMES), '1'], defaultValue: '50' },
+            Direction: { type: ActionParameterType.SELECT, values: ['forward', 'backward'], defaultValue: 'forward' },
         };
     }
     async init(instance: Job | Task, parameters: Record<string, string | number>): Promise<void> {
@@ -47,6 +49,10 @@ export class PolygonTrackAction extends BaseCollectionAction {
         if (!Number.isInteger(this.span) || this.span < 1 || this.span > MAX_TRACKING_FRAMES) {
             throw new Error(`Tracking range must span 1 to ${MAX_TRACKING_FRAMES} frame indices.`);
         }
+        if (parameters.Direction && !['forward', 'backward'].includes(String(parameters.Direction))) {
+            throw new Error('Invalid tracking direction.');
+        }
+        this.direction = parameters.Direction === 'backward' ? -1 : 1;
         const { models } = await this.core.lambda.list();
         this.model = models.find((model) => model.id === this.definition.functionID && model.kind === 'tracker') ?? null;
         if (!this.model) throw new Error(`Deploy the Nuclio function ${this.definition.functionID} first.`);
@@ -58,12 +64,12 @@ export class PolygonTrackAction extends BaseCollectionAction {
         this.model = null;
     }
     isApplicableForObject(state: ObjectState): boolean {
-        return state.objectType === ObjectType.SHAPE && state.shapeType === ShapeType.POLYGON &&
+        return state.objectType === ObjectType.SHAPE && [ShapeType.POLYGON, ShapeType.MASK].includes(state.shapeType) &&
             !state.outside && !state.lock && !state.rotation;
     }
     applyFilter(input: Parameters<BaseCollectionAction['applyFilter']>[0]): Input['collection'] {
         return {
-            shapes: input.collection.shapes.filter((shape) => shape.type === ShapeType.POLYGON &&
+            shapes: input.collection.shapes.filter((shape) => [ShapeType.POLYGON, ShapeType.MASK].includes(shape.type) &&
                 shape.frame === input.frameData.number && !shape.outside && !shape.rotation),
             tracks: [], tags: [],
         };
@@ -86,16 +92,21 @@ export class PolygonTrackAction extends BaseCollectionAction {
     async run({ collection, frameData, cancelled, onProgress }: Input): Promise<Output> {
         if (!this.instance || !this.model) throw new Error(`${this.definition.name} action is not initialized.`);
         if (cancelled()) return noChanges();
+        if (collection.tracks.length) throw new Error('Existing tracks cannot be extended by this action.');
         const instance = this.instance;
         const model = this.model;
         // Copy the snapshot, never mutate the source collection while requests are running.
         const seeds = collection.shapes.map((shape) => JSON.parse(JSON.stringify(shape)) as Shape);
+        if (!seeds.length || seeds.length > MAX_TRACKING_OBJECTS) {
+            throw new Error(`Select 1..${MAX_TRACKING_OBJECTS} polygon or mask shapes.`);
+        }
         await this.assertSeedsUnchanged(seeds, frameData.number);
         const frameNumbers = await instance.frames.frameNumbers();
         const keyframes = await track({
             trackerName: this.definition.name,
-            seeds: seeds.map((shape): Polygon => ({ type: 'polygon', points: shape.points ?? [] })),
+            seeds: seeds.map((shape): Seed => ({ type: shape.type as Seed['type'], points: shape.points ?? [] })),
             start: frameData.number, stop: instance.stopFrame, span: this.span, frameNumbers,
+            first: instance.startFrame, direction: this.direction,
             width: frameData.width, height: frameData.height,
         }, {
             frame: async (frame) => {
@@ -114,7 +125,7 @@ export class PolygonTrackAction extends BaseCollectionAction {
             if (!label) throw new Error('The seed label no longer exists.');
             const mutableIDs = new Set(label.attributes.filter((attribute) => attribute.mutable).map((attribute) => attribute.id));
             return {
-                label_id: seed.label_id, group: seed.group, frame: seed.frame,
+                label_id: seed.label_id, group: seed.group, frame: keyframes[index][0].frame,
                 source: Source.SEMI_AUTO, elements: [],
                 attributes: seed.attributes.filter((attribute) => !mutableIDs.has(attribute.spec_id)),
                 shapes: keyframes[index].map((keyframe) => ({

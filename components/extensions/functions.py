@@ -131,7 +131,7 @@ def render_function(name: str, values: dict[str, str], image: str, root: Path = 
         "type": "tracker" if tracker else "interactor", "version": "2", "spec": "[]",
     }
     if tracker:
-        annotations["supported_shape_types"] = "polygon"
+        annotations["supported_shape_types"] = "polygon,mask"
     else:
         annotations.update(min_pos_points="1", min_neg_points="0")
         if feature == "ultrasam":

@@ -31,10 +31,10 @@ test('action yields one atomic replacement with preserved labels, groups and att
     assert.deepEqual(result.deleted.shapes,snapshot.shapes);assert.deepEqual(s.input.collection,snapshot);
     assert(s.calls.every(c=>c.task===22&&c.args.job===11));
 });
-test('existing tracks and nonpolygon shapes are never selected for replacement',()=>{
+test('eligible masks are included; rotated and unsupported shapes are excluded',()=>{
     const s=setup();const mask={...s.seed,type:'mask'},rotated={...s.seed,rotation:20};
     const input={frameData:s.input.frameData,collection:{shapes:[s.seed,mask,rotated],tracks:[{clientID:8}],tags:[{}]}};
-    const filtered=s.action.applyFilter(input);assert.deepEqual(filtered,{shapes:[s.seed],tracks:[],tags:[]});
+    const filtered=s.action.applyFilter(input);assert.deepEqual(filtered,{shapes:[s.seed,mask],tracks:[],tags:[]});
 });
 test('cancelled action returns no created or deleted annotations',async()=>{
     const s=setup();await s.action.init(s.job,{'Frames to track':2});s.input.cancelled=()=>true;
@@ -66,4 +66,32 @@ test('reject non-job and 3D sessions',async()=>{
 test('destroy clears active session references',async()=>{
     const s=setup();await s.action.init(s.job,{'Frames to track':2});await s.action.destroy();
     await assert.rejects(()=>s.action.run(s.input),/not initialized/);
+});
+
+
+test('existing tracks are rejected before inference without the core update API',async()=>{
+    const s=setup();await s.action.init(s.job,{'Frames to track':2});
+    assert.equal(s.action.isApplicableForObject({...s.state,objectType:'track'}),false);
+    s.input.collection.tracks=[{clientID:8}];
+    await assert.rejects(()=>s.action.run(s.input),/cannot be extended/);assert.equal(s.calls.length,0);
+});
+
+test('mask action sends RLE and creates polygon tracks without an update API',async()=>{
+    const s=setup();s.seed.type='mask';s.seed.points=[0,9,1,1,3,3];s.state.shapeType='mask';
+    s.input.collection.shapes=[structuredClone(s.seed)];
+    s.core.lambda.call=async(task,model,args)=>{s.calls.push(args);return {states:['a'],shapes:[{type:'polygon',points:[1,1,3,1,3,3]}]};};
+    await s.action.init(s.job,{'Frames to track':1});const result=await s.action.run(s.input);
+    assert.deepEqual(s.calls[0].shapes,[{type:'mask',points:s.seed.points}]);
+    assert.equal(result.created.tracks[0].shapes[0].type,'polygon');
+    assert.deepEqual(result.deleted.shapes,s.input.collection.shapes);assert.equal('updated' in result,false);
+});
+
+
+test('reverse action starts the new track at its earliest boundary keyframe',async()=>{
+    const s=setup();s.job.startFrame=7;s.job.frames.frameNumbers=async()=>[7,8,9,10,11,12,13,14];
+    await s.action.init(s.job,{'Frames to track':2,Direction:'backward'});
+    const result=await s.action.run(s.input);const track=result.created.tracks[0];
+    assert.deepEqual(s.calls.map(call=>call.args.frame),[10,9,8]);
+    assert.equal(track.frame,7);assert.equal(track.shapes[0].frame,7);
+    assert.equal(track.shapes[0].outside,true);assert.equal(track.shapes.at(-1).frame,11);
 });

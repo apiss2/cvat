@@ -6,9 +6,9 @@ export const MAX_TRACKING_FRAMES = 10_000;
 /** Pure range/selection rules shared by the dialog and its CPU-only tests. */
 export function validateRange(start: number, end: number, first: number, last: number): string | null {
     if (!Number.isInteger(start) || !Number.isInteger(end)) return 'フレーム番号は整数で指定してください。';
-    if (start < first || end > last) return 'ジョブの範囲内を指定してください。';
-    if (end <= start) return '終了フレームは開始フレームより後を指定してください。';
-    if (end - start > MAX_TRACKING_FRAMES) return `一度に指定できる範囲は開始から${MAX_TRACKING_FRAMES}フレーム先までです。`;
+    if (Math.min(start, end) < first || Math.max(start, end) > last) return 'ジョブの範囲内を指定してください。';
+    if (end === start) return '開始と終了に異なるフレームを指定してください。';
+    if (Math.abs(end - start) > MAX_TRACKING_FRAMES) return `一度に指定できる範囲は開始から${MAX_TRACKING_FRAMES}フレーム先までです。`;
     return null;
 }
 

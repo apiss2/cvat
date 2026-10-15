@@ -13,7 +13,7 @@ test('range uses explicit inclusive end and permits the full 10000-index limit',
     assert.equal(validateRange(10,10010,10,10010),null);
     assert.equal(typeof validateRange(10,10011,10,20000),'string');
 });
-for(const [start,end] of [[0,12],[10,10],[12,11],[10,10011],[10.5,12],[10,NaN]]) {
+for(const [start,end] of [[0,12],[10,10],[12,9],[10,10011],[10.5,12],[10,NaN]]) {
     test(`invalid explicit range ${start}..${end}`,()=>assert.equal(typeof validateRange(start,end,10,10010),'string'));
 }
 test('selection preserves the requested object order and excludes other polygons',()=>{

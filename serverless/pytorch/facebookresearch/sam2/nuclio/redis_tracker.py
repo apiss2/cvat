@@ -3,7 +3,7 @@
 import hashlib
 import secrets
 import threading
-from geometry import polygon_mask, polygon_shape
+from geometry import seed_mask, polygon_shape
 from protocol import MAX_OBJECTS, ProtocolError, decode_image
 from state_codec import StateCodec
 
@@ -48,7 +48,7 @@ class RedisTracker:
         if not states:
             if not shapes:
                 raise ProtocolError("Provide at least one polygon seed")
-            masks = [polygon_mask(shape, image.size) for shape in shapes]
+            masks = [seed_mask(shape, image.size) for shape in shapes]
             with self.model_lock:
                 snapshot, predictions = self.video.initialize(image, masks)
             payload = self.codec.encode(snapshot)

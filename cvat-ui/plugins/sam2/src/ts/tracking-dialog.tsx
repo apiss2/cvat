@@ -5,6 +5,7 @@ import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
 import Checkbox from 'antd/lib/checkbox';
 import InputNumber from 'antd/lib/input-number';
+import Select from 'antd/lib/select';
 import Modal from 'antd/lib/modal';
 import Progress from 'antd/lib/progress';
 import Space from 'antd/lib/space';
@@ -15,18 +16,24 @@ import { Canvas } from 'cvat-canvas-wrapper';
 import { fetchAnnotationsAsync } from 'actions/annotation-actions';
 import { PolygonTrackAction } from './action';
 import type { TrackerDefinition } from './action';
-import { MAX_TRACKING_OBJECTS, MAX_TRACKING_FRAMES, resolveSelection, validateRange } from './selection';
+import {
+    MAX_TRACKING_OBJECTS, MAX_TRACKING_FRAMES, resolveSelection, validateRange,
+} from './selection';
 
 type Host = ComponentBuilderArgs;
 type Props = { host: Host; job: Job; definition: TrackerDefinition; onClose: () => void };
 
-function TrackingDialog({ host, job, definition, onClose }: Props): JSX.Element {
+function TrackingDialog({
+    host, job, definition, onClose,
+}: Props): JSX.Element {
     const initialFrame = host.store.getState().annotation.player.frame.number;
     const [start, setStart] = useState(initialFrame);
-    const [end, setEnd] = useState(Math.min(initialFrame + 50, job.stopFrame));
+    const [end, setEnd] = useState(initialFrame === job.stopFrame ?
+        Math.max(job.startFrame, initialFrame - 50) : Math.min(initialFrame + 50, job.stopFrame));
     const [candidates, setCandidates] = useState<ObjectState[]>([]);
     const [loadedStart, setLoadedStart] = useState<number | null>(null);
     const [ids, setIDs] = useState<number[]>([]);
+    const [backward, setBackward] = useState(initialFrame === job.stopFrame);
     const [loading, setLoading] = useState(false);
     const [busy, setBusy] = useState(false);
     const [cancelling, setCancelling] = useState(false);
@@ -36,7 +43,9 @@ function TrackingDialog({ host, job, definition, onClose }: Props): JSX.Element 
     const [dimensions, setDimensions] = useState({ width: 1, height: 1 });
     const cancelled = useRef(false);
     const alive = useRef(true);
-    const rangeError = validateRange(start, end, job.startFrame, job.stopFrame);
+    const rangeError = validateRange(start, end, job.startFrame, job.stopFrame) ||
+        ((backward ? end >= start : end <= start) ? '終了フレームと追跡方向を合わせてください。' : null);
+    const selectedCount = ids.length;
     const sameJob = (): boolean => host.store.getState().annotation.job.instance === job;
 
     useEffect(() => {
@@ -58,7 +67,8 @@ function TrackingDialog({ host, job, definition, onClose }: Props): JSX.Element 
             if (obsolete || !alive.current) return;
             if (frame.deleted) throw new Error('開始フレームは削除されています。別のフレームを選択してください。');
             setDimensions({ width: frame.width, height: frame.height });
-            setCandidates(states.filter((state: ObjectState) => action.isApplicableForObject(state)));
+            const eligible = states.filter((state: ObjectState) => action.isApplicableForObject(state));
+            setCandidates(eligible); setIDs(eligible.map((state) => state.clientID));
             setLoadedStart(start);
         }).catch((cause: unknown) => {
             if (!obsolete && alive.current) setError(cause instanceof Error ? cause.message : String(cause));
@@ -68,20 +78,22 @@ function TrackingDialog({ host, job, definition, onClose }: Props): JSX.Element 
 
     const run = async (): Promise<void> => {
         if (busy || loading || loadedStart !== start) return;
-        const invalid = validateRange(start, end, job.startFrame, job.stopFrame);
+        const invalid = validateRange(start, end, job.startFrame, job.stopFrame) ||
+            ((backward ? end >= start : end <= start) ? '終了フレームと追跡方向を合わせてください。' : null);
         if (invalid) { setError(invalid); return; }
         if (!sameJob()) { setError('ジョブが変更されました。ダイアログを閉じて開き直してください。'); return; }
+        if (selectedCount > MAX_TRACKING_OBJECTS || !selectedCount) {
+            setError(`対象を1〜${MAX_TRACKING_OBJECTS}個にしてください。`); return;
+        }
         const action = new PolygonTrackAction(host.core, definition);
         cancelled.current = false;
         setBusy(true); setError(''); setStatus('追跡を初期化しています。'); setProgress(0);
         try {
             const seeds = resolveSelection(candidates, ids);
             await host.core.actions.call(
-                job, action, { 'Frames to track': String(end - start) }, start, seeds,
-                (text: string, percent: number) => {
+                job, action, { 'Frames to track': String(Math.abs(end - start)), Direction: backward ? 'backward' : 'forward' }, start, seeds, (text: string, percent: number) => {
                     if (alive.current) { setStatus(text); setProgress(percent); }
-                },
-                () => cancelled.current || !sameJob(),
+                }, () => cancelled.current || !sameJob(),
             );
             if (alive.current && sameJob()) {
                 if (cancelled.current) setStatus('中止しました。アノテーションは変更していません。');
@@ -103,37 +115,48 @@ function TrackingDialog({ host, job, definition, onClose }: Props): JSX.Element 
 
     return (
         <Modal
-            open title={`${definition.name}: ポリゴンの追跡`} width={760}
+            open title={`${definition.name}: ポリゴン・マスクの追跡`} width={760}
             maskClosable={false} closable={!busy} keyboard={!busy}
             onCancel={onClose}
             footer={(
                 <Space>
                     <Button onClick={() => {
-                        if (busy) { cancelled.current = true; setCancelling(true); }
-                        else onClose();
+                        if (busy) { cancelled.current = true; setCancelling(true); } else onClose();
                     }} loading={cancelling}>{busy ? '追跡を中止' : '閉じる'}</Button>
                     <Button type='primary' loading={busy}
-                        disabled={loading || busy || loadedStart !== start || !ids.length || Boolean(rangeError)}
-                        onClick={() => { void run(); }}
-                    >選択したポリゴンを追跡</Button>
+                        disabled={loading || busy || loadedStart !== start || !selectedCount ||
+                            selectedCount > MAX_TRACKING_OBJECTS || Boolean(rangeError)}
+                        onClick={() => { run(); }}
+                    >選択した対象を追跡</Button>
                 </Space>
             )}
         >
             <Space direction='vertical' size='middle' style={{ width: '100%' }}>
-                <Alert type='info' showIcon message={`開始フレームのポリゴンを初期値にして、終了フレームまで前方向に追跡します。終了フレームも含みます。最大${MAX_TRACKING_OBJECTS}個、開始から${MAX_TRACKING_FRAMES}フレーム先まで指定できます。メモリ量と結果サイズにも上限があります。`} />
+                <Alert type='info' showIcon message={`開始フレームのポリゴン・マスク図形を初期値にして追跡します。終了フレームも含みます。最大${MAX_TRACKING_OBJECTS}個、開始から${MAX_TRACKING_FRAMES}フレーム分を指定できます。メモリ量と結果サイズにも上限があります。`} />
                 <Space wrap>
-                    <label htmlFor='polygon-tracking-start'>開始フレーム（初期値）</label>
-                    <InputNumber id='polygon-tracking-start' value={start} min={job.startFrame} max={job.stopFrame}
-                        precision={0} disabled={busy} onChange={(value) => {
+                    <Select aria-label='追跡方向' value={backward ? 'backward' : 'forward'} disabled={busy || loading}
+                        options={[{ value: 'forward', label: '前方向' }, { value: 'backward', label: '逆方向' }]}
+                        onChange={(value) => {
+                            const reverse = value === 'backward'; setBackward(reverse);
+                            setEnd(reverse ? Math.max(job.startFrame, start - 50) :
+                                Math.min(job.stopFrame, start + 50));
+                        }}
+                    />
+                    <span id='polygon-tracking-start'>開始フレーム（初期値）</span>
+                    <InputNumber aria-label='開始フレーム' id='polygon-tracking-start-input' value={start} min={job.startFrame}
+                        max={job.stopFrame}
+                        precision={0} disabled={busy || loading} onChange={(value) => {
                             if (typeof value === 'number') {
                                 setStart(value);
-                                if (end <= value) setEnd(Math.min(value + 50, job.stopFrame));
+                                setEnd(backward ? Math.max(job.startFrame, value - 50) :
+                                    Math.min(value + 50, job.stopFrame));
                             }
                         }}
                     />
-                    <label htmlFor='polygon-tracking-end'>終了フレーム（含む）</label>
-                    <InputNumber id='polygon-tracking-end' value={end} min={job.startFrame} max={Math.min(job.stopFrame, start + MAX_TRACKING_FRAMES)}
-                        precision={0} disabled={busy} onChange={(value) => {
+                    <span id='polygon-tracking-end'>終了フレーム（含む）</span>
+                    <InputNumber aria-label='終了フレーム' id='polygon-tracking-end-input' value={end} min={Math.max(job.startFrame, start - MAX_TRACKING_FRAMES)}
+                        max={Math.min(job.stopFrame, start + MAX_TRACKING_FRAMES)}
+                        precision={0} disabled={busy || loading} onChange={(value) => {
                             if (typeof value === 'number') { setEnd(value); setError(''); }
                         }}
                     />
@@ -142,32 +165,53 @@ function TrackingDialog({ host, job, definition, onClose }: Props): JSX.Element 
                     }}>開始フレームを表示</Button>
                 </Space>
                 {rangeError ? <Alert type='warning' message={rangeError} /> : null}
-                <div>初期ポリゴンを選択（{ids.length}/{MAX_TRACKING_OBJECTS}個）</div>
-                {loading ? <div>開始フレームのポリゴンを読み込んでいます。</div> : null}
-                {!loading && !candidates.length ? <div>対象のポリゴンがありません。開始フレームにロックされていないポリゴン図形を描いてください。</div> : null}
+                <Space>
+                    <div>初期対象（{selectedCount}/{MAX_TRACKING_OBJECTS}個）</div>
+                    <Button disabled={busy || loading} onClick={() => {
+                        setIDs(candidates.map((state) => state.clientID));
+                    }}>全選択</Button>
+                    <Button disabled={busy || loading} onClick={() => {
+                        setIDs([]);
+                    }}>全解除</Button>
+                </Space>
+                {selectedCount > MAX_TRACKING_OBJECTS ? <Alert type='error' message={`対象は最大${MAX_TRACKING_OBJECTS}個です。不要な対象を除外してください。`} /> : null}
+                {loading ? <div>初期対象を読み込んでいます。</div> : null}
+                {!loading && !candidates.length ? <div>
+                    追跡できる対象がありません。開始フレームにロックされていないポリゴン・マスク図形を用意してください。既存トラックは対象外です。
+                </div> : null}
                 <Space direction='vertical' style={{ width: '100%', maxHeight: 280, overflow: 'auto' }}>
                     {candidates.map((state) => (
                         <Checkbox key={state.clientID} checked={ids.includes(state.clientID)}
                             disabled={busy || (!ids.includes(state.clientID) && ids.length >= MAX_TRACKING_OBJECTS)}
                             onChange={(event) => {
                                 setError('');
-                                setIDs(event.target.checked ? [...ids, state.clientID] : ids.filter((id) => id !== state.clientID));
+                                setIDs(event.target.checked ? [...ids, state.clientID] :
+                                    ids.filter((id) => id !== state.clientID));
                             }}
                         >
                             <Space>
                                 <svg width={80} height={60} viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
                                     role='img' aria-label={`ポリゴン ${state.clientID} の形状`}
                                 >
-                                    <polygon points={state.points.join(' ')} fill='none' stroke='currentColor'
+                                    {state.shapeType === 'mask' ? <rect
+                                        x={state.points.at(-4)} y={state.points.at(-3)}
+                                        width={state.points.at(-2)! - state.points.at(-4)! + 1}
+                                        height={state.points.at(-1)! - state.points.at(-3)! + 1}
+                                        fill='none' stroke='currentColor'
                                         strokeWidth={Math.max(dimensions.width, dimensions.height) / 100}
-                                    />
+                                    /> : <polygon points={state.points.join(' ')} fill='none' stroke='currentColor'
+                                        strokeWidth={Math.max(dimensions.width, dimensions.height) / 100} />}
+
                                 </svg>
-                                <span>{`#${state.clientID} / ${state.label.name} / ${state.points.length / 2}頂点`}</span>
+                                <span>
+                                    {`#${state.clientID} / ${state.label.name} / ` +
+                                        `${state.objectType} / ${state.shapeType}`}
+                                </span>
                             </Space>
                         </Checkbox>
                     ))}
                 </Space>
-                <Alert type='warning' showIcon message={`初期フレーム ${start} → 終了フレーム ${end}。選択した${ids.length}個の図形だけをトラックへ置換します。既存のトラックは対象外です。削除されたフレームは処理しません。結果はUndoで一括取消できます。`} />
+                <Alert type='warning' showIcon message={`初期フレーム ${start} → 終了フレーム ${end}。選択した図形だけを新規ポリゴントラックへ置換します。既存トラックは変更しません。マスクの穴と離れた領域は最大の外周ポリゴンに変換されます。削除済みフレームは処理せず、結果はUndoで一括取消できます。`} />
                 {busy ? <Progress percent={progress} /> : null}
                 {status ? <div role='status'>{status}</div> : null}
                 {error ? <Alert type='error' showIcon message={error} /> : null}
@@ -180,7 +224,7 @@ export function trackingPlugin(definition: TrackerDefinition): ComponentBuilder 
     return (host) => {
         const action = new PolygonTrackAction(host.core, definition);
         const registration = host.core.actions.register(action);
-        void registration.catch((error: unknown) => console.error('Tracking action registration failed', error));
+        registration.catch((error: unknown) => console.error('Tracking action registration failed', error));
         let closeDialog: (() => void) | null = null;
         const menu = ({ targetProps }: { targetProps: { jobInstance: Job } }): NonNullable<MenuProps['items']>[0] => ({
             key: `polygon-tracking-${definition.functionID}`,

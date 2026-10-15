@@ -68,13 +68,13 @@ test('deleted seed is rejected before initialization',async()=>{
     const t=transport({deleted:[10]});await assert.rejects(()=>run(input(),t),/seed frame/);assert.equal(t.calls.length,0);
 });
 test('all later frames deleted is an error, not a success',async()=>{
-    await assert.rejects(()=>run(input(),transport({deleted:[11,12,13]})),/All later frames/);
+    await assert.rejects(()=>run(input(),transport({deleted:[11,12,13]})),/All target frames/);
 });
 test('out-of-range seed rejected',async()=>{
     await assert.rejects(()=>run({...input(),start:1},transport()),/does not belong/);
 });
 test('seed at end of job rejected',async()=>{
-    await assert.rejects(()=>run({...input(),start:15},transport()),/no later frames/);
+    await assert.rejects(()=>run({...input(),start:15},transport()),/no frames/);
 });
 for(const span of [0,-1,10001,1.2,NaN]) test(`invalid span ${span}`,async()=>{
     await assert.rejects(()=>run({...input(),span},transport()),/1..10000/);
