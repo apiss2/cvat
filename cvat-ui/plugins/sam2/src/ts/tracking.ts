@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: MIT
 // Pure orchestration, isolated from CVAT classes for deterministic contract tests.
+import { MAX_TRACKING_OBJECTS, MAX_TRACKING_FRAMES } from './selection';
+
 export interface Polygon { type: 'polygon'; points: number[]; }
+export interface Mask { type: 'mask'; points: number[]; }
+export type Seed = Polygon | Mask;
 export interface Keyframe { frame: number; points: number[]; outside: boolean; }
 export interface FrameMeta { width: number; height: number; deleted: boolean; }
 export interface TrackerReply { states: string[]; shapes: (Polygon | null)[]; }
-export interface CallArgs { frame: number; shapes?: Polygon[]; states?: string[]; }
+export interface CallArgs { frame: number; shapes?: Seed[]; states?: string[]; }
 export interface Transport {
     call(args: CallArgs): Promise<TrackerReply>;
     frame(number: number): Promise<FrameMeta>;
     wait?(milliseconds: number): Promise<void>; // Test seam for retry delays.
 }
 export interface TrackingInput {
-    seeds: Polygon[];
+    trackerName?: string;
+    seeds: Seed[];
+    first?: number;
+    direction?: 1 | -1;
     start: number;
     stop: number;
     span: number;
@@ -20,11 +27,11 @@ export interface TrackingInput {
     height: number;
 }
 
-function validateReply(reply: TrackerReply, count: number, width: number, height: number): void {
+function validateReply(reply: TrackerReply, count: number, width: number, height: number, name: string): void {
     if (!reply || !Array.isArray(reply.states) || !Array.isArray(reply.shapes) ||
         reply.states.length !== count || reply.shapes.length !== count ||
         reply.states.some((state) => typeof state !== 'string' || !state.length)) {
-        throw new Error('Invalid SAM2 tracker response; signed states and shapes must match the seeds.');
+        throw new Error(`Invalid ${name} tracker response; signed states and shapes must match the seeds.`);
     }
     for (const shape of reply.shapes) {
         if (shape === null) continue;
@@ -32,7 +39,7 @@ function validateReply(reply: TrackerReply, count: number, width: number, height
             shape.points.length < 6 || shape.points.length % 2 || shape.points.length > 20000 ||
             shape.points.some((point, index) => !Number.isFinite(point) || point < 0 ||
                 point > (index % 2 ? height : width))) {
-            throw new Error('SAM2 returned an invalid polygon.');
+            throw new Error(`${name} returned an invalid polygon.`);
         }
     }
 }
@@ -53,7 +60,7 @@ export async function continueWithRetry(
             // Poll cancellation during backoff. No new HTTP request after cancellation.
             for (let tick = 0; tick < (attempt + 1) * 10; tick++) {
                 if (cancelled()) return null;
-                await (transport.wait ? transport.wait(100) : new Promise((resolve) => setTimeout(resolve, 100)));
+                await (transport.wait ? transport.wait(100) : new Promise((resolve) => { setTimeout(resolve, 100); }));
             }
         }
     }
@@ -65,14 +72,22 @@ export async function track(
     cancelled: () => boolean,
     progress: (message: string, percent: number) => void,
 ): Promise<Keyframe[][] | null> {
-    const { seeds, start, stop, span, width, height } = input;
-    if (!seeds.length || seeds.length > 4) throw new Error('Select between one and four polygon shapes.');
-    if (!Number.isInteger(span) || span < 1 || span > 1000) throw new Error('Frames to track must be 1..1000.');
+    const {
+        seeds, start, stop, span, width, height, first = Math.min(...input.frameNumbers), direction = 1, trackerName = 'SAM2',
+    } = input;
+    if (direction !== 1 && direction !== -1) throw new Error('Invalid tracking direction.');
+    if (!seeds.length || seeds.length > MAX_TRACKING_OBJECTS) {
+        throw new Error(`Select between 1 and ${MAX_TRACKING_OBJECTS} polygon or mask objects.`);
+    }
+    if (!Number.isInteger(span) || span < 1 || span > MAX_TRACKING_FRAMES) {
+        throw new Error(`Frames to track must be 1..${MAX_TRACKING_FRAMES}.`);
+    }
     const frameNumbers = [...new Set(input.frameNumbers)].sort((a, b) => a - b);
     if (!frameNumbers.includes(start)) throw new Error('The seed frame does not belong to this job.');
-    const end = Math.min(stop, start + span);
-    const targets = frameNumbers.filter((frame) => frame > start && frame <= end);
-    if (!targets.length) throw new Error('There are no later frames in the selected range.');
+    const end = direction === 1 ? Math.min(stop, start + span) : Math.max(first, start - span);
+    const targets = frameNumbers.filter((frame) => (frame - start) * direction > 0 && (end - frame) * direction >= 0);
+    if (direction === -1) targets.reverse();
+    if (!targets.length) throw new Error('There are no frames in the selected direction.');
     if (cancelled()) return null;
     const seedMeta = await transport.frame(start);
     if (seedMeta.deleted || seedMeta.width !== width || seedMeta.height !== height) {
@@ -81,11 +96,15 @@ export async function track(
     if (cancelled()) return null;
     let response = await transport.call({ frame: start, shapes: seeds });
     if (cancelled()) return null;
-    validateReply(response, seeds.length, width, height);
+    validateReply(response, seeds.length, width, height, trackerName);
     // Preserve the user's exact seed contour, not the model's reconstruction of it.
-    const results = seeds.map((seed) => [{ frame: start, points: [...seed.points], outside: false }]);
+    const results = seeds.map((seed, index) => {
+        const points = seed.type === 'polygon' ? seed.points : response.shapes[index]?.points;
+        if (!points) throw new Error('A seed mask has no usable polygon contour.');
+        return [{ frame: start, points: [...points], outside: false }];
+    });
     let processed = 0;
-    let coordinateCount = seeds.reduce((sum, seed) => sum + seed.points.length, 0);
+    let coordinateCount = results.reduce((sum, result) => sum + result[0].points.length, 0);
     for (let i = 0; i < targets.length; i++) {
         const frame = targets[i];
         if (cancelled()) return null;
@@ -97,22 +116,25 @@ export async function track(
             if (!continued) return null;
             response = continued;
             if (cancelled()) return null;
-            validateReply(response, seeds.length, width, height);
-            response.shapes.forEach((shape, index) => {
+            validateReply(response, seeds.length, width, height, trackerName);
+            for (let index = 0; index < response.shapes.length; index++) {
+                const shape = response.shapes[index];
                 const previous = results[index][results[index].length - 1];
                 const points = shape?.points ?? previous.points;
                 coordinateCount += points.length;
                 if (coordinateCount > 2_000_000) throw new Error('Tracking result is too large; choose a shorter range.');
                 results[index].push({ frame, points: [...points], outside: shape === null });
-            });
+            }
             processed += 1;
         }
-        progress(`SAM2 tracking: frame ${frame}`, Math.floor(((i + 1) / targets.length) * 99));
+        progress(`${trackerName} tracking: frame ${frame}`, Math.floor(((i + 1) / targets.length) * 99));
     }
-    if (!processed) throw new Error('All later frames in the selected range are deleted.');
+    if (!processed) throw new Error('All target frames in the selected range are deleted.');
     // CVAT extrapolates the last visible keyframe. Explicitly terminate the new track
     // at the first available, non-deleted frame beyond the requested range.
-    for (const frame of frameNumbers.filter((number) => number > end && number <= stop)) {
+    const beyond = frameNumbers.filter((number) => (number - end) * direction > 0 && number >= first && number <= stop);
+    if (direction === -1) beyond.reverse();
+    for (const frame of beyond) {
         if (cancelled()) return null;
         const meta = await transport.frame(frame);
         if (cancelled()) return null;
@@ -123,5 +145,14 @@ export async function track(
         });
         break;
     }
-    return cancelled() ? null : results;
+    if (direction === -1) {
+        // Close at both sides: CVAT extrapolates the latest visible keyframe.
+        for (const frame of frameNumbers.filter((number) => number > start && number <= stop)) {
+            if (cancelled()) return null;
+            if ((await transport.frame(frame)).deleted) continue;
+            results.forEach((keyframes) => keyframes.push({ frame, points: [...keyframes[0].points], outside: true }));
+            break;
+        }
+    }
+    return cancelled() ? null : results.map((keyframes) => keyframes.sort((a, b) => a.frame - b.frame));
 }

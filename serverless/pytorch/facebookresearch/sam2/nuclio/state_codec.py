@@ -5,20 +5,22 @@ import re
 import struct
 import torch
 from safetensors.torch import save, load
-from protocol import ProtocolError, MAX_PIXELS
+from protocol import ProtocolError, MAX_PIXELS, MAX_OBJECTS
 from temporal_video import Snapshot
 
-NAME = re.compile(r"o([0-3])\.(c|n)\.(0|[1-9][0-9]{0,9})\.(ptr|mem|pos)\Z")
+NAME = re.compile(r"o(0|[1-9][0-9]?)\.(c|n)\.(0|[1-9][0-9]{0,9})\.(ptr|mem|pos)\Z")
 DTYPES = {"F32": 4, "BF16": 2, "F16": 2}
 
 
 class StateCodec:
-    def __init__(self, identity, *, max_bytes=64 * 1024 * 1024):
+    def __init__(self, identity, *, max_bytes=256 * 1024 * 1024):
         if not re.fullmatch(r"[0-9a-f]{64}", identity) or not 1024 <= max_bytes <= 256 * 1024 * 1024:
             raise ValueError("Invalid model identity or state byte limit")
         self.identity, self.max_bytes = identity, max_bytes
 
     def encode(self, snapshot):
+        if not 1 <= len(snapshot.objects) <= MAX_OBJECTS:
+            raise ProtocolError(f"Provide 1..{MAX_OBJECTS} objects", 413)
         tensors = {}
         for obj, outputs in enumerate(snapshot.objects):
             for kind, name in (("c", "cond_frame_outputs"), ("n", "non_cond_frame_outputs")):
@@ -51,7 +53,7 @@ class StateCodec:
         if not isinstance(data, bytes) or not 8 < len(data) <= self.max_bytes:
             raise ValueError("State size")
         length = struct.unpack("<Q", data[:8])[0]
-        if not 2 <= length <= min(65536, len(data) - 8):
+        if not 2 <= length <= min(256 * 1024, len(data) - 8):
             raise ValueError("Header size")
         header = json.loads(data[8:8 + length])
         metadata = json.loads(header.pop("__metadata__")["state"])
@@ -62,11 +64,11 @@ class StateCodec:
         for key in ("index", "width", "height", "count"):
             if type(metadata[key]) is not int:
                 raise ValueError("Metadata types")
-        if not (0 <= metadata["index"] < 2**31 and 1 <= metadata["count"] <= 4 and
+        if not (0 <= metadata["index"] < 2**31 and 1 <= metadata["count"] <= MAX_OBJECTS and
                 0 < metadata["width"] <= MAX_PIXELS and 0 < metadata["height"] <= MAX_PIXELS and
                 metadata["width"] * metadata["height"] <= MAX_PIXELS):
             raise ValueError("Metadata bounds")
-        if not 3 <= len(header) <= 1024:
+        if not 3 <= len(header) <= 4096:
             raise ValueError("Tensor count")
         # Inspect allocations before letting safetensors construct CPU tensors.
         for name, info in header.items():
