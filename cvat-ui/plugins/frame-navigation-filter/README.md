@@ -18,6 +18,8 @@ No existing CVAT source, UI, server, database, or extension-management file is m
 
 The hook does not edit the caller's filter array, change hidden flags, or call a private `.implementation`. The empty-filter invocation terminates recursion. The UI plugin destructor disables the hook because core has no unregister method.
 
+Public API re-entry runs other plugins' `enter` and `leave` hooks on both the inner and outer calls. The annotation implementation runs once, but a companion `leave` transformation runs twice (first with empty filters, then with the original filters), regardless of registration order. A future companion hook with non-idempotent effects must account for this; this plugin does not promise exactly-once execution of other hooks. Keep the public API boundary rather than bypassing it through private implementations. Empty-filter reads and reads while this plugin is disabled invoke companion hooks only once.
+
 ## Verification
 
 After installing the repository's JavaScript dependencies:
@@ -26,6 +28,6 @@ After installing the repository's JavaScript dependencies:
 node --test cvat-ui/plugins/frame-navigation-filter/tests/filter.test.cjs
 ```
 
-These tests load the actual repository core plugin registry and cover hook binding, one unfiltered read, forward/backward search, invalid arguments, disabled behavior, hidden flags and newly created shapes.
+These tests load the actual repository core plugin registry and cover hook binding, one unfiltered read, forward/backward search, invalid arguments, disabled behavior, hidden flags and newly created shapes. They also exercise a companion enter/leave hook registered before and after this plugin, preserving both leave transformations and documenting their two invocations.
 
 Browser acceptance: open an image task with a tag and a mask on the same frame. Apply a tag filter, navigate in both directions using switching-by-filter, draw a new mask, save and reload. Both old and new masks must remain visible while navigation still skips non-matching frames. Verify an intentionally hidden object stays hidden. A full CVAT build and browser acceptance are separate from the isolated tests.

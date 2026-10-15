@@ -22,7 +22,7 @@ function load(file, dependencies = {}) {
 const root = path.resolve(__dirname, '../../../..');
 const { createNavigationFilterPlugin } = load(path.join(__dirname, '../src/ts/filter.ts'));
 
-async function fixture() {
+async function fixture(hooks, companionFirst = false) {
     const Registry = load(path.join(root, 'cvat-core/src/plugins.ts'), {
         './exceptions': { ArgumentError: TypeError },
     }).default;
@@ -53,7 +53,14 @@ async function fixture() {
     Object.entries(prototype.annotations).forEach(([key, fn]) => { job.annotations[key] = fn.bind(job); });
     let enabled = true;
     const plugin = createNavigationFilterPlugin(() => enabled);
-    await Registry.register.call({ classes: { Job: { prototype } } }, plugin);
+    const api = { classes: { Job: { prototype } } };
+    const registerCompanion = () => Registry.register.call(api, {
+        name: 'Companion hook', description: 'Exercise public API re-entry',
+        cvat: { classes: { Job: { prototype: { annotations: { get: hooks } } } } },
+    });
+    if (hooks && companionFirst) await registerCompanion();
+    await Registry.register.call(api, plugin);
+    if (hooks && !companionFirst) await registerCompanion();
     assert.equal(plugin.functions.length, 1, 'the real core registry must bind exactly the Job.get hook');
     return { job, objects, calls, filters, disable: () => { enabled = false; } };
 }
@@ -95,4 +102,47 @@ test('new annotations remain in the result after a refresh', async () => {
     await job.annotations.get(0, false, filters);
     objects.push({ type: 'mask', source: 'manual' });
     assert.equal((await job.annotations.get(0, false, filters)).length, 4);
+});
+
+for (const companionFirst of [true, false]) {
+    test(`public re-entry runs companion hooks twice (companion first: ${companionFirst})`, async () => {
+        const enterCalls = [];
+        const leaveCalls = [];
+        const hooks = {
+            async enter(_plugin, frame, allTracks, filters) {
+                enterCalls.push({ context: this, frame, allTracks, filters });
+            },
+            async leave(_plugin, result, frame, allTracks, filters) {
+                leaveCalls.push({ context: this, frame, allTracks, filters });
+                return result.map((state) => ({ ...state, visits: (state.visits || 0) + 1 }));
+            },
+        };
+        const { job, objects, calls, filters } = await fixture(hooks, companionFirst);
+        const result = await job.annotations.get(5, true, filters);
+        assert.equal(calls.length, 1, 'the underlying annotation read still runs only once');
+        assert.equal(enterCalls.length, 2);
+        assert.equal(leaveCalls.length, 2);
+        assert.equal(leaveCalls[0].filters.length, 0, 'the inner leave sees empty filters');
+        assert.strictEqual(leaveCalls[1].filters, filters, 'the outer leave sees the original filters');
+        for (const call of [...enterCalls, ...leaveCalls]) {
+            assert.strictEqual(call.context, job);
+            assert.equal(call.frame, 5);
+            assert.equal(call.allTracks, true);
+        }
+        assert.ok(result.every((state) => state.visits === 2), 'both leave transformations are preserved');
+        assert.equal(result[2].hidden, true);
+        assert.ok(objects.every((state) => !('visits' in state)));
+    });
+}
+
+test('companion leave runs once for an empty filter or disabled navigation plugin', async () => {
+    let leaves = 0;
+    const { job, filters, disable } = await fixture({
+        async leave(_plugin, result) { leaves++; return result; },
+    });
+    await job.annotations.get(0);
+    assert.equal(leaves, 1);
+    disable();
+    assert.equal((await job.annotations.get(0, false, filters)).length, 1);
+    assert.equal(leaves, 2);
 });
