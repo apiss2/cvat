@@ -50,9 +50,9 @@
                 </fieldset>
             </div>
             <div class="panel form-panel"><div class="form-section-heading"><span class="step-number" aria-hidden="true">3</span><div><h2>ファイルと試験画像</h2><p>公開前に、登録するモデルで試験画像を推論します。</p></div></div>
-                <div class="upload-grid"><label class="file-field"><strong>推論コード</strong><span class="help">model.py</span><input id="code" type="file" accept=".py" required></label><label class="file-field"><strong>ONNXファイル</strong><span class="help">複数選択できます</span><input id="weights" type="file" accept=".onnx" multiple required></label><label class="file-field"><strong>試験画像</strong><span class="help">PNGまたはJPEG</span><input id="sample" type="file" accept=".png,.jpg,.jpeg" required></label></div>
+                <div class="upload-grid"><label class="file-field"><strong>推論コード</strong><span class="help">model.py</span><input id="code" type="file" accept=".py" required></label><label class="file-field"><strong>ONNXファイル</strong><span class="help">複数選択できます</span><input id="weights" type="file" accept=".onnx" multiple required></label><section id="retained-model-files" hidden></section><label class="file-field"><strong>試験画像</strong><span class="help">PNGまたはJPEG</span><input id="sample" type="file" accept=".png,.jpg,.jpeg" required></label></div>
                 <p class="help">ModelBaseを継承したModelクラスのloadとpredictを実装します。入力画像はRGB形式です。更新の検証に失敗した場合は公開中の版を維持します。</p>
-                <div class="form-actions"><button id="submit-model" class="primary" type="submit">検証して公開</button><button id="cancel-update" class="secondary" type="button" hidden>更新を取り消す</button><span>試験推論が成功すると、CVATから利用できます。</span></div><progress id="upload-progress" max="100" value="0" aria-label="アップロードの進捗" hidden></progress>
+                <div class="form-actions"><p id="update-summary" role="status" class="help"></p><button id="submit-model" class="primary" type="submit">検証して公開</button><button id="cancel-update" class="secondary" type="button" hidden>更新を取り消す</button><span>試験推論が成功すると、CVATから利用できます。</span></div><progress id="upload-progress" max="100" value="0" aria-label="アップロードの進捗" hidden></progress>
             </div>
         </form>
     </section>
@@ -70,6 +70,5 @@
 </main>
 <footer>CVAT モデル管理 <span>チームのONNXモデルを共有するワークスペース</span></footer>
 <script src="./static/app.js" defer></script>
-<script src="./static/updates.js" defer></script>
 </body>
 </html>

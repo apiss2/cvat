@@ -6,6 +6,7 @@ let user = null, authEpoch = 0, checkingSession = false;
 class StaleSession extends Error {}
 class AccessUnavailable extends Error {}
 let selected = null, editing = null, models = [], activeOperation = '', refreshingEpoch = null, detailSequence = 0;
+let replacementWeights = [];
 const endpoint = (path) => new URL(path.replace(/^\//, ''), base).href;
 function notice(message, error = false) { $('notice').textContent = message; $('notice').classList.toggle('error', error); }
 function authHeaders() { return { 'X-Registry-Request': '1', ...(user ? { 'X-Registry-User-ID': String(user.id) } : {}) }; }
@@ -73,6 +74,84 @@ function resetForm(model = null) {
     $('model-kind').value = ['rectangle', 'tag'].includes(labelType) ? labelType : 'polygon';
     const polygon = model?.manifest?.polygon || {}; $('min-distance').value = polygon.min_distance_px ?? 2; $('spacing-percent').value = polygon.spacing_percent ?? 1; $('min-area').value = polygon.min_area_px ?? 10;
     (model?.manifest?.labels || [{ id: 0, name: 'object' }]).forEach(labelRow); $('cancel-update').hidden = !model; kindChanged();
+    const updating = Boolean(model?.active_revision);
+    const panel = $('retained-model-files');
+    panel.hidden = !updating; panel.replaceChildren(); replacementWeights = [];
+    $('weights').parentElement.hidden = updating;
+    for (const id of ['code', 'weights', 'sample']) $(id).required = !updating;
+    $('submit-model').textContent = updating ? '変更を検証して更新' : '検証して公開';
+    if (updating) {
+        const help = document.createElement('p');
+        help.textContent = '未選択のファイルと未変更の設定は公開中の版から引き継ぎます。Pythonコードとサンプル画像も再アップロード不要です。検証に失敗した場合は公開中の版を維持します。';
+        panel.append(help);
+        for (const name of model.manifest.weights) {
+            const label = document.createElement('label');
+            label.textContent = `ONNX: ${name}（同じファイル名で置換、未選択なら引き継ぎ）`;
+            const input = document.createElement('input');
+            input.type = 'file'; input.accept = '.onnx';
+            input.setAttribute('aria-label', `${name}を置換するONNXファイル`);
+            input.addEventListener('change', updateSummary);
+            label.append(input); panel.append(label); replacementWeights.push({ name, input });
+        }
+    }
+    updateSummary();
+}
+function updateSummary() {
+    const summary = $('update-summary');
+    if (!editing?.active_revision) { summary.textContent = ''; return; }
+    const replaced = replacementWeights.filter(({ input }) => input.files.length).map(({ name }) => name);
+    if ($('code').files.length) replaced.push('model.py');
+    if ($('sample').files.length) replaced.push('サンプル画像');
+    summary.textContent = `基準の版: ${editing.active_revision}。置換するファイル: ${replaced.join('、') || 'なし（設定のみ更新可能）'}。その他のファイルは引き継ぎます。`;
+}
+function readModelSettings(previous) {
+    const kind = $('model-kind').value;
+    const labels = [...$('labels').children].map((row) => {
+        const id = Number(row.querySelector('[data-key=id]').value);
+        const previousLabel = previous?.labels.find((label) => label.id === id);
+        // Keep mixed label types unless the user changes the model kind.
+        return { id, name: row.querySelector('[data-key=name]').value.trim(),
+            type: kind === previous?.labels[0]?.type ? (previousLabel?.type || kind) : kind };
+    });
+    const settings = { name: $('name').value.trim(), description: $('description').value,
+        author_contact: $('author-contact').value.trim(), labels };
+    if (kind === 'polygon') settings.polygon = { min_distance_px: Number($('min-distance').value),
+        spacing_percent: Number($('spacing-percent').value), min_area_px: Number($('min-area').value) };
+    return settings;
+}
+async function submitModel() {
+    const model = editing;
+    const updating = Boolean(model?.active_revision);
+    const settings = readModelSettings(updating ? model.manifest : null);
+    const data = new FormData();
+    if (updating) {
+        const patch = {};
+        for (const [key, value] of Object.entries(settings)) {
+            const changed = key === 'polygon' ? Object.keys(value).some((name) => value[name] !== model.manifest.polygon?.[name]) :
+                JSON.stringify(value) !== JSON.stringify(model.manifest[key]);
+            if (changed) patch[key] = value;
+        }
+        if (Object.keys(patch).length) data.set('manifest', JSON.stringify(patch));
+        if ($('code').files.length && $('code').files[0].name !== 'model.py') {
+            throw new Error('Pythonコードのファイル名はmodel.pyにしてください。');
+        }
+    } else {
+        data.set('manifest', JSON.stringify({ schema_version: 1, ...settings,
+            weights: [...$('weights').files].map((weight) => weight.name) }));
+    }
+    for (const id of ['code', 'sample']) if ($(id).files.length) data.set(id, $(id).files[0]);
+    if (updating) {
+        for (const { name, input } of replacementWeights) {
+            if (!input.files.length) continue;
+            if (input.files[0].name !== name) throw new Error(`ONNXファイル名は${name}と一致させてください。`);
+            data.append('weights', input.files[0]);
+        }
+        if (![...data.keys()].length) throw new Error('変更するファイルまたは設定を指定してください。');
+        data.set('expected_revision', model.active_revision);
+    } else {
+        for (const weight of $('weights').files) data.append('weights', weight);
+    }
+    await sendPackage(updating ? `/api/models/${model.id}/update` : '/api/upload', data);
 }
 function renderModels() {
     $('models').replaceChildren(); const query = $('search').value.trim().toLocaleLowerCase(); let count = 0;
@@ -212,12 +291,8 @@ $('new-model').addEventListener('click', () => { resetForm(); $('operation').tex
 $('register-nav').addEventListener('click', () => { if (!activeOperation) { resetForm(); $('operation').textContent = ''; notice(''); } });
 $('cancel-update').addEventListener('click', () => resetForm()); $('model-kind').addEventListener('change', kindChanged);
 $('add-label').addEventListener('click', () => { const ids = [...$('labels').querySelectorAll('[data-key=id]')].map((x) => Number(x.value)); labelRow({ id: ids.length ? Math.max(...ids) + 1 : 0, name: '' }); });
-$('register-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
-    const weights = [...$('weights').files]; const labels = [...$('labels').children].map((row) => ({ id: Number(row.querySelector('[data-key=id]').value), name: row.querySelector('[data-key=name]').value.trim(), type: $('model-kind').value }));
-    const manifest = { schema_version: 1, name: $('name').value.trim(), description: $('description').value, author_contact: $('author-contact').value.trim(), weights: weights.map((w) => w.name), labels };
-    if ($('model-kind').value === 'polygon') manifest.polygon = { min_distance_px: Number($('min-distance').value), spacing_percent: Number($('spacing-percent').value), min_area_px: Number($('min-area').value) };
-    const data = new FormData(); data.set('manifest', JSON.stringify(manifest)); data.set('code', $('code').files[0]); data.set('sample', $('sample').files[0]); weights.forEach((weight) => data.append('weights', weight)); await sendPackage('/api/upload', data);
-}); });
+for (const id of ['code', 'sample']) $(id).addEventListener('change', updateSummary);
+$('register-form').addEventListener('submit', (event) => { event.preventDefault(); run(submitModel); });
 $('update-model').addEventListener('click', () => { if (selected?.can_manage && selected.active_revision && !selected.deleted) { resetForm(selected); location.hash = 'register'; } });
 $('delete-model').addEventListener('click', () => run(async () => {
     if (!selected?.can_manage || !confirm('このモデルの全ての版を無効にします。実行中の一括推論は次の画像から失敗する場合があります。削除しますか？')) return;

@@ -20,8 +20,6 @@ class Element {
     get textContent() { return this.text + this.children.map((node) => node.textContent).join(''); }
     append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
     replaceChildren(...nodes) { this.children = []; this.text = ''; this.append(...nodes); }
-    before() {}
-    after(node) { this.parentElement.append(node); }
     setAttribute(name, value) { this[name] = value; }
     addEventListener(type, handler, capture = false) { this.listeners.push({ type, handler, capture }); }
     querySelectorAll(selector) {
@@ -45,6 +43,8 @@ function setup() {
     const get = (id) => { assert(elements.has(id), `missing element: ${id}`); return elements.get(id); };
     const uploads = new Element();
     const weightLabel = new Element('label'); uploads.append(weightLabel); weightLabel.append(get('weights'));
+    uploads.append(get('retained-model-files'));
+    get('register-form').reset = () => { for (const id of ['code', 'weights', 'sample']) get(id).files = []; };
     const sandbox = {
         document: { getElementById: get, createElement: (tag) => new Element(tag), addEventListener() {}, hidden: false },
         window: { addEventListener() {} }, location: { href: 'https://cvat.invalid/model-registry/', hash: '#models' },
@@ -58,7 +58,6 @@ function setup() {
     const boot = /\r?\nresetForm\(\);\r?\nrun\(checkSession\);\s*$/;
     assert(boot.test(app), 'unexpected application boot sequence');
     vm.runInContext(app.replace(boot, '\n'), context);
-    vm.runInContext(fs.readFileSync(path.join(root, 'static/updates.js'), 'utf8'), context);
     vm.runInContext(`
         let pending;
         run = (handler) => { pending = Promise.resolve().then(handler).catch((error) => notice(error.message, true)); };
@@ -119,7 +118,7 @@ test('classification update restores type and needs no new code or sample', asyn
     const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
     assert.equal(ui.get('model-kind').value, 'tag');
     assert.equal(ui.get('code').required, false); assert.equal(ui.get('sample').required, false);
-    const panel = ui.get('weights').parentElement.parentElement.children.find((node) => node.id === 'retained-model-files');
+    const panel = ui.get('retained-model-files');
     panel.children.find((node) => node.tagName === 'label').children[0].files = [file('model.onnx')];
     await ui.submit('register-form');
     const { route, data } = ui.sandbox.submitted[0];
@@ -133,7 +132,7 @@ test('classification update restores type and needs no new code or sample', asyn
 for (const name of ['new-local-name.onnx', 'Model.onnx']) {
     test(`weight name ${name} is rejected without uploading`, async () => {
         const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
-        const panel = ui.get('weights').parentElement.parentElement.children.find((node) => node.id === 'retained-model-files');
+        const panel = ui.get('retained-model-files');
         panel.children.find((node) => node.tagName === 'label').children[0].files = [file(name)];
         await ui.submit('register-form');
         assert.equal(ui.sandbox.submitted.length, 0);
@@ -231,4 +230,153 @@ test('common upload transport never injects model or revision fields', async () 
     await ui.eval("actualSendPackage('/api/upload', data)");
     assert.equal(sent.length, 1);
     assert.deepEqual([...sent[0].keys()], ['manifest']);
+});
+
+test('registration and updates use one non-capturing submit handler', async () => {
+    const ui = setup();
+    const listeners = ui.get('register-form').listeners.filter((entry) => entry.type === 'submit');
+    assert.equal(listeners.length, 1);
+    assert.equal(listeners[0].capture, false);
+    assert.doesNotMatch(html, /static\/updates\.js/);
+    const source = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
+    assert.doesNotMatch(source, /stopImmediatePropagation|\bresetForm\s*=/);
+    let observed = 0;
+    ui.get('register-form').addEventListener('submit', () => { observed++; });
+    ui.sandbox.model = model(); ui.eval('resetForm(model)');
+    ui.get('description').value = 'updated';
+    await ui.submit('register-form');
+    assert.equal(observed, 1);
+    assert.equal(ui.sandbox.submitted.length, 1);
+});
+
+test('sample-only update sends only the replacement and base revision', async () => {
+    const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+    ui.get('sample').files = [file('new-sample.jpg')];
+    await ui.submit('register-form');
+    assert.equal(ui.sandbox.submitted.length, 1);
+    const { route, data } = ui.sandbox.submitted[0];
+    assert.equal(route, `/api/models/${ui.sandbox.model.id}/update`);
+    assert.deepEqual([...data.keys()], ['sample', 'expected_revision']);
+    assert.equal(data.get('sample').name, 'new-sample.jpg');
+});
+
+test('multiple weight replacements preserve filenames and omit retained files', async () => {
+    const ui = setup(); ui.sandbox.model = model();
+    ui.sandbox.model.manifest.weights = ['encoder.onnx', 'decoder.onnx', 'retained.onnx'];
+    ui.eval('resetForm(model)');
+    const inputs = ui.get('retained-model-files').children.filter((node) => node.tagName === 'label').map((node) => node.children[0]);
+    inputs[0].files = [file('encoder.onnx')]; inputs[1].files = [file('decoder.onnx')];
+    await ui.submit('register-form');
+    const { data } = ui.sandbox.submitted[0];
+    assert.deepEqual(data.getAll('weights').map((weight) => weight.name), ['encoder.onnx', 'decoder.onnx']);
+    assert.equal(data.has('manifest'), false);
+    assert.equal(data.has('code'), false); assert.equal(data.has('sample'), false);
+});
+
+for (const firstKind of ['tag', 'polygon', 'rectangle']) {
+    test(`metadata-only update preserves mixed labels starting with ${firstKind}`, async () => {
+        const ui = setup(); ui.sandbox.model = model(firstKind);
+        ui.sandbox.model.manifest.labels[1].type = firstKind === 'tag' ? 'rectangle' : 'tag';
+        ui.eval('resetForm(model)'); ui.get('description').value = '';
+        await ui.submit('register-form');
+        assert.deepEqual(JSON.parse(ui.sandbox.submitted[0].data.get('manifest')), { description: '' });
+    });
+}
+
+test('intentional model kind change updates all label types', async () => {
+    const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+    ui.get('model-kind').value = 'rectangle'; ui.eval('kindChanged()');
+    await ui.submit('register-form');
+    const patch = JSON.parse(ui.sandbox.submitted[0].data.get('manifest'));
+    assert.deepEqual(Object.keys(patch), ['labels']);
+    assert(patch.labels.every((label) => label.type === 'rectangle'));
+    assert(ui.sandbox.model.manifest.labels.every((label) => label.type === 'tag'));
+});
+
+test('polygon option change retains the other model settings', async () => {
+    const ui = setup(); ui.sandbox.model = model('polygon'); ui.eval('resetForm(model)');
+    ui.get('min-area').value = '25';
+    await ui.submit('register-form');
+    assert.deepEqual(JSON.parse(ui.sandbox.submitted[0].data.get('manifest')),
+        { polygon: { min_distance_px: 2, spacing_percent: 1, min_area_px: 25 } });
+});
+
+for (const reset of ['resetForm()', 'signedOut()']) {
+    test(`${reset} clears update controls and restores required registration files`, async () => {
+        const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+        const input = ui.get('retained-model-files').children.find((node) => node.tagName === 'label').children[0];
+        input.files = [file('model.onnx')]; ui.get('code').files = [file('model.py')];
+        ui.eval('updateSummary()'); assert.match(ui.get('update-summary').textContent, /model\.onnx/);
+        ui.eval(reset);
+        assert.equal(ui.get('retained-model-files').hidden, true);
+        assert.equal(ui.get('retained-model-files').children.length, 0);
+        assert.equal(ui.get('update-summary').textContent, '');
+        assert.equal(ui.get('weights').parentElement.hidden, false);
+        for (const id of ['code', 'weights', 'sample']) {
+            assert.equal(ui.get(id).required, true); assert.equal(ui.get(id).files.length, 0);
+        }
+        assert.equal(ui.get('submit-model').textContent, '検証して公開');
+        ui.get('name').value = 'new model'; ui.get('weights').files = [file('new.onnx')];
+        ui.get('code').files = [file('model.py')]; ui.get('sample').files = [file('sample.png')];
+        await ui.submit('register-form');
+        const { route, data } = ui.sandbox.submitted[0];
+        assert.equal(route, '/api/upload'); assert.equal(data.has('expected_revision'), false);
+        assert.deepEqual(data.getAll('weights').map((weight) => weight.name), ['new.onnx']);
+    });
+}
+
+test('switching models discards old replacements and uses the new revision', async () => {
+    const ui = setup(); ui.sandbox.first = model(); ui.sandbox.second = model();
+    ui.sandbox.second.id = 'c'.repeat(20); ui.sandbox.second.active_revision = 'd'.repeat(16);
+    ui.sandbox.second.manifest.weights = ['second.onnx'];
+    ui.eval('resetForm(first)');
+    ui.get('retained-model-files').children.find((node) => node.tagName === 'label').children[0].files = [file('model.onnx')];
+    ui.eval('resetForm(second)'); ui.get('description').value = 'second update';
+    await ui.submit('register-form');
+    const { route, data } = ui.sandbox.submitted[0];
+    assert.equal(route, `/api/models/${ui.sandbox.second.id}/update`);
+    assert.equal(data.get('expected_revision'), ui.sandbox.second.active_revision);
+    assert.equal(data.has('weights'), false);
+});
+
+test('replacement summary follows code, sample and weight input changes', () => {
+    const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+    const weight = ui.get('retained-model-files').children.find((node) => node.tagName === 'label').children[0];
+    for (const [input, name] of [[ui.get('code'), 'model.py'], [ui.get('sample'), 'sample.png'], [weight, 'model.onnx']]) {
+        input.files = [file(name)];
+        for (const entry of input.listeners.filter((listener) => listener.type === 'change')) entry.handler();
+    }
+    const summary = ui.get('update-summary').textContent;
+    for (const value of ['model.py', 'サンプル画像', 'model.onnx', ui.sandbox.model.active_revision]) assert(summary.includes(value));
+});
+
+test('failed validation keeps the update form and its base revision', async () => {
+    const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+    ui.get('description').value = 'retry me';
+    ui.sandbox.XMLHttpRequest = class {
+        constructor() { this.upload = {}; this.status = 202; this.responseText = '{"id":"operation"}'; }
+        open() {} setRequestHeader() {} getResponseHeader() { return null; }
+        send() { this.onload(); }
+    };
+    ui.eval(`sendPackage = actualSendPackage; refresh = async () => {};
+        api = async () => ({ status: 'failed', model_id: model.id, detail: 'invalid output' });`);
+    await ui.submit('register-form');
+    assert.equal(ui.get('description').value, 'retry me');
+    assert.equal(ui.get('retained-model-files').hidden, false);
+    assert.equal(ui.eval('editing.active_revision'), ui.sandbox.model.active_revision);
+    assert.equal(ui.get('submit-model').disabled, false);
+    assert.match(ui.get('notice').textContent, /検証に失敗/);
+});
+
+test('upload response from a signed-out account is rejected', async () => {
+    const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+    ui.sandbox.XMLHttpRequest = class {
+        constructor() { this.upload = {}; this.status = 202; this.responseText = '{"id":"operation"}'; }
+        open() {} setRequestHeader() {} getResponseHeader() { return null; }
+        send() { ui.eval('signedOut()'); this.onload(); }
+    };
+    ui.sandbox.data = new FormData();
+    await assert.rejects(ui.eval("actualSendPackage('/api/upload', data)"), (error) => error.constructor.name === 'StaleSession');
+    assert.equal(ui.eval('activeOperation'), '');
+    assert.equal(ui.get('retained-model-files').hidden, true);
 });
