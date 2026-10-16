@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 CLIENTS = {
     "frame_navigation_filter": "plugins/frame-navigation-filter",
     "selective_ai": "plugins/selective-ai",
+    "filtered_export": "plugins/filtered-export",
 }
 
 
@@ -104,7 +105,11 @@ def configure(cli, manager, monkeypatch):
     ("", []),
     ("frame_navigation_filter", [CLIENTS["frame_navigation_filter"]]),
     ("selective_ai", [CLIENTS["selective_ai"]]),
-    ("selective_ai,frame_navigation_filter", list(CLIENTS.values())),
+    ("filtered_export", [CLIENTS["filtered_export"]]),
+    ("selective_ai,frame_navigation_filter", [CLIENTS["frame_navigation_filter"], CLIENTS["selective_ai"]]),
+    ("filtered_export,frame_navigation_filter", [CLIENTS["frame_navigation_filter"], CLIENTS["filtered_export"]]),
+    ("filtered_export,selective_ai", [CLIENTS["selective_ai"], CLIENTS["filtered_export"]]),
+    ("filtered_export,selective_ai,frame_navigation_filter", list(CLIENTS.values())),
 ])
 def test_named_selection(cli, make_manager, selected, expected):
     manager = make_manager(selected)
@@ -149,6 +154,9 @@ def test_all_existing_extensions_can_be_combined(cli, make_manager):
 @pytest.mark.parametrize("selected,serverless", [
     ("frame_navigation_filter", False), ("selective_ai", True),
     ("frame_navigation_filter,selective_ai", True),
+    ("filtered_export", False),
+    ("frame_navigation_filter,filtered_export", False),
+    (",".join(CLIENTS), True),
 ])
 def test_compose_uses_only_required_existing_overlays(cli, make_manager, selected, serverless):
     manager = make_manager(selected)
@@ -192,12 +200,12 @@ def test_selective_ai_requires_serverless_service(cli, make_manager, monkeypatch
 
 def test_selection_changes_only_ui_image_tag_for_same_source(cli, make_manager, monkeypatch):
     images = []
-    for selected in ("", "frame_navigation_filter", "selective_ai", ",".join(CLIENTS)):
+    for selected in ("", *CLIENTS, ",".join(CLIENTS)):
         manager = make_manager(selected)
         model, _ = configure(cli, manager, monkeypatch)
         images.append((model["services"]["cvat_server"]["image"], model["services"]["cvat_ui"]["image"]))
     assert len({backend for backend, _ in images}) == 1
-    assert len({ui for _, ui in images}) == 4
+    assert len({ui for _, ui in images}) == len(CLIENTS) + 2
 
 
 @pytest.mark.parametrize("command", ["config", "doctor"])

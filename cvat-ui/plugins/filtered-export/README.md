@@ -24,20 +24,21 @@
 
 ## 有効化
 
-ルートの`.env`の`CVAT_CLIENT_PLUGINS`に、`plugins/filtered-export`をコロン区切りで追加します。既存の指定は残してください。例えば既存のUI拡張との併用時は以下です。
+既存の`.env`の`CVAT_EXTENSIONS`に`filtered_export`を追加します。既存のSAMやモデル管理などの選択は残してください。次は画面機能だけを選ぶ最小例です。
 
 ```dotenv
-CVAT_CLIENT_PLUGINS=plugins/frame-navigation-filter:plugins/selective-ai:plugins/filtered-export
+CVAT_EXTENSIONS=frame_navigation_filter,selective_ai,filtered_export
 ```
 
-サーバー、UI、エクスポートワーカーを同じコミットから再作成します。既存の拡張管理手順を使用します。
+`cvatctl`が`plugins/filtered-export`を自動選択します。管理対象パスを`CVAT_CLIENT_PLUGINS`へ手動で追加しても、拡張名による選択で置き換えられます。サーバー、UI、エクスポートワーカーを同じコミットから再作成します。稼働中の場合は保存と停止を済ませてから設定を編集し、共通の管理手順で再配備します。
 
 ```sh
 bash components/extensions/cvatctl build
 bash components/extensions/cvatctl up
+bash components/extensions/cvatctl check
 ```
 
-UIの直接開発では`CLIENT_PLUGINS`を指定します。マージだけでは実行環境に反映されません。プラグイン指定を外してUIを再ビルドするとメニューは消えますが、新APIはサーバーに残ります。APIも除去する場合はこの変更を含まないサーバーとワーカーに戻します。
+詳しくは[共通管理の手順](../../../components/extensions/README.md)を参照してください。推論サービスやGPUは不要です。UIの直接開発では`CLIENT_PLUGINS`を指定します。マージだけでは実行環境に反映されません。`filtered_export`を外してUIを再ビルドするとメニューは消えますが、新APIはサーバーに残ります。APIも除去する場合はこの変更を含まないサーバーとワーカーに戻します。
 
 ## 実装の分離
 

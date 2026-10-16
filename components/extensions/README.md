@@ -15,6 +15,7 @@
 | `model_registry` | ONNXモデル管理 | 管理画面へのプラグイン、ゲートウェイ、ローカル構成の管理サービスとワーカー。部分更新と画像分類もこの拡張に含まれます。 |
 | `frame_navigation_filter` | フィルター条件によるフレーム移動と全図形表示 | `plugins/frame-navigation-filter` を共通UIイメージに含めます。推論サービスは不要です。 |
 | `selective_ai` | タグ条件と画像選択による自動アノテーション | `plugins/selective-ai` を共通UIイメージに含め、推論APIに必要な既存Nuclio構成を有効にします。 |
+| `filtered_export` | アノテーション条件に合う画像のエクスポート | `plugins/filtered-export` を共通UIイメージに含めます。標準のサーバーと出力ワーカーを使用し、推論サービスは不要です。 |
 
 `selective_ai` は `model_registry` を自動選択しません。登録ONNXモデルを使う場合は両方を選択します。通常のNuclioモデルも使用できますが、画面プラグインの有効化だけでモデルを新しく配備するわけではありません。GPUも自動要求しません。推論の開始と中止は画面で行い、`cvatctl` は配備と停止を管理します。
 
@@ -25,7 +26,7 @@
 既存の選択を保持し、必要な拡張名を追加します。例えば、既存構成に新しい画面機能を追加する場合は次のように指定します。SAM3.1を使用している場合は `sam31` も保持してください。
 
 ```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,frame_navigation_filter,selective_ai
+CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,frame_navigation_filter,selective_ai,filtered_export
 ```
 
 管理対象のプラグインパスを `CVAT_CLIENT_PLUGINS` に重ねて指定する必要はありません。`cvatctl` はこの変数から管理対象のパスをいったん除き、`CVAT_EXTENSIONS` の選択に応じて再構成します。旧手順でPR2とPR3のパスだけを記載していた場合も、新しい拡張名へ変更してください。一覧にない独自のプラグインパスは保持されます。
@@ -43,6 +44,8 @@ bash components/extensions/cvatctl check
 `up` は必要なビルドを行います。事前ビルドには `build`、必要な全イメージが既に存在する場合の再利用には `up --no-build` を使います。`--env-file` と `--state-dir` を使用している場合は、全コマンドで同じ値を指定してください。
 
 画面機能を無効にする場合は、拡張名を選択から外して同じ停止と再ビルドの手順を実施します。設定の編集やPRのマージだけでは、配備済みのUIも開いているブラウザーも変わりません。再配備後は画面を再読み込みしてください。
+
+`filtered_export` を外すと画面メニューが消えます。ソースに登録されたエクスポートAPIはサーバーに残り、通常の権限確認が引き続き適用されます。APIの削除まで必要な場合は、この機能を含まないサーバーと出力ワーカーへ戻してください。
 
 ## 確認コマンドの範囲
 

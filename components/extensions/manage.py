@@ -53,6 +53,7 @@ EXTENSION_COMPOSE = {
     # Client-only extensions use the shared UI image, not separate services.
     "frame_navigation_filter": (),
     "selective_ai": (),
+    "filtered_export": (),
 }
 EXTENSION_PLUGINS = {
     "sam2": "plugins/sam2",
@@ -60,6 +61,7 @@ EXTENSION_PLUGINS = {
     "model_registry": "plugins/model-registry",
     "frame_navigation_filter": "plugins/frame-navigation-filter",
     "selective_ai": "plugins/selective-ai",
+    "filtered_export": "plugins/filtered-export",
 }
 FINAL_COMPOSE = "components/extensions/docker-compose.extensions.yml"
 COMPOSE_FILES = (
