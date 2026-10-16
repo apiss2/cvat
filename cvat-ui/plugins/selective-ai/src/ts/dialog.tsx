@@ -164,7 +164,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
                                 disabled={busy || loading || ran} onChange={setChoices} />
                         </Form.Item>}
                         {thresholdEditable && <Form.Item label='信頼度の閾値（0から1）' extra='値を大きくすると、信頼度の高い結果に絞り込みます。'>
-                            <InputNumber value={threshold} min={0} max={1} step={0.05} onChange={setThreshold} />
+                            <InputNumber<number> value={threshold} min={0} max={1} step={0.05} onChange={setThreshold} />
                         </Form.Item>}
                         {model && !thresholdEditable && <Alert type='info'
                             message='このモデルは、この画面から信頼度の閾値を変更できません。' />}
