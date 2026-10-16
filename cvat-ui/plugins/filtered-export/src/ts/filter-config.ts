@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import type { Config } from '@react-awesome-query-builder/antd';
+import type { Config, Field } from '@react-awesome-query-builder/antd';
 import type { LabelSpec } from './api';
 
 // The display filter's field names and JsonLogic representation are retained.
@@ -9,18 +9,18 @@ const numeric = ['equal', 'not_equal', 'less', 'less_or_equal', 'greater', 'grea
     'between', 'not_between', 'is_null', 'is_not_null'];
 const text = ['equal', 'not_equal', 'like', 'not_like', 'is_empty', 'is_not_empty'];
 const select = ['select_equals', 'select_not_equals', 'select_any_in', 'select_not_any_in'];
-const choice = (label: string, values: string[]): object => ({
+const choice = (label: string, values: string[]): Field => ({
     label, type: 'select', operators: select, valueSources: ['value'],
     fieldSettings: { listValues: values.map((value) => ({ value, title: value })) },
 });
-const quantity = (label: string): object => ({ label, type: 'number', operators: numeric });
-const boolean = (label: string): object => ({ label, type: 'boolean', operators: ['equal', 'not_equal'] });
+const quantity = (label: string): Field => ({ label, type: 'number', operators: numeric });
+const boolean = (label: string): Field => ({ label, type: 'boolean', operators: ['equal', 'not_equal'] });
 
 export function buildFields(labels: LabelSpec[], elements = false): Config['fields'] {
     const specs = elements ? labels.flatMap((label) => label.sublabels.map((child) => ({
         ...child, name: `${label.name} / ${child.name}`,
     }))) : labels;
-    const attributes = Object.fromEntries(specs.filter((label) => label.attributes.length).map((label) => [
+    const attributes: Config['fields'] = Object.fromEntries(specs.filter((label) => label.attributes.length).map((label) => [
         adjusted(label.name), {
             type: '!struct', label: label.name,
             subfields: Object.fromEntries(label.attributes.map((attribute) => {
@@ -45,10 +45,9 @@ export function buildFields(labels: LabelSpec[], elements = false): Config['fiel
             score: quantity('Score'), zOrder: quantity('Z order'),
         } : {}),
         ...(Object.keys(attributes).length ? {
-            attr: { label: 'Attributes', type: '!struct', subfields: attributes,
-                fieldSettings: { treeSelectOnlyLeafs: true, treeDefaultExpandAll: false, treeNodeFilterProp: 'title' } },
+            attr: { label: 'Attributes', type: '!struct', subfields: attributes },
         } : {}),
-    } as Config['fields'];
+    };
 }
 
 interface Tree {

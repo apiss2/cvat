@@ -33,8 +33,8 @@ CVAT_CLIENT_PLUGINS=plugins/frame-navigation-filter:plugins/selective-ai:plugins
 サーバー、UI、エクスポートワーカーを同じコミットから再作成します。既存の拡張管理手順を使用します。
 
 ```sh
-./cvatctl build
-./cvatctl up
+bash components/extensions/cvatctl build
+bash components/extensions/cvatctl up
 ```
 
 UIの直接開発では`CLIENT_PLUGINS`を指定します。マージだけでは実行環境に反映されません。プラグイン指定を外してUIを再ビルドするとメニューは消えますが、新APIはサーバーに残ります。APIも除去する場合はこの変更を含まないサーバーとワーカーに戻します。
@@ -101,6 +101,8 @@ python -m compileall -q cvat/apps/dataset_manager/filtered_export
 
 Pythonの純粋な条件評価、画像選択、形式への未加工の受け渡し、ストリーム再読込み、変更検出、旧指定の拒否をテストします。JavaScriptの比較演算との照合にはNode.jsを使い、未導入時はその2件だけスキップします。NodeのテストはAPI、条件フィールド、入力途中のルール、メニュー登録、利用者変更を検証します。
 
-サービスとリクエスト管理の単体テストはDB、補間、形式変換、IAM、Redisの境界を代替実装に置き換えています。CVAT全体のビルド、実ブラウザー、実DB、Redis、OPA、ネイティブ形式変換を組み合わせた検証は未実施です。API以外のTSXは構文検査であり、依存関係を含む型検査ではありません。
+サービスとリクエスト管理の単体テストはDB、補間、形式変換、IAM、Redisの境界を代替実装に置き換えています。CVAT全体のビルド、実ブラウザー、実DB、Redis、OPA、ネイティブ形式変換を組み合わせた検証は未実施です。
+
+レビュー時には、lockfileと同じQuery Builder 6.5.2、React 18.2.0、Ant Design 5.17.1の依存関係を一時ディレクトリに用意し、api、filter-config、filter-editor、dialogをstrict設定で型検査しました。構造体フィールドへの未対応設定と広すぎる戻り値の型を修正しています。メニュー登録を含むCVAT全体の型検査ではありません。既存CVATコンテナーでの追加モジュールの読み込み、URL構築、標準リクエストIDの往復とダウンロードID検証も確認しました。100フレーム以下の適切なタスクがなかったため、実データのプレビューと出力は実行していません。
 
 レビュー環境では、タグとMaskが同じ画像にある例、属性の条件、ORとNOT、条件に合うTrack補間フレームを用意し、プレビューと実際の出力画像を照合します。選択画像の別アノテーションが各形式の通常仕様に従って渡ること、ITGformatの通常エラーがそのまま返ることも確認対象です。さらに、削除フレーム、取り込み時に間引いた動画、複数subsetと同名画像、権限拒否、プレビュー後の編集、通常出力との同時実行を確認します。
