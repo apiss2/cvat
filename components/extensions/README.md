@@ -5,3 +5,5 @@
 管理対象と機能追加時の手順は[拡張機能の管理](../../docs/extensions/management.md)を参照してください。
 
 操作、導入条件、制限、検証方法は[機能のドキュメント](../../docs/extensions/README.md)を参照してください。
+
+更新前の保存には`cvatctl backup create --stop`を使用します。初回設定、保存対象と復元方法は[増分バックアップ](../../docs/extensions/incremental-backup.md)を参照してください。
