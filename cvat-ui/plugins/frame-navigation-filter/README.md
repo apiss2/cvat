@@ -4,19 +4,23 @@ This optional client plugin makes annotation filters navigation-only for image/v
 
 ## Enable
 
-Append `plugins/frame-navigation-filter` to `CVAT_CLIENT_PLUGINS` in the existing root `.env`, using `:` between entries. Keep any existing values. The shared `cvatctl` manager preserves custom client plugin paths and automatically adds the enabled SAM2/model registry plugins.
+Add `frame_navigation_filter` to `CVAT_EXTENSIONS` in the existing `.env`, preserving the other selected extensions. The following is a minimal selection, not a replacement for an existing deployment's settings:
 
 ```dotenv
-CVAT_CLIENT_PLUGINS=plugins/frame-navigation-filter
+CVAT_EXTENSIONS=frame_navigation_filter
 ```
 
-Rebuild/restart with the existing deployment procedure (`./cvatctl build`, then `./cvatctl up`). For direct UI development, append the same path to `CLIENT_PLUGINS` instead. Removing the path and rebuilding restores upstream behavior. Merely merging this PR does not enable the plugin in an existing deployment.
+`cvatctl` selects `plugins/frame-navigation-filter` automatically. Do not enable this managed plugin through `CVAT_CLIENT_PLUGINS`: managed paths there are replaced by the `CVAT_EXTENSIONS` selection. Unrelated custom paths remain supported.
+
+For a running deployment, save annotations and use `bash components/extensions/cvatctl down` before changing the selection, then `config`, `up` and `check` through the same wrapper. `up` rebuilds the UI; `build` can also be run separately. See the [shared deployment instructions](../../../components/extensions/README.md). Removing `frame_navigation_filter` from the selection and rebuilding disables the feature. Merging or editing `.env` alone does not change an existing UI.
+
+For direct UI development only, append `plugins/frame-navigation-filter` to `CLIENT_PLUGINS`, preserving other entries. Deployment remains managed by `cvatctl`.
 
 Build this plugin together with the `cvat-core/src/plugins.ts` change in this PR. Copying only the plugin onto an unmodified upstream core is not supported: that core does not recognize the new `methodArguments` option.
 
 ## Scope and maintenance
 
-The only modified upstream file is `cvat-core/src/plugins.ts`. Its enter-hook options gain an optional `methodArguments` array, which replaces the arguments passed to the implementation without calling the public API again. Existing UI controls, server, database, and extension-management files are unchanged. Hooks not supplying this option retain their existing behavior.
+The only modified upstream file is `cvat-core/src/plugins.ts`. Its enter-hook options gain an optional `methodArguments` array, which replaces the arguments passed to the implementation without calling the public API again. Existing UI controls, server and database are unchanged. Deployment selection is managed in `components/extensions/manage.py`. Hooks not supplying this option retain their existing behavior.
 
 The plugin uses `cvat.classes.Job.prototype.annotations.get.enter` to supply `[frame, allTracks, []]`. Core calls the existing annotation implementation after all enter hooks have completed, retaining frame validation, caching, track interpolation and manually hidden flags. `annotations.search`, Task APIs, dataset exports, list filters, and audio interval APIs are not intercepted. All callers of filtered `Job.annotations.get` see the navigation-only behavior while enabled; this is deliberately not restricted to tag predicates. The filter still controls frame search.
 

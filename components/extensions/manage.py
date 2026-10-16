@@ -50,11 +50,18 @@ EXTENSION_COMPOSE = {
     "ultrasam": ("components/ultrasam/docker-compose.ultrasam.yml",),
     "sam31": ("components/sam31/docker-compose.sam31.yml",),
     "model_registry": ("components/model_registry/docker-compose.gateway.yml",),
+    # Client-only extensions use the shared UI image, not separate services.
+    "frame_navigation_filter": (),
+    "selective_ai": (),
+    "filtered_export": (),
 }
 EXTENSION_PLUGINS = {
     "sam2": "plugins/sam2",
     "sam31": "plugins/sam31",
     "model_registry": "plugins/model-registry",
+    "frame_navigation_filter": "plugins/frame-navigation-filter",
+    "selective_ai": "plugins/selective-ai",
+    "filtered_export": "plugins/filtered-export",
 }
 FINAL_COMPOSE = "components/extensions/docker-compose.extensions.yml"
 COMPOSE_FILES = (
@@ -64,7 +71,7 @@ COMPOSE_FILES = (
     *LOCAL_REGISTRY_COMPOSE,
     FINAL_COMPOSE,
 )
-SERVERLESS_EXTENSIONS = {"sam2", "ultrasam", "sam31", "model_registry"}
+SERVERLESS_EXTENSIONS = {"sam2", "ultrasam", "sam31", "model_registry", "selective_ai"}
 DEFAULTS = {
     **gpu_functions.DEFAULTS,
     "CVAT_HOST": "localhost",
@@ -88,7 +95,7 @@ def enabled_extensions(values: dict[str, str]) -> tuple[str, ...]:
         item not in EXTENSION_COMPOSE for item in selected
     ):
         raise OperationError(
-            "CVAT_EXTENSIONS must contain unique names: itgformat,sam2,ultrasam,sam31,model_registry"
+            "CVAT_EXTENSIONS must contain unique names: " + ",".join(EXTENSION_COMPOSE)
         )
     return tuple(name for name in EXTENSION_COMPOSE if name in selected)
 
@@ -1401,6 +1408,8 @@ def main() -> None:
             model = manager.configuration()
             summary = {
                 "extensions": manager.extensions,
+                "client_plugins": manager.values["CVAT_CLIENT_PLUGINS"].split(":")
+                if manager.values["CVAT_CLIENT_PLUGINS"] else [],
                 "project": manager.project,
                 "network": manager.values["CVAT_NETWORK_NAME"],
                 "backend_image": model["services"]["cvat_server"]["image"],
