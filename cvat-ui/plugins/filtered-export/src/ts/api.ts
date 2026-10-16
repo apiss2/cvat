@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: MIT
-export type Mode = 'any' | 'all' | 'none' | 'untagged' | 'all_frames';
-export interface FrameFilter { mode: Mode; tag_ids: number[]; start: number; stop: number | null; step: number }
-export interface Options { labels: { id: number; name: string }[]; formats: string[] }
+export interface AttributeSpec { id: number; name: string; input_type: string; default_value: string; values: string[] }
+export interface LabelSpec { id: number; name: string; type: string; attributes: AttributeSpec[]; sublabels: LabelSpec[] }
+export interface Options { labels: LabelSpec[]; formats: string[] }
 export interface Preview {
     count: number;
     revision: string;
     tasks: { id: number; name: string; count: number; total: number }[];
 }
-export interface Selection {
-    filter: FrameFilter;
-    format: string;
-    saveImages: boolean;
-    omitTags: boolean;
-}
+export interface Selection { filters: object[]; format: string; saveImages: boolean }
 export interface Request {
     method: 'GET' | 'POST';
     url: string;
@@ -24,7 +19,7 @@ export interface Request {
 export type Transport = (request: Request) => Promise<{ data: unknown }>;
 export interface API {
     options(): Promise<Options>;
-    preview(selection: Selection): Promise<Preview>;
+    preview(filters: object[]): Promise<Preview>;
     export(selection: Selection, revision: string): Promise<{ rq_id: string }>;
     dispose(): void;
 }
@@ -41,35 +36,22 @@ export function createAPI(send: Transport, base: string, type: 'task' | 'project
         invalidated = invalidated || !owner || identity() !== owner || controller.signal.aborted;
         if (invalidated) throw new Error('利用者または組織が変更されました。画面を開き直してください。');
     };
-    const request = async <T>(path: string, selection?: Selection, revision?: string): Promise<T> => {
+    const request = async <T>(path: string, body?: object, params: Request['params'] = {}): Promise<T> => {
         guard();
-        const params: Request['params'] = { org };
-        if (selection) {
-            Object.assign(params, {
-                format: selection.format, save_images: selection.saveImages,
-                location: 'local', use_default_location: false,
-            });
-        }
-        const body = selection ? {
-            filter: selection.filter, omit_tags: selection.omitTags,
-            ...(revision ? { expected_revision: revision } : {}),
-        } : undefined;
         let data: unknown;
         try {
             ({ data } = await send({
-                method: selection ? 'POST' : 'GET',
+                method: body ? 'POST' : 'GET',
                 url: `${base.replace(/\/$/, '')}/filtered-export/${type}s/${id}/${path}`,
-                params, data: body, timeout: 60000, signal: controller.signal,
+                params: { ...params, org }, data: body, timeout: 60000, signal: controller.signal,
             }));
         } catch (reason) {
             guard();
-            // A duplicate request can refer to an already running export. Never
-            // retry a POST automatically, including after a timeout.
             const response = (reason as { response?: { status?: number; data?: { rq_id?: unknown } } } | null)?.response;
             if (path === 'export' && response?.status === 409 && typeof response.data?.rq_id === 'string') {
                 data = response.data;
             } else {
-                throw reason;
+                throw reason; // Never automatically retry a POST, even after a timeout.
             }
         }
         guard();
@@ -77,8 +59,10 @@ export function createAPI(send: Transport, base: string, type: 'task' | 'project
     };
     return {
         options: () => request<Options>('options'),
-        preview: (selection) => request<Preview>('preview', selection),
-        export: (selection, revision) => request<{ rq_id: string }>('export', selection, revision),
+        preview: (filters) => request<Preview>('preview', { filters }, { location: 'local' }),
+        export: (selection, revision) => request<{ rq_id: string }>('export', {
+            filters: selection.filters, expected_revision: revision,
+        }, { format: selection.format, save_images: selection.saveImages, location: 'local' }),
         dispose: () => { invalidated = true; controller.abort(); },
     };
 }
