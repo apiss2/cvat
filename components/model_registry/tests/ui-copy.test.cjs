@@ -128,6 +128,59 @@ test('account and model changes clear both human-readable results and diagnostic
     for (const id of ids) assert.equal(nodes.get(id).textContent, '');
 });
 
+for (const remaining of [0, 1]) {
+    test(`deletion returns to the catalog with ${remaining} remaining models`, async () => {
+        const { nodes, handlers, context, run } = fixture();
+        const requests = [];
+        let hash = '#models';
+        Object.defineProperty(context.location, 'hash', {
+            get: () => hash, set: (value) => { hash = value.startsWith('#') ? value : `#${value}`; },
+        });
+        context.confirm = () => true;
+        context.fetchModel = async (path, options = {}) => {
+            requests.push({ path, options });
+            if (options.method === 'DELETE') return { deleted: true };
+            if (path === '/api/me') return { id: 1, name: 'alice', admin: false };
+            assert.equal(path, '/api/models'); // Do not reopen the deleted detail.
+            return remaining ? [{ id: 'b'.repeat(20), owner: 'alice', active_revision: 'kept', manifest: { labels: [] } }] : [];
+        };
+        run(`user = { id: 1, name: 'alice', admin: false };
+            selected = { id: 'a'.repeat(20), can_manage: true, active_revision: 'current' };
+            location.hash = '#model/' + selected.id; api = fetchModel;`);
+        handlers.get('delete-model:click')();
+        await run('pending');
+        assert.equal(run('location.hash'), '#models');
+        assert.equal(run('selected'), null);
+        assert.equal(nodes.get('detail').hidden, true);
+        assert.equal(nodes.get('catalog').hidden, false);
+        for (const id of ['model-count', 'published-count', 'my-model-count']) {
+            assert.equal(Number(nodes.get(id).textContent), remaining);
+        }
+        assert.equal(nodes.get('catalog-count').textContent, `${remaining}件のモデル`);
+        assert.match(nodes.get('notice').textContent, /モデルを削除しました/);
+        assert.equal(requests[0].path, `/api/models/${'a'.repeat(20)}`);
+        assert.equal(requests[0].options.method, 'DELETE');
+        assert.deepEqual(JSON.parse(requests[0].options.body), { expected_revision: 'current' });
+        assert.equal(requests.length, 3);
+    });
+}
+
+for (const result of ['cancel', 'conflict']) {
+    test(`deletion ${result} keeps the current model detail`, async () => {
+        const { nodes, handlers, context, run } = fixture();
+        context.confirm = () => result !== 'cancel';
+        context.removeModel = async () => { assert.equal(result, 'conflict'); throw new Error('Model changed'); };
+        run(`selected = { id: 'a'.repeat(20), can_manage: true, active_revision: 'current' };
+            location.hash = '#model/' + selected.id; api = removeModel;`);
+        handlers.get('delete-model:click')();
+        if (result === 'conflict') await assert.rejects(run('pending'), /Model changed/);
+        else await run('pending');
+        assert.equal(run('location.hash'), `#model/${'a'.repeat(20)}`);
+        assert.equal(run('selected.id'), 'a'.repeat(20));
+        assert.doesNotMatch(nodes.get('notice').textContent, /モデルを削除しました/);
+    });
+}
+
 test('selective annotation describes classification and the specific threshold limitation', () => {
     const dialog = fs.readFileSync(path.join(root, 'cvat-ui/plugins/selective-ai/src/ts/dialog.tsx'), 'utf8');
     assert.match(dialog, /Segmentation、Detection、Classification/);

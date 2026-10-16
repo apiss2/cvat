@@ -8,8 +8,6 @@ import argparse
 import os
 import re
 import shlex
-import shutil
-import sqlite3
 import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -115,8 +113,9 @@ def run(*args, env=None):
 
 
 def purge_deleted(data_dir: Path, model_id: str) -> None:
-    """Release a deleted model's files, keeping its ownership and audit record."""
+    """Retry file/metadata cleanup with the manager and its workers stopped."""
     import fcntl
+    from registry.cleanup import purge_deleted_files
 
     if not re.fullmatch(r"[0-9a-f]{20}", model_id):
         raise ValueError("Invalid model ID")
@@ -125,14 +124,7 @@ def purge_deleted(data_dir: Path, model_id: str) -> None:
         raise ValueError(f"Registry database does not exist: {database}")
     with (data_dir / "manager.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with sqlite3.connect(database) as db:
-            row = db.execute("SELECT deleted FROM models WHERE id=?", (model_id,)).fetchone()
-            if not row or not row[0]:
-                raise ValueError("Only deleted models may be purged")
-            directory = data_dir / "packages" / model_id
-            if directory.exists():
-                shutil.rmtree(directory, ignore_errors=False)
-            db.execute("DELETE FROM revisions WHERE model_id=?", (model_id,))
+        purge_deleted_files(data_dir, model_id, actor="registryctl")
 
 
 def main():

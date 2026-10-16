@@ -112,13 +112,29 @@ class Store:
             if cur.rowcount != 1:
                 raise Conflict("Model changed; refresh before rolling back")
 
-    def delete(self, model_id: str, expected: str | None) -> None:
+    def delete(self, model_id: str, expected: str | None, actor: str = "system") -> None:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
-            if row is None or row["active_revision"] != expected:
+            if row is None or (not row["deleted"] and row["active_revision"] != expected):
                 raise Conflict("Model changed; refresh before deletion")
+            if row["deleted"]:
+                return
             db.execute("UPDATE models SET deleted=1 WHERE id=?", (model_id,))
+            db.execute("INSERT INTO events(time,model_id,revision,request_id,actor,stage,level,message) VALUES(?,?,?,?,?,?,?,?)",
+                       (now(), model_id, expected or "", "", actor, "delete", "info", "Model deleted; new inference and updates disabled"))
+
+    def prune_deleted(self, model_id: str) -> None:
+        """Keep the tombstone and deletion/cleanup audit after files are removed."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT deleted FROM models WHERE id=?", (model_id,)).fetchone()
+            if not row or not row["deleted"]:
+                raise ValueError("Only deleted models may be purged")
+            db.execute("DELETE FROM revisions WHERE model_id=?", (model_id,))
+            db.execute("DELETE FROM operations WHERE model_id=?", (model_id,))
+            db.execute("DELETE FROM events WHERE model_id=? AND stage NOT IN ('delete','cleanup')", (model_id,))
+            db.execute("UPDATE models SET active_revision=NULL WHERE id=?", (model_id,))
 
     def new_operation(self, op: str, model_id: str, revision: str, owner: str) -> None:
         with self.connect() as db:

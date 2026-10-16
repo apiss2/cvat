@@ -2,7 +2,7 @@
 """Live API smoke using a temporary session created by CVAT's own login API.
 
 Creates two demonstration models, tests update/rollback/delete, and cleans them up.
-No CVAT annotation is changed. Model tombstones and retained weights remain for audit.
+No CVAT annotation is changed. Deletion removes model files and retains minimal audit records.
 The password is read interactively, never from a command-line argument.
 """
 from __future__ import annotations
@@ -150,7 +150,9 @@ def main():
             try:
                 model = request('GET', f'/api/models/{model_id}')
                 request('DELETE', f'/api/models/{model_id}', {'expected_revision': model['active_revision']})
-                assert request('GET', f'/api/models/{model_id}')['deleted']
+                tombstone = request('GET', f'/api/models/{model_id}')
+                assert tombstone['deleted'] and tombstone['active_revision'] is None
+                assert tombstone['revisions'] == [] and tombstone['operations'] == []
                 print('Disabled demo model ' + model_id)
             except Exception as exc:
                 cleanup_errors.append((model_id, str(exc)))

@@ -72,6 +72,32 @@ def test_successful_worker_logs_reach_sink(runtime):
     runtime.call('m','a',runtime.settings.data_dir/'a',{},'rid')
     assert out==[('m','a','rid','stdout test')]
 
+def test_failed_worker_stop_is_retained_for_deletion_retry(runtime,monkeypatch):
+    original=runtime.engine.request
+    def fail_stop(*args,**kwargs):
+        if args[0]=='DELETE': raise RuntimeFailure('Docker unavailable')
+        return original(*args,**kwargs)
+    def fail_predict(*args,**kwargs): raise RuntimeFailure('predict failed')
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.engine,'request',fail_stop)
+        patch.setattr('registry.runtime.limited_json',fail_predict)
+        with pytest.raises(RuntimeFailure,match='Docker unavailable'):
+            runtime.call('m','a',runtime.settings.data_dir/'a',{},'rid')
+        assert runtime.entries['m-a'].container=='a'
+        assert not runtime.entries['m-a'].busy
+    runtime.revoke('m')
+    assert not runtime.entries
+
+def test_stopping_an_already_removed_container_is_idempotent():
+    engine=DockerEngine('/nonexistent');engine.client.close();engine.prefix='/v1.47'
+    engine.client=httpx.Client(base_url='http://docker',transport=httpx.MockTransport(lambda r:httpx.Response(404)))
+    try:
+        assert engine.request('DELETE','/containers/gone',params={'force':'1'}) is None
+        with pytest.raises(RuntimeFailure,match='404'):
+            engine.request('GET','/containers/gone/json')
+    finally:
+        engine.close()
+
 def test_response_size_and_json_limits():
     with httpx.Client(base_url='http://x',transport=httpx.MockTransport(lambda r:httpx.Response(200,content=b'x'*20))) as c:
         with pytest.raises(RuntimeFailure,match='byte limit'):limited_json(c,'GET','/',limit=10)

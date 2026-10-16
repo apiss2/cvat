@@ -234,7 +234,7 @@ async function selectModel(id) {
     const polygon = model.manifest?.polygon;
     $('detail-polygon').textContent = polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `ポリゴン変換: 頂点の最小距離 ${polygon.min_distance_px} px、周長比 ${polygon.spacing_percent}%、最小面積 ${polygon.min_area_px} px²` : '';
     const managed = Boolean(model.can_manage); $('owner-detail').hidden = !managed;
-    for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = Boolean(model.deleted || (id === 'update-model' && !model.active_revision)); }
+    for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = id === 'update-model' && Boolean(model.deleted || !model.active_revision); }
     $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-summary').textContent = ''; $('test-tags').textContent = ''; $('preview').hidden = true;
     if (managed) {
         for (const rev of model.revisions || []) { const option = document.createElement('option'); option.value = rev.revision; option.textContent = `${rev.revision} ${rev.revision === model.active_revision ? '(公開中)' : '(保持中)'} ${rev.manifest.name}`; $('revision').append(option); }
@@ -297,9 +297,10 @@ for (const id of ['code', 'sample']) $(id).addEventListener('change', updateSumm
 $('register-form').addEventListener('submit', (event) => { event.preventDefault(); run(submitModel); });
 $('update-model').addEventListener('click', () => { if (selected?.can_manage && selected.active_revision && !selected.deleted) { resetForm(selected); location.hash = 'register'; } });
 $('delete-model').addEventListener('click', () => run(async () => {
-    if (!selected?.can_manage || !confirm('このモデルのすべての版が使えなくなります。このモデルで実行中の自動アノテーションは失敗する場合があります。削除しますか？')) return;
+    if (!selected?.can_manage || !confirm('このモデルのすべての版とファイルを完全に削除します。元には戻せません。処理中の推論・更新の終了を待つ場合があり、一括推論は後続の画像で失敗します。削除しますか？')) return;
+    notice('処理中の推論・更新の終了を待ち、モデルのファイルを削除しています。');
     const id = selected.id; await api(`/api/models/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: selected.active_revision }) });
-    await refresh(); await selectModel(id); notice('モデルを無効にしました。');
+    selected = null; location.hash = 'models'; await route(); notice('モデルを削除しました。');
 }));
 $('rollback').addEventListener('click', () => run(async () => {
     if (!selected?.can_manage || !$('revision').value || !confirm('選択した版を試験し、公開中の版を切り替えますか？')) return;

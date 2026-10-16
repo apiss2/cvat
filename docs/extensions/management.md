@@ -14,7 +14,7 @@
 | `sam2` | SAM2の画像分割と追跡 | 画面プラグイン、Nuclio関数、専用Redis。 |
 | `sam31` | SAM3.1の画像分割と追跡 | 画面プラグイン、Nuclio関数、専用Redis、配置済み重み。 |
 | `ultrasam` | UltraSAMの画像分割 | Nuclio関数とGPU設定。専用の画面プラグインはありません。 |
-| `model_registry` | ONNXモデル管理 | 管理画面へのプラグイン、ゲートウェイ、ローカル構成の管理サービスとワーカー。部分更新と画像分類もこの拡張に含まれます。 |
+| `model_registry` | ONNXモデル管理 | 管理画面へのプラグイン、ゲートウェイ、ローカル構成の管理サービスとワーカー。部分更新、画像分類、通常の削除によるモデルファイルの清掃もこの拡張に含まれます。 |
 | `frame_navigation_filter` | フィルター条件によるフレーム移動と全図形表示 | `plugins/frame-navigation-filter` を共通UIイメージに含めます。推論サービスは不要です。 |
 | `selective_ai` | タグ条件と画像選択による自動アノテーション | `plugins/selective-ai` を共通UIイメージに含め、推論APIに必要な既存Nuclio構成を有効にします。 |
 | `filtered_export` | アノテーション条件に合う画像のエクスポート | `plugins/filtered-export` を共通UIイメージに含めます。標準のサーバーと出力ワーカーを使用し、推論サービスは不要です。 |

@@ -298,7 +298,12 @@ def main():
             expect(page.locator('#detail')).to_be_visible()
             page.on('dialog', lambda dialog: dialog.accept())
             page.locator('#delete-model').click()
-            expect(page.locator('#detail-info')).to_contain_text('削除済み')
+            expect(page.locator('#catalog')).to_be_visible()
+            expect(page.locator('#detail')).to_be_hidden()
+            expect(page.locator('#models')).not_to_contain_text(model_names['segmentation'])
+            page.reload()
+            expect(page.locator('#catalog')).to_be_visible()
+            expect(page.locator('#models')).not_to_contain_text(model_names['segmentation'])
 
             # Old requests may finish after CVAT has changed accounts in another tab.
             page.locator('#models-nav').click()

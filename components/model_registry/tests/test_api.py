@@ -1,6 +1,7 @@
 import json
 import time
 import threading
+import pytest
 from registry.schema import function_id
 from conftest import ROOT,TOKENS,headers,upload,model_files
 
@@ -76,7 +77,7 @@ def test_delete_tombstone_and_stale_guard(ctx,published,sample):
     assert fid not in c.get('/internal/functions',headers=headers('service')).json()
     assert c.get('/internal/functions/'+fid,headers=headers('service')).status_code==410
     assert c.post('/internal/functions/'+fid+'/invoke',headers=headers('service'),json={'image':sample}).status_code==410
-    assert (ctx['settings'].data_dir/'packages'/mid/rev/'model.onnx').exists()
+    assert not (ctx['settings'].data_dir/'packages'/mid).exists()
 
 def test_individual_file_upload(ctx):
     d=ROOT/'examples/detection';files=[('code',('model.py',(d/'model.py').read_bytes(),'text/plain')),('weights',('model.onnx',(d/'model.onnx').read_bytes(),'application/octet-stream')),('sample',('sample.png',(d/'sample.png').read_bytes(),'image/png'))]
@@ -154,5 +155,30 @@ def test_other_users_do_not_see_drafts_or_deleted_models(ctx,published):
     assert c.request('DELETE',f'/api/models/{mid}',headers=headers(),json={'expected_revision':published['revision']}).status_code==200
     assert c.get(f'/api/models/{mid}',headers=headers('bob')).status_code==404
     assert c.get('/api/models',headers=headers('bob')).json()==[]
-    assert len(c.get('/api/models',headers=headers()).json())==2
-    assert len(c.get('/api/models',headers=headers('admin')).json())==2
+    for user in ('alice', 'admin'):
+        assert [model['id'] for model in c.get('/api/models',headers=headers(user)).json()]==[failed['model_id']]
+
+
+@pytest.mark.parametrize('published', [False, True])
+@pytest.mark.parametrize('actor', ['alice', 'admin'])
+def test_deleted_model_is_hidden_from_catalog(ctx,published,actor):
+    c=ctx['client'];mid='a'*20
+    store=ctx['service'].store
+    store.create_model(mid,'alice')
+    revision='b'*16 if published else None
+    if published:
+        manifest=json.loads((ROOT/'examples/segmentation/manifest.json').read_text())
+        store.commit_revision(mid,revision,None,manifest,'digest',f'packages/{mid}/{revision}')
+    for user in ('alice', 'bob', 'admin'):
+        expected=[mid] if published or user!='bob' else []
+        assert [model['id'] for model in c.get('/api/models',headers=headers(user)).json()]==expected
+    assert c.request('DELETE',f'/api/models/{mid}',headers=headers(actor),json={'expected_revision':'stale'}).status_code==409
+    assert store.model(mid)['deleted']==0
+    assert c.request('DELETE',f'/api/models/{mid}',headers=headers(actor),json={'expected_revision':revision}).status_code==200
+    for user in ('alice', 'bob', 'admin'):
+        assert c.get('/api/models',headers=headers(user)).json()==[]
+    for user in ('alice', 'admin'):
+        assert c.get(f'/api/models/{mid}',headers=headers(user)).json()['deleted']
+        assert any(event['stage']=='delete' for event in c.get(f'/api/models/{mid}/logs',headers=headers(user)).json())
+    assert store.revisions(mid)==[]
+    assert store.model(mid)['active_revision'] is None

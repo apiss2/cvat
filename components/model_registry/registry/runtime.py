@@ -52,6 +52,8 @@ class DockerEngine:
                 raise RuntimeFailure("Docker Engine API >= 1.41 is required")
             self.prefix = "/v" + api
         response = self.client.request(method, self.prefix + path, **kwargs)
+        if response.status_code == 404 and method == "DELETE" and path.startswith("/containers/"):
+            return None
         if response.status_code >= 400:
             raise RuntimeFailure(f"Docker {method} {path}: {response.status_code} {response.text[:4000]}")
         return response.json() if response.content else None
@@ -206,10 +208,8 @@ class DockerRuntime:
         except Exception as exc:
             logs = self.engine.logs(entry.container) if entry.container else ""
             with self.lock:
-                try:
-                    self._stop(entry)
-                finally:
-                    self.entries.pop(key, None)
+                self._stop(entry)
+                self.entries.pop(key, None)
             raise RuntimeFailure(f"{exc}\n{logs}"[-20000:]) from exc
         finally:
             with self.lock:

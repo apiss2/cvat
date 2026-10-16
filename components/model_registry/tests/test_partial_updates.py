@@ -6,6 +6,7 @@ import json
 import sys
 import types
 import zipfile
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -175,6 +176,8 @@ def client(updates, package, monkeypatch):
             return revision
     class Service:
         store = Store()
+        def using_model(self, model_id):
+            return nullcontext()
         def submit(self, archive, actor, model_id, expected):
             if state.fail or expected != record["active_revision"]:
                 raise updates.Conflict("concurrent update")

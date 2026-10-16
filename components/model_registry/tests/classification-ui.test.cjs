@@ -214,6 +214,14 @@ test('unpublished models cannot enter the partial-update form', async () => {
     assert.equal(ui.get('delete-model').disabled, false);
 });
 
+test('deleted model details allow retrying failed cleanup without enabling updates', async () => {
+    const ui = setup();
+    ui.sandbox.response = { ...model(), deleted: true };
+    await ui.eval('selectModel(response.id)');
+    assert.equal(ui.get('delete-model').disabled, false);
+    assert.equal(ui.get('update-model').disabled, true);
+});
+
 test('common upload transport never injects model or revision fields', async () => {
     const ui = setup(); const sent = [];
     ui.sandbox.XMLHttpRequest = class {

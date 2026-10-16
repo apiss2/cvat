@@ -125,7 +125,7 @@ def create_app(settings: Settings | None = None, runtime=None, service: Service 
     def list_models(request: Request):
         user = request.state.user
         return [describe_visible(model, user) for model in service.store.models()
-                if user.admin or model["owner"] == user.name or (not model["deleted"] and model["active_revision"])]
+                if not model["deleted"] and (user.admin or model["owner"] == user.name or model["active_revision"])]
 
     @app.get("/api/models/{model_id}")
     def get_model(model_id: str, request: Request):

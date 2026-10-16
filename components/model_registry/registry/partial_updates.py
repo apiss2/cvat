@@ -111,40 +111,41 @@ def install_partial_updates(app, service, settings) -> None:
     ):
         record = service.store.model(model_id)
         owner(request.state.user, record)
-        if record["deleted"]:
-            raise Gone("Model deleted")
-        if not expected_revision or record["active_revision"] != expected_revision:
-            raise Conflict("Model changed; refresh before updating")
-        previous = service.store.revision(model_id, expected_revision)
-        if manifest is not None and len(manifest.encode()) > 256 * 1024:
-            raise HTTPException(413, "Manifest too large")
-        parsed = merge_manifest(previous["manifest"], json.loads(manifest) if manifest else {})
-        if not code and not weights and not sample and parsed.model_dump() == Manifest.model_validate(previous["manifest"]).model_dump():
-            raise ValueError("No files or model settings were changed")
-        # Only server-owned revision paths are used; a request can never select a path.
-        root = settings.data_dir.resolve()
-        source = root / previous["path"]
-        if source.is_symlink() or not source.resolve().is_relative_to(root / "packages"):
-            raise ValueError("Invalid stored package path")
-        estimated = sum(p.stat().st_size for p in source.iterdir() if p.is_file())
-        if shutil.disk_usage(root).free < estimated + 4 * 1024**3:
-            raise Conflict("Insufficient free space for a separate candidate revision")
-        if not assembly_slots.acquire(blocking=False):
-            raise Conflict("Other model updates are being assembled; retry later")
-        try:
-            fd, name = tempfile.mkstemp(prefix="package-", suffix=".zip", dir=root / "uploads")
-        except BaseException:
-            assembly_slots.release()
-            raise
-        os.close(fd)
-        path = Path(name)
-        try:
-            assemble_update(path, source, parsed, code, weights or [], sample)
-            # submit and commit_revision both check expected_revision. A concurrent
-            # update/delete during copying or sample inference cannot be overwritten.
-            return service.submit(path, request.state.user.name, model_id, expected_revision)
-        except BaseException:
-            path.unlink(missing_ok=True)
-            raise
-        finally:
-            assembly_slots.release()
+        with service.using_model(model_id):
+            if record["deleted"]:
+                raise Gone("Model deleted")
+            if not expected_revision or record["active_revision"] != expected_revision:
+                raise Conflict("Model changed; refresh before updating")
+            previous = service.store.revision(model_id, expected_revision)
+            if manifest is not None and len(manifest.encode()) > 256 * 1024:
+                raise HTTPException(413, "Manifest too large")
+            parsed = merge_manifest(previous["manifest"], json.loads(manifest) if manifest else {})
+            if not code and not weights and not sample and parsed.model_dump() == Manifest.model_validate(previous["manifest"]).model_dump():
+                raise ValueError("No files or model settings were changed")
+            # Only server-owned revision paths are used; a request can never select a path.
+            root = settings.data_dir.resolve()
+            source = root / previous["path"]
+            if source.is_symlink() or not source.resolve().is_relative_to(root / "packages"):
+                raise ValueError("Invalid stored package path")
+            estimated = sum(p.stat().st_size for p in source.iterdir() if p.is_file())
+            if shutil.disk_usage(root).free < estimated + 4 * 1024**3:
+                raise Conflict("Insufficient free space for a separate candidate revision")
+            if not assembly_slots.acquire(blocking=False):
+                raise Conflict("Other model updates are being assembled; retry later")
+            try:
+                fd, name = tempfile.mkstemp(prefix=f"package-{model_id}-", suffix=".zip", dir=root / "uploads")
+            except BaseException:
+                assembly_slots.release()
+                raise
+            os.close(fd)
+            path = Path(name)
+            try:
+                assemble_update(path, source, parsed, code, weights or [], sample)
+                # submit and commit_revision both check expected_revision. A concurrent
+                # update/delete during copying or sample inference cannot be overwritten.
+                return service.submit(path, request.state.user.name, model_id, expected_revision)
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+            finally:
+                assembly_slots.release()

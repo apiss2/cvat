@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 import zipfile
+from contextlib import nullcontext
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -63,7 +64,7 @@ def api(tmp_path, monkeypatch):
         with zipfile.ZipFile(path) as archive: content = {name: archive.read(name) for name in archive.namelist()}
         submitted.append((args, content)); path.unlink()
         return {"id": "operation", "status": "queued"}
-    service = SimpleNamespace(recover=lambda: None, close=lambda: None, submit=submit,
+    service = SimpleNamespace(recover=lambda: None, close=lambda: None, submit=submit, using_model=lambda mid: nullcontext(),
         store=SimpleNamespace(model=lambda mid: record, revision=lambda mid, rev: {"manifest": manifest, "path": "packages/model/old"}))
     app = manager.create_app(settings, service=service, reconcile=False)
     with TestClient(app) as client:

@@ -264,7 +264,8 @@ def test_purge_releases_only_deleted_models_files_and_keeps_audit_records(tmp_pa
     assert len(store.revisions(active)) == 1
     assert store.model(deleted)['owner'] == 'alice'
     assert store.model(deleted)['deleted'] == 1
-    assert store.events(deleted)[0]['message'] == 'audit'
+    assert [event['stage'] for event in store.events(deleted)] == ['delete', 'cleanup']
+    assert store.model(deleted)['active_revision'] is None
     ctl.purge_deleted(data, deleted)  # Repeating a completed purge is safe.
 
 
