@@ -58,9 +58,9 @@ CVAT_EXTRA_COMPOSE_FILES=
 ./components/extensions/cvatctl --env-file /srv/cvat-config/cvat.env config
 ```
 
-追加Composeは記載した順に読み込みます。docker-compose.override.ymlの暗黙の読み込みに依存しません。機能用ComposeとSAM2、SAM3.1、モデル管理のUIプラグインは自動選択されます。
+追加Composeは記載した順に読み込みます。docker-compose.override.ymlの暗黙の読み込みに依存しません。機能用Composeと管理対象のUIプラグインは、CVAT_EXTENSIONSの選択に応じて自動設定されます。
 UltraSAMは標準のAI Toolsを使うため専用UIは不要で、UltraSAMだけの構成では追跡用Redisを起動しません。
-選択実行とフレーム移動用フィルターは[UIプラグインの案内](../../cvat-ui/plugins/README.md)に従って追加します。
+選択実行、フレーム移動用フィルター、条件付きエクスポートも同じ設定で選びます。拡張名の一覧と設定変更は[拡張機能の管理](management.md)を参照してください。
 
 ## モデル管理の接続を設定する
 

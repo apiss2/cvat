@@ -40,7 +40,7 @@ git merge --no-ff REVIEWED_FEATURE_COMMIT
 | SAM3.1 | [設計と検証](../sam31/design.md)に従い、互換重み、画像と追跡、実GPUと実Redisを確認します。 |
 | UltraSAM | [導入と検証](../ultrasam/operations.md)に従い、正負点、原寸座標、確定と保存を確認します。 |
 | ONNXモデル管理 | [検証手順](../model-registry/testing.md)で3種類のモデル、部分更新、権限、中継と保存を確認します。 |
-| 選択実行とフィルター | [アノテーション操作](../annotation/README.md)から各機能の試験を実施します。 |
+| 選択実行、フィルター、条件付きエクスポート | [アノテーション操作](../annotation/README.md)から各機能の試験を実施します。画像の選択条件、既存アノテーションの保持、形式変換、権限とプレビュー後の変更も確認します。 |
 | 統合 | 本番と同じHTTPS、認証、共有ストレージで標準機能と有効な拡張を確認します。 |
 
 ```bash

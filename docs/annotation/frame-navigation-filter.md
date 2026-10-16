@@ -6,17 +6,19 @@
 
 ## 有効化と操作
 
-既存の.envのCVAT_CLIENT_PLUGINSへplugins/frame-navigation-filterを追加し、UIを再ビルドします。複数のパスはコロンで区切り、既存値を保持してください。
+既存の.envのCVAT_EXTENSIONSへframe_navigation_filterを追加します。既存の機能名は保持してください。次はこの機能だけを選ぶ最小例です。
 
 ```dotenv
-CVAT_CLIENT_PLUGINS=plugins/frame-navigation-filter
+CVAT_EXTENSIONS=frame_navigation_filter
 ```
+
+保存と停止、設定変更、再ビルドと起動は[共通管理の手順](../extensions/management.md)に従ってください。推論サービスやGPUは不要です。直接UIを開発する場合だけCLIENT_PLUGINSへplugins/frame-navigation-filterを指定します。
 
 フィルターダイアログと移動のショートカットは従来のものを使用します。フィルターによる前後の移動は条件に合うフレームを探しますが、キャンバスとオブジェクト一覧から他のマスク、図形、タグを除外しません。
 手動で非表示にしたオブジェクトは非表示のままです。新しく作成した図形も再表示時に残ります。
 
 この動作はタグの条件だけに限定されません。有効化中のフィルター付きJob.annotations.get全体に適用します。Task API、エクスポート、一覧画面のフィルター、音声のinterval APIは対象外です。
-設定からパスを除き、UIを再ビルドすると元の表示方式へ戻ります。
+CVAT_EXTENSIONSからframe_navigation_filterを除き、UIを再ビルドすると元の表示方式へ戻ります。
 
 ## coreとの接続
 

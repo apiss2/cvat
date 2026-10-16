@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(__dirname, '../static/index.html'), 'utf8
 const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
 const root = path.resolve(__dirname, '../../..');
 
-function fixture() {
+function fixture(script = source) {
     const nodes = new Map();
     const handlers = new Map();
     const element = () => ({
@@ -34,12 +34,17 @@ function fixture() {
             getElementById(id) { assert(nodes.has(id), `missing HTML id: ${id}`); return nodes.get(id); },
         },
     });
-    const startup = /resetForm\(\);\nrun\(checkSession\);\s*$/;
-    assert(startup.test(source));
-    vm.runInContext(source.replace(startup, ''), context);
+    const startup = /resetForm\(\);\r?\nrun\(checkSession\);\s*$/;
+    assert(startup.test(script));
+    vm.runInContext(script.replace(startup, ''), context);
     vm.runInContext('let pending; run = (handler) => { pending = Promise.resolve().then(handler); };', context);
     return { nodes, handlers, context, run: (code) => vm.runInContext(code, context) };
 }
+
+test('the DOM fixture accepts both LF and CRLF checkouts', () => {
+    const lf = source.replace(/\r\n/g, '\n');
+    for (const script of [lf, lf.replace(/\n/g, '\r\n')]) fixture(script);
+});
 
 test('model kinds retain standard ML terms and their existing values', () => {
     for (const [value, name] of [['polygon', 'Segmentation'], ['rectangle', 'Detection'], ['tag', 'Classification']]) {

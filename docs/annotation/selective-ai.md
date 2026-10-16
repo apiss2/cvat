@@ -6,13 +6,15 @@
 
 ## 有効化
 
-既存の.envのCVAT_CLIENT_PLUGINSへplugins/selective-aiを追加し、UIを再ビルドします。既存値を保持し、複数のパスはコロンで区切ります。
+既存の.envのCVAT_EXTENSIONSへselective_aiを追加します。登録ONNXモデルを使う場合はmodel_registryも選び、既存の機能名を保持してください。
 
 ```dotenv
-CVAT_CLIENT_PLUGINS=plugins/frame-navigation-filter:plugins/selective-ai
+CVAT_EXTENSIONS=model_registry,frame_navigation_filter,selective_ai
 ```
 
-この例は二つの独立したプラグインを併用する設定です。選択実行だけならplugins/selective-aiのみを追加します。[共通導入](../extensions/installation.md)のビルドと起動手順を使い、直接UIを開発する場合はCLIENT_PLUGINSを使用します。
+この例ではモデル管理とフレーム移動用フィルターを併用します。通常のNuclioモデルで選択実行だけを使う場合はselective_aiを選びます。cvatctlは推論APIに必要なNuclio構成を追加しますが、モデルやGPUを自動配備しません。
+
+保存と停止、設定変更、再ビルドと起動は[共通管理の手順](../extensions/management.md)に従ってください。無効化するときもselective_aiを選択から外して再ビルドします。直接UIを開発する場合だけCLIENT_PLUGINSへplugins/selective-aiを指定します。
 
 ## 対象画像を選ぶ
 
@@ -47,7 +49,7 @@ Interactor、Tracker、ReIDは対象外です。必要ならマスクからポ�
 
 ## 実装と制約
 
-cvat-ui/plugins/selective-ai/の範囲で、projectActions.itemsとtaskActions.itemsを使います。標準の実行画面、サーバー、データベースを変更しません。
+cvat-ui/plugins/selective-ai/の範囲で、projectActions.itemsとtaskActions.itemsを使います。標準の実行画面、サーバー、データベースを変更しません。配備対象の選択は共通のcomponents/extensions/manage.pyで管理します。
 mapper.tsxは既存のLabelsMapperとそのスタイルを再利用します。入力配列をモデル単位で保持し、進捗更新で選択を初期化しません。実行中は対応付けの操作を隠しますが、状態は保持します。
 
 既存の認証済みAxiosを使用し、利用者と組織を固定します。変更後は新しい要求と保存を止めますが、既に送信した要求を巻き戻すことはできません。認証情報を要求、保存、結果ファイルへ記録する処理はありません。

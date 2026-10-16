@@ -11,16 +11,18 @@
 | `sam31` | SAM3.1の追跡操作 | [共通の追跡操作](../../docs/annotation/tracking.md) |
 | `frame-navigation-filter` | 表示を隠さず、フィルターをフレーム移動に使う | [フィルター](../../docs/annotation/frame-navigation-filter.md) |
 | `selective-ai` | タグ条件と画像選択による自動アノテーション | [選択実行](../../docs/annotation/selective-ai.md) |
+| `filtered-export` | 条件に合う画像のエクスポート | [条件を指定したエクスポート](../../docs/annotation/filtered-export.md) |
 | `sam` | 上流CVATのSAM用クライアント処理 | [SAMプラグイン](sam/README.md) |
 
-`sam2`、`sam31`、`model-registry`は、共通設定の`CVAT_EXTENSIONS`に対応する機能を指定すると、管理コマンドがUIビルドに追加します。
-`frame-navigation-filter`と`selective-ai`は、既存の`CVAT_CLIENT_PLUGINS`へパスをコロンで区切って追加します。既存値は消さないでください。
+独自プラグインは共通設定のCVAT_EXTENSIONSで選びます。画面機能の拡張名はframe_navigation_filter、selective_ai、filtered_exportです。管理コマンドが対応するパスをUIビルドへ追加するため、CVAT_CLIENT_PLUGINSへの手動追記は不要です。既存のSAMやモデル管理の選択は保持してください。
 
 ```dotenv
-CVAT_CLIENT_PLUGINS=plugins/frame-navigation-filter:plugins/selective-ai
+CVAT_EXTENSIONS=itgformat,sam2,model_registry,frame_navigation_filter,selective_ai,filtered_export
 ```
+
+選択の変更と機能追加時の開発方針は[拡張機能の管理](../../docs/extensions/management.md)を参照してください。一覧にない独自パスは引き続きCVAT_CLIENT_PLUGINSで指定できます。
 
 変更後は、共通の更新手順に従ってUIをビルドし直して起動します。マージや設定ファイルの編集だけでは、配備済みの画面に反映されません。直接UIを開発する場合のビルド変数は`CLIENT_PLUGINS`です。
 
 `frame-navigation-filter`は、このフォークの`methodArguments`対応を含むcoreと組み合わせて使用します。未変更の上流CVATへプラグインだけをコピーする構成は対象外です。
-プラグインを無効にするときも、設定から該当パスを除き、UIを再ビルドしてください。
+プラグインを無効にするときも、CVAT_EXTENSIONSから該当の拡張名を除き、UIを再ビルドしてください。
