@@ -43,12 +43,12 @@ test('cancelled action returns no created or deleted annotations',async()=>{
 });
 test('locked seed rejected before inference',async()=>{
     const s=setup();await s.action.init(s.job,{'Frames to track':2});s.state.lock=true;
-    await assert.rejects(()=>s.action.run(s.input),/locked/);assert.equal(s.calls.length,0);
+    await assert.rejects(()=>s.action.run(s.input),/ロック/);assert.equal(s.calls.length,0);
 });
 test('concurrent seed edit is detected before returning commit data',async()=>{
     const s=setup();await s.action.init(s.job,{'Frames to track':2});const call=s.core.lambda.call;
     s.core.lambda.call=async(...args)=>{const result=await call(...args);if(args[2].frame===12)s.seed.group=6;return result;};
-    await assert.rejects(()=>s.action.run(s.input),/seed changed/);
+    await assert.rejects(()=>s.action.run(s.input),/追跡中に開始フレームの対象が変更/);
     assert.equal(s.input.collection.shapes[0].group,5);
 });
 test('server failure never returns a partial annotation replacement',async()=>{
@@ -57,15 +57,15 @@ test('server failure never returns a partial annotation replacement',async()=>{
 });
 test('missing deployed tracker is reported',async()=>{
     const s=setup();s.core.lambda.list=async()=>({models:[],count:0});
-    await assert.rejects(()=>s.action.init(s.job,{'Frames to track':2}),/Deploy/);
+    await assert.rejects(()=>s.action.init(s.job,{'Frames to track':2}),/SAM2の追跡モデルを利用できません/);
 });
 test('reject non-job and 3D sessions',async()=>{
-    const s=setup();await assert.rejects(()=>s.action.init(new Task(),{}),/job/);
+    const s=setup();await assert.rejects(()=>s.action.init(new Task(),{}),/2Dのアノテーション画面/);
     s.job.dimension='3d';await assert.rejects(()=>s.action.init(s.job,{}),/2D/);
 });
 test('destroy clears active session references',async()=>{
     const s=setup();await s.action.init(s.job,{'Frames to track':2});await s.action.destroy();
-    await assert.rejects(()=>s.action.run(s.input),/not initialized/);
+    await assert.rejects(()=>s.action.run(s.input),/追跡を開始できません/);
 });
 
 
@@ -73,7 +73,7 @@ test('existing tracks are rejected before inference without the core update API'
     const s=setup();await s.action.init(s.job,{'Frames to track':2});
     assert.equal(s.action.isApplicableForObject({...s.state,objectType:'track'}),false);
     s.input.collection.tracks=[{clientID:8}];
-    await assert.rejects(()=>s.action.run(s.input),/cannot be extended/);assert.equal(s.calls.length,0);
+    await assert.rejects(()=>s.action.run(s.input),/既存トラックの延長には対応していません/);assert.equal(s.calls.length,0);
 });
 
 test('mask action sends RLE and creates polygon tracks without an update API',async()=>{

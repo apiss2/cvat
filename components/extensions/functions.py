@@ -135,10 +135,10 @@ def render_function(name: str, values: dict[str, str], image: str, root: Path = 
     else:
         annotations.update(min_pos_points="1", min_neg_points="0")
         if feature == "ultrasam":
-            annotations["help_message"] = "Select an ultrasound object with positive points and exclude regions with negative points. Up to 128 total points. Image annotation only."
+            annotations["help_message"] = "正の点で超音波画像の対象を指定し、負の点で不要な領域を除外してください。点は合計128個まで指定できます。動画の追跡には対応していません。"
         else:
             annotations.update(startswith_box="true", startswith_box_optional="true",
-                               help_message="Select an object with positive points; exclude regions with negative points. Optional box prompt. GPU inference returns a full CVAT mask.")
+                               help_message="正の点で対象を指定し、負の点で不要な領域を除外してください。矩形で対象の範囲を指定することもできます。")
     build = copy.deepcopy(recipe["build"])
     build["image"] = image
     build["directives"]["preCopy"][:0] = [

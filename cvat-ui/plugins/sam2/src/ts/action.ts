@@ -42,20 +42,20 @@ export class PolygonTrackAction extends BaseCollectionAction {
         };
     }
     async init(instance: Job | Task, parameters: Record<string, string | number>): Promise<void> {
-        if (!(instance instanceof Job)) throw new Error(`Run ${this.definition.name} tracking inside a 2D annotation job.`);
-        if (instance.dimension !== '2d') throw new Error(`${this.definition.name} tracking supports 2D jobs only.`);
+        if (!(instance instanceof Job)) throw new Error(`${this.definition.name}の追跡は、2Dのアノテーション画面から実行してください。`);
+        if (instance.dimension !== '2d') throw new Error(`${this.definition.name}の追跡は2Dジョブにのみ対応しています。`);
         this.instance = instance;
         this.span = Number(parameters['Frames to track']);
         if (!Number.isInteger(this.span) || this.span < 1 || this.span > MAX_TRACKING_FRAMES) {
-            throw new Error(`Tracking range must span 1 to ${MAX_TRACKING_FRAMES} frame indices.`);
+            throw new Error(`開始フレームと終了フレームの差は1から${MAX_TRACKING_FRAMES}の範囲で指定してください。`);
         }
         if (parameters.Direction && !['forward', 'backward'].includes(String(parameters.Direction))) {
-            throw new Error('Invalid tracking direction.');
+            throw new Error('追跡方向を選択し直してください。');
         }
         this.direction = parameters.Direction === 'backward' ? -1 : 1;
         const { models } = await this.core.lambda.list();
         this.model = models.find((model) => model.id === this.definition.functionID && model.kind === 'tracker') ?? null;
-        if (!this.model) throw new Error(`Deploy the Nuclio function ${this.definition.functionID} first.`);
+        if (!this.model) throw new Error(`${this.definition.name}の追跡モデルを利用できません。管理者にモデルの起動状態を確認してください。`);
     }
     async destroy(): Promise<void> {
         // The standard tracker API has no release operation. Redis TTL cleanup
@@ -79,26 +79,26 @@ export class PolygonTrackAction extends BaseCollectionAction {
         for (const shape of shapes) {
             const current = states.find((state: ObjectState) => state.clientID === shape.clientID);
             if (!current || !this.isApplicableForObject(current)) {
-                throw new Error('A seed was removed, locked, or changed. No tracking result has been applied.');
+                throw new Error('開始フレームの対象が削除、ロック、または変更されました。追跡結果は反映していません。対象を選択し直してください。');
             }
             const exported = await current.export() as Shape;
             for (const key of ['points', 'attributes', 'label_id', 'group', 'frame', 'rotation', 'occluded', 'z_order'] as const) {
                 if (JSON.stringify(exported[key]) !== JSON.stringify(shape[key])) {
-                    throw new Error('A seed changed during tracking. No tracking result has been applied.');
+                    throw new Error('追跡中に開始フレームの対象が変更されました。追跡結果は反映していません。対象を確認して実行し直してください。');
                 }
             }
         }
     }
     async run({ collection, frameData, cancelled, onProgress }: Input): Promise<Output> {
-        if (!this.instance || !this.model) throw new Error(`${this.definition.name} action is not initialized.`);
+        if (!this.instance || !this.model) throw new Error(`${this.definition.name}の追跡を開始できません。画面を開き直して実行してください。`);
         if (cancelled()) return noChanges();
-        if (collection.tracks.length) throw new Error('Existing tracks cannot be extended by this action.');
+        if (collection.tracks.length) throw new Error('既存トラックの延長には対応していません。開始フレームのポリゴンまたはマスクを選択してください。');
         const instance = this.instance;
         const model = this.model;
         // Copy the snapshot, never mutate the source collection while requests are running.
         const seeds = collection.shapes.map((shape) => JSON.parse(JSON.stringify(shape)) as Shape);
         if (!seeds.length || seeds.length > MAX_TRACKING_OBJECTS) {
-            throw new Error(`Select 1..${MAX_TRACKING_OBJECTS} polygon or mask shapes.`);
+            throw new Error(`開始フレームのポリゴンまたはマスクを1個から${MAX_TRACKING_OBJECTS}個まで選択してください。`);
         }
         await this.assertSeedsUnchanged(seeds, frameData.number);
         const frameNumbers = await instance.frames.frameNumbers();
@@ -122,7 +122,7 @@ export class PolygonTrackAction extends BaseCollectionAction {
         if (cancelled()) return noChanges();
         const tracks = seeds.map((seed, index): Track => {
             const label = instance.labels.find((candidate) => candidate.id === seed.label_id);
-            if (!label) throw new Error('The seed label no longer exists.');
+            if (!label) throw new Error('追跡対象のラベルが削除されました。追跡結果は反映していません。ラベルを確認してください。');
             const mutableIDs = new Set(label.attributes.filter((attribute) => attribute.mutable).map((attribute) => attribute.id));
             return {
                 label_id: seed.label_id, group: seed.group, frame: keyframes[index][0].frame,
@@ -135,7 +135,7 @@ export class PolygonTrackAction extends BaseCollectionAction {
                 })),
             };
         });
-        onProgress(`${this.definition.name} tracking complete`, 100);
+        onProgress(`${this.definition.name}の追跡が完了しました。結果を確認して保存してください。`, 100);
         // BaseCollectionAction commits both sides as one undoable annotation action.
         // Saving to the server remains the user's normal Save operation.
         return {

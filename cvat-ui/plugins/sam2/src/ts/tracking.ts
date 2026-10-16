@@ -31,7 +31,7 @@ function validateReply(reply: TrackerReply, count: number, width: number, height
     if (!reply || !Array.isArray(reply.states) || !Array.isArray(reply.shapes) ||
         reply.states.length !== count || reply.shapes.length !== count ||
         reply.states.some((state) => typeof state !== 'string' || !state.length)) {
-        throw new Error(`Invalid ${name} tracker response; signed states and shapes must match the seeds.`);
+        throw new Error(`${name}の追跡結果を読み取れません。結果は反映していません。実行し直しても改善しない場合は管理者に連絡してください。`);
     }
     for (const shape of reply.shapes) {
         if (shape === null) continue;
@@ -39,7 +39,7 @@ function validateReply(reply: TrackerReply, count: number, width: number, height
             shape.points.length < 6 || shape.points.length % 2 || shape.points.length > 20000 ||
             shape.points.some((point, index) => !Number.isFinite(point) || point < 0 ||
                 point > (index % 2 ? height : width))) {
-            throw new Error(`${name} returned an invalid polygon.`);
+            throw new Error(`${name}が返したポリゴンの形状が不正です。結果は反映していません。管理者にモデルの確認を依頼してください。`);
         }
     }
 }
@@ -75,23 +75,23 @@ export async function track(
     const {
         seeds, start, stop, span, width, height, first = Math.min(...input.frameNumbers), direction = 1, trackerName = 'SAM2',
     } = input;
-    if (direction !== 1 && direction !== -1) throw new Error('Invalid tracking direction.');
+    if (direction !== 1 && direction !== -1) throw new Error('追跡方向を選択し直してください。');
     if (!seeds.length || seeds.length > MAX_TRACKING_OBJECTS) {
-        throw new Error(`Select between 1 and ${MAX_TRACKING_OBJECTS} polygon or mask objects.`);
+        throw new Error(`開始フレームのポリゴンまたはマスクを1個から${MAX_TRACKING_OBJECTS}個まで選択してください。`);
     }
     if (!Number.isInteger(span) || span < 1 || span > MAX_TRACKING_FRAMES) {
-        throw new Error(`Frames to track must be 1..${MAX_TRACKING_FRAMES}.`);
+        throw new Error(`開始フレームと終了フレームの差は1から${MAX_TRACKING_FRAMES}の範囲で指定してください。`);
     }
     const frameNumbers = [...new Set(input.frameNumbers)].sort((a, b) => a - b);
-    if (!frameNumbers.includes(start)) throw new Error('The seed frame does not belong to this job.');
+    if (!frameNumbers.includes(start)) throw new Error('開始フレームがこのジョブにありません。ジョブ内のフレームを選択してください。');
     const end = direction === 1 ? Math.min(stop, start + span) : Math.max(first, start - span);
     const targets = frameNumbers.filter((frame) => (frame - start) * direction > 0 && (end - frame) * direction >= 0);
     if (direction === -1) targets.reverse();
-    if (!targets.length) throw new Error('There are no frames in the selected direction.');
+    if (!targets.length) throw new Error('選択した方向に追跡できるフレームがありません。開始フレームまたは追跡方向を変更してください。');
     if (cancelled()) return null;
     const seedMeta = await transport.frame(start);
     if (seedMeta.deleted || seedMeta.width !== width || seedMeta.height !== height) {
-        throw new Error('The seed frame is deleted or its dimensions changed.');
+        throw new Error('開始フレームが削除されたか、画像サイズが変更されました。開始フレームを選択し直してください。');
     }
     if (cancelled()) return null;
     let response = await transport.call({ frame: start, shapes: seeds });
@@ -100,7 +100,7 @@ export async function track(
     // Preserve the user's exact seed contour, not the model's reconstruction of it.
     const results = seeds.map((seed, index) => {
         const points = seed.type === 'polygon' ? seed.points : response.shapes[index]?.points;
-        if (!points) throw new Error('A seed mask has no usable polygon contour.');
+        if (!points) throw new Error('開始フレームのマスクからポリゴンを作成できません。マスクを確認するか、ポリゴンで対象を指定してください。');
         return [{ frame: start, points: [...points], outside: false }];
     });
     let processed = 0;
@@ -111,7 +111,7 @@ export async function track(
         const meta = await transport.frame(frame);
         if (cancelled()) return null;
         if (!meta.deleted) {
-            if (meta.width !== width || meta.height !== height) throw new Error('Video frame dimensions changed.');
+            if (meta.width !== width || meta.height !== height) throw new Error('画像サイズが異なるフレームが含まれています。同じ画像サイズの範囲を指定してください。');
             const continued = await continueWithRetry({ frame, states: response.states }, transport, cancelled);
             if (!continued) return null;
             response = continued;
@@ -122,14 +122,14 @@ export async function track(
                 const previous = results[index][results[index].length - 1];
                 const points = shape?.points ?? previous.points;
                 coordinateCount += points.length;
-                if (coordinateCount > 2_000_000) throw new Error('Tracking result is too large; choose a shorter range.');
+                if (coordinateCount > 2_000_000) throw new Error('追跡結果のサイズが上限を超えました。追跡範囲を短くするか、対象数を減らしてください。');
                 results[index].push({ frame, points: [...points], outside: shape === null });
             }
             processed += 1;
         }
-        progress(`${trackerName} tracking: frame ${frame}`, Math.floor(((i + 1) / targets.length) * 99));
+        progress(`${trackerName}: フレーム ${frame} を追跡しています。`, Math.floor(((i + 1) / targets.length) * 99));
     }
-    if (!processed) throw new Error('All target frames in the selected range are deleted.');
+    if (!processed) throw new Error('選択した範囲の対象フレームはすべて削除されています。別の範囲を指定してください。');
     // CVAT extrapolates the last visible keyframe. Explicitly terminate the new track
     // at the first available, non-deleted frame beyond the requested range.
     const beyond = frameNumbers.filter((number) => (number - end) * direction > 0 && number >= first && number <= stop);

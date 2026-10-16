@@ -61,32 +61,32 @@ test('cancel while checking boundary discards completed inference results',async
     assert.equal(await run(input(),t,()=>cancelled),null);
 });
 test('frame-size change stops before mismatched frame inference',async()=>{
-    const t=transport({meta:{12:{width:30}}});await assert.rejects(()=>run(input(),t),/dimensions/);
+    const t=transport({meta:{12:{width:30}}});await assert.rejects(()=>run(input(),t),/画像サイズが異なる/);
     assert.deepEqual(t.calls.map(c=>c.frame),[10,11]);
 });
 test('deleted seed is rejected before initialization',async()=>{
-    const t=transport({deleted:[10]});await assert.rejects(()=>run(input(),t),/seed frame/);assert.equal(t.calls.length,0);
+    const t=transport({deleted:[10]});await assert.rejects(()=>run(input(),t),/開始フレームが削除/);assert.equal(t.calls.length,0);
 });
 test('all later frames deleted is an error, not a success',async()=>{
-    await assert.rejects(()=>run(input(),transport({deleted:[11,12,13]})),/All target frames/);
+    await assert.rejects(()=>run(input(),transport({deleted:[11,12,13]})),/対象フレームはすべて削除/);
 });
 test('out-of-range seed rejected',async()=>{
-    await assert.rejects(()=>run({...input(),start:1},transport()),/does not belong/);
+    await assert.rejects(()=>run({...input(),start:1},transport()),/このジョブにありません/);
 });
 test('seed at end of job rejected',async()=>{
-    await assert.rejects(()=>run({...input(),start:15},transport()),/no frames/);
+    await assert.rejects(()=>run({...input(),start:15},transport()),/追跡できるフレームがありません/);
 });
 for(const span of [0,-1,10001,1.2,NaN]) test(`invalid span ${span}`,async()=>{
-    await assert.rejects(()=>run({...input(),span},transport()),/1..10000/);
+    await assert.rejects(()=>run({...input(),span},transport()),/1から10000/);
 });
 test('invalid state/shape counts rejected',async()=>{
-    await assert.rejects(()=>run(input(),transport({reply:()=>({states:[],shapes:[polygon]})})),/response/);
+    await assert.rejects(()=>run(input(),transport({reply:()=>({states:[],shapes:[polygon]})})),/追跡結果を読み取れません/);
 });
 test('unsigned state objects are never accepted by UI',async()=>{
-    await assert.rejects(()=>run(input(),transport({reply:()=>({states:[{id:'token'}],shapes:[polygon]})})),/signed states/);
+    await assert.rejects(()=>run(input(),transport({reply:()=>({states:[{id:'token'}],shapes:[polygon]})})),/追跡結果を読み取れません/);
 });
 test('bad polygon response rejected',async()=>{
-    await assert.rejects(()=>run(input(),transport({reply:()=>({states:['signed'],shapes:[{type:'mask',points:[1,2,3]}]})})),/polygon/);
+    await assert.rejects(()=>run(input(),transport({reply:()=>({states:['signed'],shapes:[{type:'mask',points:[1,2,3]}]})})),/ポリゴンの形状が不正/);
 });
 test('inference failure rejects instead of returning partial trajectories',async()=>{
     const i=input(),snapshot=structuredClone(i);await assert.rejects(()=>run(i,transport({errorAt:12})),/server failure/);
@@ -100,7 +100,7 @@ test('multiple objects keep consistent state and trajectory order',async()=>{
 });
 test('object limit enforced without requests',async()=>{
     const i=input();i.seeds=Array(17).fill(polygon);const t=transport();
-    await assert.rejects(()=>run(i,t),/1 and 16/);assert.equal(t.calls.length,0);
+    await assert.rejects(()=>run(i,t),/1個から16個/);assert.equal(t.calls.length,0);
 });
 
 const {continueWithRetry}=require(path.join(process.env.SAM2_TEST_BUILD,'tracking.js'));
@@ -152,7 +152,7 @@ test('large result exceeds coordinate budget without returning partial tracks',a
     const huge={type:'polygon',points:Array.from({length:20000},(_,n)=>n%2?10:8)};
     const i={...input(),start:0,stop:200,span:150,frameNumbers:Array.from({length:201},(_,n)=>n)};
     const t=transport({reply:()=>({states:['s'],shapes:[huge]})});
-    await assert.rejects(()=>run(i,t),/too large/);
+    await assert.rejects(()=>run(i,t),/追跡結果のサイズが上限/);
 });
 
 for(const count of [5,16]) test(`${count} objects remain ordered through continuation`,async()=>{

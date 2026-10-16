@@ -126,7 +126,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
             link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         };
         const done = report?.outcomes.length ?? 0;
-        const statusNames = { saved: '保存済み', empty: '検出なし', skipped: '対象から除外', failed: '失敗または結果不明' };
+        const statusNames = { saved: '保存済み', empty: '出力なし', skipped: '対象から除外', failed: '失敗または結果不明' };
         const statuses = new Map(report?.outcomes.map((outcome) => [`${outcome.taskId}:${outcome.frame}`, outcome.status]) ?? []);
         return (
             <Modal
@@ -134,22 +134,22 @@ export function openDialog(options: DialogOptions): DialogHandle {
                 onCancel={close} closable={!busy} maskClosable={!busy} keyboard={!busy} footer={null}
             >
                 <Space direction='vertical' style={{ width: '100%' }} size='middle'>
-                    <Alert type='warning' showIcon message='保存済みのタグで対象を選び、推論結果を追記します。'
-                        description='先にアノテーションを保存してください。実行中はこのタブを開いたままにし、対象タスクの編集や別の自動処理を行わないでください。中止や失敗までの保存結果は残ります。再実行すると重複する場合があります。' />
+                    <Alert type='warning' showIcon message='保存済みのタグで対象画像を選び、推論結果を追加します。'
+                        description='先にアノテーションを保存してください。実行中はこのタブを閉じたり再読み込みしたりせず、対象タスクの編集や別の自動処理を避けてください。中止や失敗までに保存した結果は残ります。再実行すると重複する場合があります。' />
                     {error && <Alert type='error' showIcon message={error} />}
-                    {!loading && !models.length && <Alert type='info' message='利用できる単一画像用モデルがありません。ONNXモデルの登録とサーバー設定を確認してください。' />}
+                    {!loading && !models.length && <Alert type='info' message='利用できるSegmentation、Detection、Classificationモデルがありません。モデル管理で公開状態を確認してください。公開済みのモデルが表示されない場合は管理者に連絡してください。' />}
                     <Form layout='vertical' disabled={busy || loading || ran}>
-                        <Form.Item label='対象画像の条件'>
+                        <Form.Item label='対象画像の条件' extra='動画では、各フレームを1枚の画像として選択します。'>
                             <Select value={condition.mode} onChange={(mode: Condition['mode']) => {
                                 setCondition({ mode, labelIds: mode === 'untagged' ? [] : condition.labelIds }); invalidate();
                             }} options={[
                                 { value: 'any', label: '選択タグのいずれかが付いた画像' },
                                 { value: 'all', label: '選択タグのすべてが付いた画像' },
                                 { value: 'none', label: '選択タグのどれも付いていない画像' },
-                                { value: 'untagged', label: 'タグが1個も付いていない画像（図形の有無は不問）' },
+                                { value: 'untagged', label: 'タグが付いていない画像（図形がある画像も含む）' },
                             ]} />
                         </Form.Item>
-                        {condition.mode !== 'untagged' && <Form.Item label='判定するタグラベル'>
+                        {condition.mode !== 'untagged' && <Form.Item label='条件に使用するタグ'>
                             <Select mode='multiple' value={condition.labelIds} optionFilterProp='label'
                                 onChange={(labelIds: number[]) => { setCondition({ ...condition, labelIds }); invalidate(); }}
                                 options={labels.filter((item) => ['tag', 'any'].includes(item.type))
@@ -159,28 +159,28 @@ export function openDialog(options: DialogOptions): DialogHandle {
                             <Select value={modelId} onChange={selectModel} placeholder='モデルを選択'
                                 options={models.map((item) => ({ value: String(item.id), label: item.name }))} />
                         </Form.Item>
-                        {model && <Form.Item label='出力ラベルと属性の対応'>
+                        {model && <Form.Item label='出力ラベルと属性の対応' extra='モデルの出力先となるタスクのラベルを選択してください。対応付けていないラベルは保存されません。'>
                             <MappingEditor key={String(model.id)} model={model} labels={labels}
                                 disabled={busy || loading || ran} onChange={setChoices} />
                         </Form.Item>}
-                        {thresholdEditable && <Form.Item label='信頼度の閾値（0から1）'>
-                            <InputNumber value={threshold} min={0} max={1} step={0.05} onChange={setThreshold} />
+                        {thresholdEditable && <Form.Item label='信頼度の閾値（0から1）' extra='値を大きくすると、信頼度の高い結果に絞り込みます。'>
+                            <InputNumber<number> value={threshold} min={0} max={1} step={0.05} onChange={setThreshold} />
                         </Form.Item>}
                         {model && !thresholdEditable && <Alert type='info'
-                            message='このモデルの検出条件は変更できません。' />}
+                            message='このモデルは、この画面から信頼度の閾値を変更できません。' />}
                         <Checkbox checked={convert} onChange={(event) => setConvert(event.target.checked)}>マスクをポリゴンに変換</Checkbox>
                     </Form>
                     <Space wrap>
                         <Button onClick={() => { void preview(); }} disabled={busy || loading ||
-                            (condition.mode !== 'untagged' && !condition.labelIds.length)}>対象をプレビュー</Button>
+                            (condition.mode !== 'untagged' && !condition.labelIds.length)}>対象画像を一覧表示</Button>
                         <Button type='primary' onClick={() => { void run(); }} disabled={busy || loading || !plan ||
-                            !selected.size || !mappingValid || (thresholdEditable && threshold === null) || ran}>選択画像に実行</Button>
+                            !selected.size || !mappingValid || (thresholdEditable && threshold === null) || ran}>選択した画像に実行</Button>
                         {busy && <Button danger disabled={stopping} onClick={() => {
                             session.cancelled = true; setStopping(true);
-                        }}>{stopping ? '現在の通信の終了を待って停止します' : '中止'}</Button>}
+                        }}>{stopping ? '現在の処理が終わり次第、中止します' : '中止'}</Button>}
                         {ran && <Button disabled={busy} onClick={invalidate}>条件を変更</Button>}
                         <Button disabled={busy} onClick={close}>閉じる</Button>
-                        {report && <Button disabled={busy} onClick={downloadReport}>実行結果を保存</Button>}
+                        {report && <Button disabled={busy} onClick={downloadReport}>実行結果を保存（JSON）</Button>}
                     </Space>
                     {plan && <>
                         <div>{`${plan.tasks.length}タスク / 候補${plan.frames.length}画像 / 選択${selected.size}画像`}</div>
@@ -195,7 +195,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
                                 getCheckboxProps: () => ({ disabled: busy || ran }),
                             }} columns={[
                                 { title: 'タスク', dataIndex: 'taskId', width: 90 },
-                                { title: 'フレーム（0始まり）', dataIndex: 'frame', width: 150 },
+                                { title: 'フレーム番号（0始まり）', dataIndex: 'frame', width: 150 },
                                 { title: '画像名', dataIndex: 'name', ellipsis: true },
                                 { title: '結果', key: 'result', render: (_: unknown, frame: Frame) => {
                                     const status = statuses.get(frame.key); return status ? statusNames[status] : '';
@@ -205,7 +205,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
                     {report && <>
                         <Progress percent={selected.size ? Math.floor(done * 100 / selected.size) : 0}
                             status={report.error ? 'exception' : busy ? 'active' : 'normal'} />
-                        <div>{`保存${report.outcomes.filter((item) => item.status === 'saved').length} / 検出なし${report.outcomes.filter((item) => item.status === 'empty').length} / 除外${report.outcomes.filter((item) => item.status === 'skipped').length}`}</div>
+                        <div>{`保存${report.outcomes.filter((item) => item.status === 'saved').length} / 出力なし${report.outcomes.filter((item) => item.status === 'empty').length} / 除外${report.outcomes.filter((item) => item.status === 'skipped').length}`}</div>
                         {report.error && <Alert type='error' showIcon message={report.error} />}
                         {report.cancelled && <Alert type='warning' message='処理を中止しました。保存済みの結果は残っています。' />}
                         {!busy && !report.error && !report.cancelled && <Alert type='success' message='選択画像の処理が完了しました。' />}

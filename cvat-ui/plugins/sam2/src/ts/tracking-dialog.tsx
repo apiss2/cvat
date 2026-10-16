@@ -87,7 +87,7 @@ function TrackingDialog({
         }
         const action = new PolygonTrackAction(host.core, definition);
         cancelled.current = false;
-        setBusy(true); setError(''); setStatus('追跡を初期化しています。'); setProgress(0);
+        setBusy(true); setError(''); setStatus('追跡を準備しています。'); setProgress(0);
         try {
             const seeds = resolveSelection(candidates, ids);
             await host.core.actions.call(
@@ -102,7 +102,7 @@ function TrackingDialog({
                     const canvas = state.annotation.canvas.instance as Canvas;
                     canvas.setup(state.annotation.player.frame.data, []);
                     host.store.dispatch(fetchAnnotationsAsync());
-                    setStatus('追跡結果を反映しました。保存前に確認してください。');
+                    setStatus('追跡結果を反映しました。結果を確認して保存してください。');
                     setCandidates([]); setIDs([]);
                 }
             }
@@ -115,7 +115,7 @@ function TrackingDialog({
 
     return (
         <Modal
-            open title={`${definition.name}: ポリゴン・マスクの追跡`} width={760}
+            open title={`${definition.name}: ポリゴンとマスクの追跡`} width={760}
             maskClosable={false} closable={!busy} keyboard={!busy}
             onCancel={onClose}
             footer={(
@@ -132,17 +132,17 @@ function TrackingDialog({
             )}
         >
             <Space direction='vertical' size='middle' style={{ width: '100%' }}>
-                <Alert type='info' showIcon message={`開始フレームのポリゴン・マスク図形を初期値にして追跡します。終了フレームも含みます。最大${MAX_TRACKING_OBJECTS}個、開始から${MAX_TRACKING_FRAMES}フレーム分を指定できます。メモリ量と結果サイズにも上限があります。`} />
+                <Alert type='info' showIcon message={`開始フレームのポリゴンまたはマスクを選び、指定した方向に追跡します。終了フレームも含みます。対象は最大${MAX_TRACKING_OBJECTS}個、開始と終了のフレーム番号の差は${MAX_TRACKING_FRAMES}以内です。長い範囲で失敗する場合は、範囲や対象数を減らしてください。`} />
                 <Space wrap>
                     <Select aria-label='追跡方向' value={backward ? 'backward' : 'forward'} disabled={busy || loading}
-                        options={[{ value: 'forward', label: '前方向' }, { value: 'backward', label: '逆方向' }]}
+                        options={[{ value: 'forward', label: '順方向（後のフレーム）' }, { value: 'backward', label: '逆方向（前のフレーム）' }]}
                         onChange={(value) => {
                             const reverse = value === 'backward'; setBackward(reverse);
                             setEnd(reverse ? Math.max(job.startFrame, start - 50) :
                                 Math.min(job.stopFrame, start + 50));
                         }}
                     />
-                    <span id='polygon-tracking-start'>開始フレーム（初期値）</span>
+                    <span id='polygon-tracking-start'>開始フレーム</span>
                     <InputNumber aria-label='開始フレーム' id='polygon-tracking-start-input' value={start} min={job.startFrame}
                         max={job.stopFrame}
                         precision={0} disabled={busy || loading} onChange={(value) => {
@@ -166,7 +166,7 @@ function TrackingDialog({
                 </Space>
                 {rangeError ? <Alert type='warning' message={rangeError} /> : null}
                 <Space>
-                    <div>初期対象（{selectedCount}/{MAX_TRACKING_OBJECTS}個）</div>
+                    <div>追跡対象（{selectedCount}/{MAX_TRACKING_OBJECTS}個）</div>
                     <Button disabled={busy || loading} onClick={() => {
                         setIDs(candidates.map((state) => state.clientID));
                     }}>全選択</Button>
@@ -175,9 +175,9 @@ function TrackingDialog({
                     }}>全解除</Button>
                 </Space>
                 {selectedCount > MAX_TRACKING_OBJECTS ? <Alert type='error' message={`対象は最大${MAX_TRACKING_OBJECTS}個です。不要な対象を除外してください。`} /> : null}
-                {loading ? <div>初期対象を読み込んでいます。</div> : null}
+                {loading ? <div>追跡対象を読み込んでいます。</div> : null}
                 {!loading && !candidates.length ? <div>
-                    追跡できる対象がありません。開始フレームにロックされていないポリゴン・マスク図形を用意してください。既存トラックは対象外です。
+                    追跡できる対象がありません。開始フレームにポリゴンまたはマスクを作成してください。ロック中または回転した図形、既存トラックは対象外です。
                 </div> : null}
                 <Space direction='vertical' style={{ width: '100%', maxHeight: 280, overflow: 'auto' }}>
                     {candidates.map((state) => (
@@ -191,7 +191,7 @@ function TrackingDialog({
                         >
                             <Space>
                                 <svg width={80} height={60} viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
-                                    role='img' aria-label={`ポリゴン ${state.clientID} の形状`}
+                                    role='img' aria-label={`${state.shapeType === 'mask' ? 'マスク' : 'ポリゴン'} ${state.clientID} の形状`}
                                 >
                                     {state.shapeType === 'mask' ? <rect
                                         x={state.points.at(-4)} y={state.points.at(-3)}
@@ -211,7 +211,7 @@ function TrackingDialog({
                         </Checkbox>
                     ))}
                 </Space>
-                <Alert type='warning' showIcon message={`初期フレーム ${start} → 終了フレーム ${end}。選択した図形だけを新規ポリゴントラックへ置換します。既存トラックは変更しません。マスクの穴と離れた領域は最大の外周ポリゴンに変換されます。削除済みフレームは処理せず、結果はUndoで一括取消できます。`} />
+                <Alert type='warning' showIcon message={`開始フレーム ${start} から終了フレーム ${end} まで追跡し、選択した図形を新しいポリゴントラックに置き換えます。既存トラックは変更しません。マスクは最大領域の外周をポリゴンに変換するため、穴や、それ以外の分離した領域は保持されません。削除済みフレームは処理しません。結果はUndoでまとめて取り消せます。`} />
                 {busy ? <Progress percent={progress} /> : null}
                 {status ? <div role='status'>{status}</div> : null}
                 {error ? <Alert type='error' showIcon message={error} /> : null}
@@ -228,7 +228,7 @@ export function trackingPlugin(definition: TrackerDefinition): ComponentBuilder 
         let closeDialog: (() => void) | null = null;
         const menu = ({ targetProps }: { targetProps: { jobInstance: Job } }): NonNullable<MenuProps['items']>[0] => ({
             key: `polygon-tracking-${definition.functionID}`,
-            label: `${definition.name}: ポリゴンを追跡…`,
+            label: `${definition.name}: ポリゴンとマスクを追跡…`,
             disabled: targetProps.jobInstance.dimension !== '2d',
             onClick: () => {
                 if (closeDialog) return;

@@ -20,6 +20,9 @@
 [Academy](https://www.cvat.ai/resources/academy) ·
 [Blog](https://www.cvat.ai/resources/blog)
 
+このフォークの追加機能は[独自拡張の日本語ドキュメント](docs/README.md)を参照してください。
+導入、cvatctlによる機能選択、モデル管理、追跡、条件付きエクスポートを説明しています。
+
 ## What is CVAT Community?
 
 **CVAT Community** is the free, self-hosted open-source edition of [CVAT](https://www.cvat.ai/) — one of

@@ -347,7 +347,7 @@ test('replacement summary follows code, sample and weight input changes', () => 
         for (const entry of input.listeners.filter((listener) => listener.type === 'change')) entry.handler();
     }
     const summary = ui.get('update-summary').textContent;
-    for (const value of ['model.py', 'サンプル画像', 'model.onnx', ui.sandbox.model.active_revision]) assert(summary.includes(value));
+    for (const value of ['model.py', '試験画像', 'model.onnx', ui.sandbox.model.active_revision]) assert(summary.includes(value));
 });
 
 test('failed validation keeps the update form and its base revision', async () => {

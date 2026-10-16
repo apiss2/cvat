@@ -15,7 +15,7 @@ function signedOut() {
     authEpoch++; user = null; selected = null; editing = null; models = []; activeOperation = ''; detailSequence++;
     $('workspace').hidden = true; $('operation').hidden = true; $('access-panel').hidden = false; $('account').hidden = true; $('identity').textContent = ''; $('avatar').textContent = '';
     $('models').replaceChildren();
-    for (const id of ['logs', 'test-result', 'test-tags', 'operation', 'detail-title', 'detail-info', 'detail-contact', 'detail-description', 'detail-labels', 'detail-polygon', 'catalog-count']) $(id).textContent = '';
+    for (const id of ['logs', 'test-result', 'test-summary', 'test-tags', 'operation', 'detail-title', 'detail-info', 'detail-contact', 'detail-description', 'detail-labels', 'detail-polygon', 'catalog-count']) $(id).textContent = '';
     for (const id of ['model-count', 'published-count', 'my-model-count']) $(id).textContent = '0';
     $('search').value = ''; $('revision').replaceChildren(); $('preview').hidden = true; $('preview').width = 0; $('preview').height = 0; $('test-form').reset();
     $('submit-model').disabled = false; $('upload-progress').hidden = true; resetForm();
@@ -26,7 +26,7 @@ function accessError(status) {
         401: ['CVATのセッションを確認できません', 'CVATへ戻ってアカウントの状態を確認し、モデル管理を開き直してください。'],
         403: ['CVATのアカウントを利用できません', '管理者にアカウントと権限の確認を依頼してください。'],
         429: ['CVATへのアクセスが一時的に制限されています', 'しばらく待ってから再試行してください。'],
-        502: ['CVATとの連携に失敗しました', 'CVATがモデル管理サーバーからの接続を受け付けませんでした。管理者に接続設定の確認を依頼してください。'],
+        502: ['CVATとの連携に失敗しました', 'CVATに接続できません。再試行しても改善しない場合は、管理者に接続設定の確認を依頼してください。'],
     };
     const [title, help] = messages[status] || ['CVATとの接続を確認できません', '時間をおいて再試行してください。改善しない場合は管理者に接続設定の確認を依頼してください。'];
     $('access-title').textContent = title; $('access-help').textContent = help;
@@ -54,7 +54,7 @@ function button(text, handler) { const b = document.createElement('button'); b.t
 function kindChanged() {
     const segmentation = $('model-kind').value === 'polygon'; $('polygon-options').hidden = !segmentation;
     for (const id of ['min-distance', 'spacing-percent', 'min-area']) $(id).disabled = !segmentation;
-    $('label-help').textContent = $('model-kind').value === 'tag' ? 'Classificationの返却値はTagの配列です。Tagのclass_idを登録するクラスIDに対応付け、画像または動画の各フレームにタグを付けます。単一分類は1個、複数分類は複数個、該当なしは空配列を返してください。分類の選択としきい値はmodel.pyに記述します。画像全体を分類する場合はCVATで範囲を切り出さずに実行してください。' : segmentation ? 'Segmentationの返却値は二値配列 (N,H,W) です。Nの各面を、下のラベルの上からの順番に対応付けます。判定に使うしきい値はmodel.pyに記述します。' : 'Detectionの返却値はBoxの配列です。Boxのclass_idを、登録するクラスIDに対応付けます。信頼度の判定と重複した矩形の除去はmodel.pyに記述します。';
+    $('label-help').textContent = $('model-kind').value === 'tag' ? 'ClassificationのクラスIDとラベル名を登録します。分類結果は画像や動画の各フレームのタグになります。画像全体を分類する場合は、実行時にROIを指定しないでください。' : segmentation ? 'Segmentationのラベルをモデルの出力順に登録してください。この順番に従って、各領域にラベルを付けます。' : 'DetectionのクラスIDとラベル名を登録します。クラスIDはモデルの出力と一致させてください。';
 }
 function labelRow(value = { id: 0, name: '' }) {
     const row = document.createElement('div'); row.className = 'label-row';
@@ -82,14 +82,14 @@ function resetForm(model = null) {
     $('submit-model').textContent = updating ? '変更を検証して更新' : '検証して公開';
     if (updating) {
         const help = document.createElement('p');
-        help.textContent = '未選択のファイルと未変更の設定は公開中の版から引き継ぎます。Pythonコードとサンプル画像も再アップロード不要です。検証に失敗した場合は公開中の版を維持します。';
+        help.textContent = '変更するファイルだけ選択してください。未選択のONNXファイル、推論コード、試験画像は公開中の版を使用します。ファイルを選ばず、設定だけを更新することもできます。';
         panel.append(help);
         for (const name of model.manifest.weights) {
             const label = document.createElement('label');
-            label.textContent = `ONNX: ${name}（同じファイル名で置換、未選択なら引き継ぎ）`;
+            label.textContent = `ONNX: ${name}（差し替える場合は同じファイル名を選択）`;
             const input = document.createElement('input');
             input.type = 'file'; input.accept = '.onnx';
-            input.setAttribute('aria-label', `${name}を置換するONNXファイル`);
+            input.setAttribute('aria-label', `${name}と差し替えるONNXファイル`);
             input.addEventListener('change', updateSummary);
             label.append(input); panel.append(label); replacementWeights.push({ name, input });
         }
@@ -101,8 +101,8 @@ function updateSummary() {
     if (!editing?.active_revision) { summary.textContent = ''; return; }
     const replaced = replacementWeights.filter(({ input }) => input.files.length).map(({ name }) => name);
     if ($('code').files.length) replaced.push('model.py');
-    if ($('sample').files.length) replaced.push('サンプル画像');
-    summary.textContent = `基準の版: ${editing.active_revision}。置換するファイル: ${replaced.join('、') || 'なし（設定のみ更新可能）'}。その他のファイルは引き継ぎます。`;
+    if ($('sample').files.length) replaced.push('試験画像');
+    summary.textContent = `更新元の版: ${editing.active_revision}。差し替えるファイル: ${replaced.join('、') || 'なし（設定のみ更新）'}。その他のファイルは公開中の版を使用します。`;
 }
 function readModelSettings(previous) {
     const kind = $('model-kind').value;
@@ -176,7 +176,7 @@ function renderModels() {
     }
     $('catalog-count').textContent = query ? `${models.length}件中 ${count}件を表示` : `${count}件のモデル`;
     if (!count) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 5; td.className = 'empty-state';
-        const title = document.createElement('strong'); title.textContent = query ? '一致するモデルがありません' : '最初のモデルを登録しましょう';
+        const title = document.createElement('strong'); title.textContent = query ? '一致するモデルがありません' : '登録されたモデルがありません';
         const help = document.createElement('span'); help.textContent = query ? '別のモデル名や作者で検索してください。' : '登録して公開したモデルは、この一覧からチームに共有されます。';
         td.append(title, help); tr.append(td); $('models').append(tr);
     }
@@ -232,10 +232,10 @@ async function selectModel(id) {
     $('detail-contact').textContent = `連絡先: ${model.manifest?.author_contact || '未設定'}`; $('detail-description').textContent = model.manifest?.description || '';
     $('detail-labels').textContent = (model.manifest?.labels || []).map((label, index) => `${index}: ${label.name} (ID=${label.id}, ${label.type})`).join('\n');
     const polygon = model.manifest?.polygon;
-    $('detail-polygon').textContent = polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `Polygon変換: 最小距離 ${polygon.min_distance_px} px、周長比 ${polygon.spacing_percent}%、最小面積 ${polygon.min_area_px} px²` : '';
+    $('detail-polygon').textContent = polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `ポリゴン変換: 頂点の最小距離 ${polygon.min_distance_px} px、周長比 ${polygon.spacing_percent}%、最小面積 ${polygon.min_area_px} px²` : '';
     const managed = Boolean(model.can_manage); $('owner-detail').hidden = !managed;
     for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = Boolean(model.deleted || (id === 'update-model' && !model.active_revision)); }
-    $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-tags').textContent = ''; $('preview').hidden = true;
+    $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-summary').textContent = ''; $('test-tags').textContent = ''; $('preview').hidden = true;
     if (managed) {
         for (const rev of model.revisions || []) { const option = document.createElement('option'); option.value = rev.revision; option.textContent = `${rev.revision} ${rev.revision === model.active_revision ? '(公開中)' : '(保持中)'} ${rev.manifest.name}`; $('revision').append(option); }
         $('revision').value = model.active_revision || '';
@@ -270,10 +270,12 @@ async function sendPackage(path, form) {
         activeOperation = operation.id; notice('公開前の検証を開始しました。');
         while (activeOperation && user) {
             if (epoch !== authEpoch) throw new StaleSession();
-            const status = await api(`/api/operations/${activeOperation}`); $('operation').textContent = `${status.status}\n${status.detail}\nモデルID=${status.model_id}\n版=${status.revision}\n処理ID=${status.id}`;
+            const status = await api(`/api/operations/${activeOperation}`);
+            const statusName = { queued: '検証待ち', validating: '検証中', succeeded: '公開完了', failed: '検証失敗' }[status.status] || '処理中';
+            $('operation').textContent = `${statusName}${status.detail ? `\n${status.detail}` : ''}`;
             if (['succeeded', 'failed'].includes(status.status)) {
                 activeOperation = ''; await refresh();
-                notice(status.status === 'succeeded' ? '公開しました。CVATのモデル一覧は通常5秒以内に更新されます。' : '検証に失敗しました。処理ログを確認してください。', status.status !== 'succeeded');
+                notice(status.status === 'succeeded' ? '公開しました。CVATのモデル一覧から選択できます。' : '検証に失敗しました。処理ログを確認してください。', status.status !== 'succeeded');
                 if (status.status === 'succeeded') resetForm();
                 location.hash = `model/${status.model_id}`; break;
             }
@@ -295,7 +297,7 @@ for (const id of ['code', 'sample']) $(id).addEventListener('change', updateSumm
 $('register-form').addEventListener('submit', (event) => { event.preventDefault(); run(submitModel); });
 $('update-model').addEventListener('click', () => { if (selected?.can_manage && selected.active_revision && !selected.deleted) { resetForm(selected); location.hash = 'register'; } });
 $('delete-model').addEventListener('click', () => run(async () => {
-    if (!selected?.can_manage || !confirm('このモデルの全ての版を無効にします。実行中の一括推論は次の画像から失敗する場合があります。削除しますか？')) return;
+    if (!selected?.can_manage || !confirm('このモデルのすべての版が使えなくなります。このモデルで実行中の自動アノテーションは失敗する場合があります。削除しますか？')) return;
     const id = selected.id; await api(`/api/models/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: selected.active_revision }) });
     await refresh(); await selectModel(id); notice('モデルを無効にしました。');
 }));
@@ -318,13 +320,14 @@ async function preview(file, result, modelId) {
 }
 $('test-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
     if (!selected?.can_manage) return; const model = selected; const file = $('test-image').files[0]; const revision = $('revision').value; $('test-button').disabled = true;
-    $('test-tags').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
+    $('test-tags').textContent = ''; $('test-summary').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
     try { const result = await api(`/api/models/${model.id}/test?revision=${encodeURIComponent(revision)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: await base64File(file) }) });
         if (selected?.id === model.id) {
             const tags = result.results.filter((object) => object.type === 'tag');
             const testedManifest = model.revisions?.find((item) => item.revision === revision)?.manifest || model.manifest;
             $('test-tags').textContent = tags.length ? `分類タグ: ${tags.map((tag) => `${tag.label}（信頼度 ${tag.confidence.toFixed(3)}）`).join('、')}` :
                 testedManifest?.labels?.some((label) => label.type === 'tag') ? '分類タグ: なし' : '';
+            $('test-summary').textContent = `出力件数: ${result.results.length}件（図形 ${result.results.length - tags.length}件、タグ ${tags.length}件）。結果を画像とタグ一覧で確認してください。`;
             $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: result.results.length, results: result.results }, null, 2);
             await preview(file, result.results, model.id);
         }

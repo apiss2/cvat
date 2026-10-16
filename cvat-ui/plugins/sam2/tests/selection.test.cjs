@@ -37,7 +37,7 @@ test('SAM3.1 uses its own deployed function, never silently falls back to SAM2',
     const core={lambda:{list:async()=>({models:[{id:'pth-sam2-tracker',kind:'tracker'}]})}};
     const action=new PolygonTrackAction(core,{name:'SAM3.1',functionID:'pth-sam31-tracker'});
     assert.equal(action.name,'SAM3.1: track polygon shapes');
-    await assert.rejects(()=>action.init(job,{'Frames to track':2}),/pth-sam31-tracker/);
+    await assert.rejects(()=>action.init(job,{'Frames to track':2}),/SAM3\.1の追跡モデルを利用できません/);
     core.lambda.list=async()=>({models:[{id:'pth-sam31-tracker',kind:'tracker'}]});
     await action.init(job,{'Frames to track':10000});
     assert.deepEqual(action.parameters['Frames to track'].values,['1','10000','1']);
