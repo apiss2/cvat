@@ -16,7 +16,8 @@
 
 ## 機能の選択
 
-`CVAT_EXTENSIONS`には`itgformat`、`sam2`、`sam31`、`ultrasam`、`model_registry`、`frame_navigation_filter`、`selective_ai`、`filtered_export`をカンマで区切って指定します。
+`CVAT_EXTENSIONS`には`itgformat`、`sam2`、`sam31`、`ultrasam`、`model_registry`、`frame_navigation_filter`、`selective_ai`、
+`filtered_export`、`physical_measurements`をカンマで区切って指定します。
 SAM3.1は任意の機能です。新規に配備する場合は、互換性のある重みを事前に配置してください。
 画面だけの機能も同じ設定で管理します。選択に応じた構成と有効化・無効化の手順は[拡張機能の管理](management.md)を参照してください。
 

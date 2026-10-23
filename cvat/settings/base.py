@@ -138,6 +138,7 @@ INSTALLED_APPS = [
     "cvat.apps.dataset_manager",
     "cvat.apps.organizations",
     "cvat.apps.engine",
+    "components.physical_measurements",
     "cvat.apps.dataset_repo",
     "cvat.apps.lambda_manager",
     "cvat.apps.webhooks",

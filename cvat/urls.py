@@ -27,6 +27,7 @@ urlpatterns = [
     path("", include("cvat.apps.engine.urls")),
     path("", include("cvat.apps.redis_handler.urls")),
     path("api/filtered-export/", include("cvat.apps.dataset_manager.filtered_export.urls")),
+    path("api/physical-measurements/", include("components.physical_measurements.urls")),
     path("django-rq/", include("django_rq.urls")),
 ]
 

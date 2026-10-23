@@ -12,12 +12,16 @@
 | `frame-navigation-filter` | 表示を隠さず、フィルターをフレーム移動に使う | [フィルター](../../docs/annotation/frame-navigation-filter.md) |
 | `selective-ai` | タグ条件と画像選択による自動アノテーション | [選択実行](../../docs/annotation/selective-ai.md) |
 | `filtered-export` | 条件に合う画像のエクスポート | [条件を指定したエクスポート](../../docs/annotation/filtered-export.md) |
+| `physical-measurements` | 画像のspacingに基づく折れ線の物理長表示 | [物理長の表示](../../docs/annotation/physical-measurements.md) |
 | `sam` | 上流CVATのSAM用クライアント処理 | [SAMプラグイン](sam/README.md) |
 
-独自プラグインは共通設定のCVAT_EXTENSIONSで選びます。画面機能の拡張名はframe_navigation_filter、selective_ai、filtered_exportです。管理コマンドが対応するパスをUIビルドへ追加するため、CVAT_CLIENT_PLUGINSへの手動追記は不要です。既存のSAMやモデル管理の選択は保持してください。
+独自プラグインは共通設定のCVAT_EXTENSIONSで選びます。
+画面機能の拡張名はframe_navigation_filter、selective_ai、filtered_export、physical_measurementsです。
+管理コマンドが対応するパスをUIビルドへ追加するため、CVAT_CLIENT_PLUGINSへの手動追記は不要です。
+既存のSAMやモデル管理の選択は保持してください。
 
 ```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,model_registry,frame_navigation_filter,selective_ai,filtered_export
+CVAT_EXTENSIONS=itgformat,sam2,model_registry,frame_navigation_filter,selective_ai,filtered_export,physical_measurements
 ```
 
 選択の変更と機能追加時の開発方針は[拡張機能の管理](../../docs/extensions/management.md)を参照してください。一覧にない独自パスは引き続きCVAT_CLIENT_PLUGINSで指定できます。

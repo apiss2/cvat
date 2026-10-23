@@ -54,6 +54,7 @@ EXTENSION_COMPOSE = {
     "frame_navigation_filter": (),
     "selective_ai": (),
     "filtered_export": (),
+    "physical_measurements": (),
 }
 EXTENSION_PLUGINS = {
     "sam2": "plugins/sam2",
@@ -62,6 +63,7 @@ EXTENSION_PLUGINS = {
     "frame_navigation_filter": "plugins/frame-navigation-filter",
     "selective_ai": "plugins/selective-ai",
     "filtered_export": "plugins/filtered-export",
+    "physical_measurements": "plugins/physical-measurements",
 }
 FINAL_COMPOSE = "components/extensions/docker-compose.extensions.yml"
 COMPOSE_FILES = (

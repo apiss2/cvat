@@ -15,6 +15,7 @@ CLIENTS = {
     "frame_navigation_filter": "plugins/frame-navigation-filter",
     "selective_ai": "plugins/selective-ai",
     "filtered_export": "plugins/filtered-export",
+    "physical_measurements": "plugins/physical-measurements",
 }
 
 
@@ -101,16 +102,34 @@ def configure(cli, manager, monkeypatch):
     return manager.configuration(), calls
 
 
-@pytest.mark.parametrize("selected,expected", [
-    ("", []),
-    ("frame_navigation_filter", [CLIENTS["frame_navigation_filter"]]),
-    ("selective_ai", [CLIENTS["selective_ai"]]),
-    ("filtered_export", [CLIENTS["filtered_export"]]),
-    ("selective_ai,frame_navigation_filter", [CLIENTS["frame_navigation_filter"], CLIENTS["selective_ai"]]),
-    ("filtered_export,frame_navigation_filter", [CLIENTS["frame_navigation_filter"], CLIENTS["filtered_export"]]),
-    ("filtered_export,selective_ai", [CLIENTS["selective_ai"], CLIENTS["filtered_export"]]),
-    ("filtered_export,selective_ai,frame_navigation_filter", list(CLIENTS.values())),
-])
+@pytest.mark.parametrize(
+    "selected,expected",
+    [
+        ("", []),
+        ("frame_navigation_filter", [CLIENTS["frame_navigation_filter"]]),
+        ("selective_ai", [CLIENTS["selective_ai"]]),
+        ("filtered_export", [CLIENTS["filtered_export"]]),
+        ("physical_measurements", [CLIENTS["physical_measurements"]]),
+        (
+            "selective_ai,frame_navigation_filter",
+            [CLIENTS["frame_navigation_filter"], CLIENTS["selective_ai"]],
+        ),
+        (
+            "filtered_export,frame_navigation_filter",
+            [CLIENTS["frame_navigation_filter"], CLIENTS["filtered_export"]],
+        ),
+        ("filtered_export,selective_ai", [CLIENTS["selective_ai"], CLIENTS["filtered_export"]]),
+        ("filtered_export,selective_ai,frame_navigation_filter", list(CLIENTS.values())[:3]),
+        (
+            "physical_measurements,frame_navigation_filter",
+            [CLIENTS["frame_navigation_filter"], CLIENTS["physical_measurements"]],
+        ),
+        (
+            "physical_measurements,filtered_export,selective_ai,frame_navigation_filter",
+            list(CLIENTS.values()),
+        ),
+    ],
+)
 def test_named_selection(cli, make_manager, selected, expected):
     manager = make_manager(selected)
     assert manager.values["CVAT_CLIENT_PLUGINS"].split(":") == (expected or [""])
@@ -151,13 +170,19 @@ def test_all_existing_extensions_can_be_combined(cli, make_manager):
     assert set(manager.function_environment()) == set(cli.OWNERS)
 
 
-@pytest.mark.parametrize("selected,serverless", [
-    ("frame_navigation_filter", False), ("selective_ai", True),
-    ("frame_navigation_filter,selective_ai", True),
-    ("filtered_export", False),
-    ("frame_navigation_filter,filtered_export", False),
-    (",".join(CLIENTS), True),
-])
+@pytest.mark.parametrize(
+    "selected,serverless",
+    [
+        ("frame_navigation_filter", False),
+        ("selective_ai", True),
+        ("frame_navigation_filter,selective_ai", True),
+        ("filtered_export", False),
+        ("frame_navigation_filter,filtered_export", False),
+        ("physical_measurements", False),
+        ("physical_measurements,frame_navigation_filter", False),
+        (",".join(CLIENTS), True),
+    ],
+)
 def test_compose_uses_only_required_existing_overlays(cli, make_manager, selected, serverless):
     manager = make_manager(selected)
     command = manager.compose("config")
@@ -209,7 +234,7 @@ def test_selection_changes_only_ui_image_tag_for_same_source(cli, make_manager, 
 
 
 @pytest.mark.parametrize("command", ["config", "doctor"])
-@pytest.mark.parametrize("selected", ["", ",".join(CLIENTS)])
+@pytest.mark.parametrize("selected", ["", "physical_measurements", ",".join(CLIENTS)])
 def test_cli_reports_resolved_client_plugins(cli, make_manager, monkeypatch, capsys, command, selected):
     manager = make_manager(selected)
     model, _ = configure(cli, manager, monkeypatch)
@@ -221,7 +246,7 @@ def test_cli_reports_resolved_client_plugins(cli, make_manager, monkeypatch, cap
     cli.main()
     summary = json.loads(capsys.readouterr().out)
     assert summary["extensions"] == list(manager.extensions)
-    assert summary["client_plugins"] == (list(CLIENTS.values()) if selected else [])
+    assert summary["client_plugins"] == [CLIENTS[name] for name in manager.extensions]
 
 
 @pytest.mark.parametrize("selected", CLIENTS)
@@ -269,3 +294,71 @@ def test_down_uses_recorded_ui_even_after_selection_changes(cli, make_manager, m
     assert manager.compose("down", "--timeout", "120", frozen=True) in calls
     assert all("--volumes" not in call and "-v" not in call for call in calls)
     assert cli.read_json(manager.state / "active.json")["extensions"] == list(CLIENTS)
+
+
+def test_status_uses_recorded_measurement_ui_after_disable(cli, make_manager, monkeypatch):
+    previous = make_manager("physical_measurements")
+    model, _ = configure(cli, previous, monkeypatch)
+    previous.freeze(model)
+    manager = make_manager("")
+    calls = []
+    monkeypatch.setattr(cli, "Manager", lambda *args: manager)
+    monkeypatch.setattr(
+        manager, "configuration", lambda: pytest.fail("Use the recorded deployment")
+    )
+    monkeypatch.setattr(manager, "functions", lambda: [])
+    monkeypatch.setattr(manager, "run", lambda command, **kwargs: calls.append(command) or "")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cvatctl",
+            "--env-file",
+            str(manager.env_file),
+            "--state-dir",
+            str(manager.state),
+            "status",
+        ],
+    )
+    cli.main()
+    assert calls == [manager.compose("ps", "--all", frozen=True)]
+    assert cli.read_json(manager.state / "active.json")["extensions"] == ["physical_measurements"]
+
+
+@pytest.mark.parametrize("wrong_ui_image", [False, True])
+def test_check_verifies_measurement_ui_without_starting_work(
+    cli,
+    make_manager,
+    monkeypatch,
+    wrong_ui_image,
+):
+    manager = make_manager("physical_measurements")
+    model, _ = configure(cli, manager, monkeypatch)
+    manager.freeze(
+        model, {service["image"]: "sha256:recorded" for service in model["services"].values()}
+    )
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:3] == ["docker", "image", "inspect"]:
+            return "sha256:recorded"
+        if command[:2] == ["docker", "inspect"]:
+            return (
+                "sha256:different"
+                if wrong_ui_image and command[2] == "cvat_ui"
+                else "sha256:recorded"
+            )
+        for service in model["services"]:
+            if command == manager.compose("ps", "-q", service, frozen=True):
+                return service
+        pytest.fail(f"Unexpected command: {command}")
+
+    monkeypatch.setattr(manager, "run", run)
+    if wrong_ui_image:
+        with pytest.raises(cli.OperationError, match="cvat_ui: running image ID differs"):
+            manager.check()
+    else:
+        manager.check()
+    assert manager.compose("ps", "-q", "cvat_ui", frozen=True) in calls
+    assert all("exec" not in call and "up" not in call and "build" not in call for call in calls)

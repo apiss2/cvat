@@ -18,6 +18,7 @@
 | `frame_navigation_filter` | フィルター条件によるフレーム移動と全図形表示 | `plugins/frame-navigation-filter` を共通UIイメージに含めます。推論サービスは不要です。 |
 | `selective_ai` | タグ条件と画像選択による自動アノテーション | `plugins/selective-ai` を共通UIイメージに含め、推論APIに必要な既存Nuclio構成を有効にします。 |
 | `filtered_export` | アノテーション条件に合う画像のエクスポート | `plugins/filtered-export` を共通UIイメージに含めます。標準のサーバーと出力ワーカーを使用し、推論サービスは不要です。 |
+| `physical_measurements` | 画像のspacingに基づく折れ線の物理長表示 | `plugins/physical-measurements` を共通UIイメージに含めます。設定の保存には標準のサーバーとDBを使用し、追加サービスとGPUは不要です。 |
 
 `selective_ai` は `model_registry` を自動選択しません。登録ONNXモデルを使う場合は両方を選択します。通常のNuclioモデルも使用できますが、画面プラグインの有効化だけでモデルを新しく配備するわけではありません。GPUも自動要求しません。推論の開始と中止は画面で行い、`cvatctl` は配備と停止を管理します。
 
@@ -28,7 +29,7 @@
 既存の選択を保持し、必要な拡張名を追加します。例えば、既存構成に新しい画面機能を追加する場合は次のように指定します。SAM3.1を使用している場合は `sam31` も保持してください。
 
 ```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,frame_navigation_filter,selective_ai,filtered_export
+CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,frame_navigation_filter,selective_ai,filtered_export,physical_measurements
 ```
 
 管理対象のプラグインパスを `CVAT_CLIENT_PLUGINS` に重ねて指定する必要はありません。`cvatctl` はこの変数から管理対象のパスをいったん除き、`CVAT_EXTENSIONS` の選択に応じて再構成します。旧手順でプラグインパスだけを記載していた場合も、新しい拡張名へ変更してください。一覧にない独自のプラグインパスは保持されます。
@@ -49,6 +50,11 @@ bash components/extensions/cvatctl check
 
 `filtered_export` を外すと画面メニューが消えます。ソースに登録されたエクスポートAPIはサーバーに残り、通常の権限確認が引き続き適用されます。APIの削除まで必要な場合は、この機能を含まないサーバーと出力ワーカーへ戻してください。
 
+`physical_measurements` を外すと物理長の表示と設定画面が消えます。
+保存済みのspacingとAPIはサーバーに残り、再度有効にすると同じ設定を利用できます。
+設定は専用のDBテーブルへ保存するため、初回導入ではサーバーとUIを同じソースから再ビルドし、DB移行を適用します。
+設定方法と確認項目は[物理長の表示](../annotation/physical-measurements.md)を参照してください。
+
 ## 確認コマンドの範囲
 
 `config` と `doctor` は、選択された拡張名と、解決済みの `client_plugins`、UIイメージを表示します。選択した画面プラグインの入口ファイルがない場合や、Composeでそのビルド引数が失われた場合は失敗します。選択が変わるとUIイメージの識別子も変わります。
@@ -68,4 +74,7 @@ bash components/extensions/cvatctl check
 python3 -m pytest -q components/extensions/tests/test_client_plugins.py
 ```
 
-構成生成、有効化と無効化、既存拡張との併用、ビルド対象、保存された起動構成による停止を確認します。Dockerの応答と無関係なモデル管理の初期化は代替実装を使用します。実配備と画面の確認は、それぞれのREADMEに記載した受入確認を別途実施してください。
+構成生成、有効化と無効化、既存拡張との併用、ビルド対象、保存された起動構成による停止を確認します。
+物理長表示では、選択解除後の `status` が稼働記録を使うことと、`check` がUIのイメージ不一致を検出し、計測や設定変更を実行しないことも確認します。
+Dockerの応答と無関係なモデル管理の初期化は代替実装を使用します。
+実配備と画面の確認は、それぞれのREADMEに記載した受入確認を別途実施してください。
