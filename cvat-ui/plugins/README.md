@@ -12,12 +12,13 @@
 | `frame-navigation-filter` | 表示を隠さず、フィルターをフレーム移動に使う | [フィルター](../../docs/annotation/frame-navigation-filter.md) |
 | `selective-ai` | タグ条件と画像選択による自動アノテーション | [選択実行](../../docs/annotation/selective-ai.md) |
 | `filtered-export` | 条件に合う画像のエクスポート | [条件を指定したエクスポート](../../docs/annotation/filtered-export.md) |
+| `task-context` | タスク共通の背景情報の登録と参照 | [タスクの背景情報](../../docs/extensions/task-context.md) |
 | `sam` | 上流CVATのSAM用クライアント処理 | [SAMプラグイン](sam/README.md) |
 
-独自プラグインは共通設定のCVAT_EXTENSIONSで選びます。画面機能の拡張名はframe_navigation_filter、selective_ai、filtered_exportです。管理コマンドが対応するパスをUIビルドへ追加するため、CVAT_CLIENT_PLUGINSへの手動追記は不要です。既存のSAMやモデル管理の選択は保持してください。
+独自プラグインは共通設定のCVAT_EXTENSIONSで選びます。画面機能の拡張名はframe_navigation_filter、selective_ai、filtered_export、task_contextです。管理コマンドが対応するパスをUIビルドへ追加するため、CVAT_CLIENT_PLUGINSへの手動追記は不要です。既存のSAMやモデル管理の選択は保持してください。
 
 ```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,model_registry,frame_navigation_filter,selective_ai,filtered_export
+CVAT_EXTENSIONS=itgformat,sam2,model_registry,frame_navigation_filter,selective_ai,filtered_export,task_context
 ```
 
 選択の変更と機能追加時の開発方針は[拡張機能の管理](../../docs/extensions/management.md)を参照してください。一覧にない独自パスは引き続きCVAT_CLIENT_PLUGINSで指定できます。
@@ -26,3 +27,5 @@ CVAT_EXTENSIONS=itgformat,sam2,model_registry,frame_navigation_filter,selective_
 
 `frame-navigation-filter`は、このフォークの`methodArguments`対応を含むcoreと組み合わせて使用します。未変更の上流CVATへプラグインだけをコピーする構成は対象外です。
 プラグインを無効にするときも、CVAT_EXTENSIONSから該当の拡張名を除き、UIを再ビルドしてください。
+
+`task-context` は同じフォークのAPIと組み合わせて使用します。共通の管理コマンドが画面とAPIを一緒に切り替えます。無効にしてもDBの背景情報は保持されます。

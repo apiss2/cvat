@@ -34,6 +34,8 @@ from rest_framework.parsers import JSONParser
 from rest_framework.renderers import JSONRenderer
 
 import cvat.apps.dataset_manager as dm
+from components.task_context.backup import read_backup_context, write_backup_context
+from components.task_context.storage import restore_context
 from cvat.apps.dataset_manager.util import (
     ExportCacheManager,
     TmpDirManager,
@@ -843,6 +845,7 @@ class TaskExporter(_ExporterBase, _TaskBackupBase):
         self._write_manifest(zip_obj, target_dir)
         self._write_annotations(zip_obj, target_dir)
         self._write_annotation_guide(zip_obj, target_dir)
+        write_backup_context(zip_obj, self._db_task, target_dir)
 
     def export_to(self, file: str | ZipFile, target_dir: str = "") -> None:
         if isinstance(file, str):
@@ -935,6 +938,7 @@ class TaskImporter(_ImporterBase, _TaskBackupBase):
         def read(zip_object):
             manifest_filename = os.path.join(self._subdir or "", self.MANIFEST_FILENAME)
             annotations_filename = os.path.join(self._subdir or "", self.ANNOTATIONS_FILENAME)
+            self._task_context = read_backup_context(zip_object, self._subdir or "")
             manifest = JSONParser().parse(io.BytesIO(zip_object.read(manifest_filename)))
             annotations = JSONParser().parse(io.BytesIO(zip_object.read(annotations_filename)))
             annotation_guide, assets = self._read_annotation_guide(zip_object)
@@ -1286,6 +1290,8 @@ class TaskImporter(_ImporterBase, _TaskBackupBase):
         self._import_task()
         self._import_annotations()
         self._import_annotation_guide()
+        if self._task_context is not None:
+            restore_context(self._db_task, self._task_context)
         return self._db_task
 
 

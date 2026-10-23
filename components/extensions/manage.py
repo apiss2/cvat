@@ -50,10 +50,11 @@ EXTENSION_COMPOSE = {
     "ultrasam": ("components/ultrasam/docker-compose.ultrasam.yml",),
     "sam31": ("components/sam31/docker-compose.sam31.yml",),
     "model_registry": ("components/model_registry/docker-compose.gateway.yml",),
-    # Client-only extensions use the shared UI image, not separate services.
+    # These extensions use the shared backend/UI images, not separate services.
     "frame_navigation_filter": (),
     "selective_ai": (),
     "filtered_export": (),
+    "task_context": (),
 }
 EXTENSION_PLUGINS = {
     "sam2": "plugins/sam2",
@@ -62,6 +63,7 @@ EXTENSION_PLUGINS = {
     "frame_navigation_filter": "plugins/frame-navigation-filter",
     "selective_ai": "plugins/selective-ai",
     "filtered_export": "plugins/filtered-export",
+    "task_context": "plugins/task-context",
 }
 FINAL_COMPOSE = "components/extensions/docker-compose.extensions.yml"
 COMPOSE_FILES = (
@@ -134,6 +136,7 @@ def settings(path: Path, root: Path = ROOT) -> dict[str, str]:
     selected = enabled_extensions(values)
     values["CVAT_EXTENSIONS"] = ",".join(selected)
     values["CVAT_MODEL_REGISTRY_ENABLED"] = "1" if "model_registry" in selected else "0"
+    values["CVAT_TASK_CONTEXT_ENABLED"] = "1" if "task_context" in selected else "0"
     plugins = [
         p
         for p in values.get("CVAT_CLIENT_PLUGINS", "").split(":")
@@ -327,6 +330,10 @@ def validate_model(model: dict[str, Any], env: dict[str, str]) -> None:
     for feature, plugin in EXTENSION_PLUGINS.items():
         if feature in selected and plugin not in plugins:
             raise OperationError(f"{feature}: CLIENT_PLUGINS argument lost")
+    context_enabled = "1" if "task_context" in selected else "0"
+    server_environment = services["cvat_server"].get("environment", {})
+    if str(server_environment.get("CVAT_TASK_CONTEXT_ENABLED", "0")) != context_enabled:
+        raise OperationError("cvat_server: task context API setting differs from the selected extension")
     registry_enabled = "model_registry" in selected
     if registry_enabled:
         if "plugins/model-registry" not in plugins:
@@ -528,6 +535,13 @@ class Manager:
             for feature, plugin in EXTENSION_PLUGINS.items()
             if feature in self.extensions
         ]
+        if "task_context" in self.extensions:
+            source_files += [
+                "components/task_context/apps.py",
+                "components/task_context/models.py",
+                "components/task_context/urls.py",
+                "components/task_context/migrations/0001_initial.py",
+            ]
         if "model_registry" in self.extensions:
             source_files.append("components/model_registry/Dockerfile")
             if local_registry(self.values):
@@ -1189,6 +1203,23 @@ class Manager:
                     images=recorded,
                     environments=saved.get("function_environment", {}),
                 )
+        if "task_context" in selected:
+            context_check = (
+                "from django.apps import apps; from django.conf import settings; "
+                "from django.db import connection; "
+                "assert settings.CVAT_TASK_CONTEXT_ENABLED; "
+                "model=apps.get_model('task_context', 'TaskContext'); "
+                "assert model._meta.db_table in connection.introspection.table_names(); "
+                "print('Task context registration and storage OK')"
+            )
+            print(
+                self.run(
+                    self.compose(
+                        "exec", "-T", "cvat_server", "python3", "-m", "django",
+                        "shell", "-c", context_check, frozen=True,
+                    )
+                ).strip()
+            )
         if "itgformat" in selected:
             script = (self.root / "tests/itgformat/check_in_cvat.py").read_text()
             for name in ("cvat_server", "cvat_worker_import", "cvat_worker_export"):
@@ -1410,6 +1441,7 @@ def main() -> None:
                 "extensions": manager.extensions,
                 "client_plugins": manager.values["CVAT_CLIENT_PLUGINS"].split(":")
                 if manager.values["CVAT_CLIENT_PLUGINS"] else [],
+                "task_context_enabled": manager.values["CVAT_TASK_CONTEXT_ENABLED"] == "1",
                 "project": manager.project,
                 "network": manager.values["CVAT_NETWORK_NAME"],
                 "backend_image": model["services"]["cvat_server"]["image"],

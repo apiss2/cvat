@@ -18,6 +18,7 @@
 | `frame_navigation_filter` | フィルター条件によるフレーム移動と全図形表示 | `plugins/frame-navigation-filter` を共通UIイメージに含めます。推論サービスは不要です。 |
 | `selective_ai` | タグ条件と画像選択による自動アノテーション | `plugins/selective-ai` を共通UIイメージに含め、推論APIに必要な既存Nuclio構成を有効にします。 |
 | `filtered_export` | アノテーション条件に合う画像のエクスポート | `plugins/filtered-export` を共通UIイメージに含めます。標準のサーバーと出力ワーカーを使用し、推論サービスは不要です。 |
+| `task_context` | タスク共通の背景情報の登録と参照 | `plugins/task-context` と既存サーバー内のAPIを有効にします。既存DBを使用し、追加サービスとGPUは不要です。 |
 
 `selective_ai` は `model_registry` を自動選択しません。登録ONNXモデルを使う場合は両方を選択します。通常のNuclioモデルも使用できますが、画面プラグインの有効化だけでモデルを新しく配備するわけではありません。GPUも自動要求しません。推論の開始と中止は画面で行い、`cvatctl` は配備と停止を管理します。
 
@@ -28,7 +29,7 @@
 既存の選択を保持し、必要な拡張名を追加します。例えば、既存構成に新しい画面機能を追加する場合は次のように指定します。SAM3.1を使用している場合は `sam31` も保持してください。
 
 ```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,frame_navigation_filter,selective_ai,filtered_export
+CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,frame_navigation_filter,selective_ai,filtered_export,task_context
 ```
 
 管理対象のプラグインパスを `CVAT_CLIENT_PLUGINS` に重ねて指定する必要はありません。`cvatctl` はこの変数から管理対象のパスをいったん除き、`CVAT_EXTENSIONS` の選択に応じて再構成します。旧手順でプラグインパスだけを記載していた場合も、新しい拡張名へ変更してください。一覧にない独自のプラグインパスは保持されます。
@@ -49,9 +50,15 @@ bash components/extensions/cvatctl check
 
 `filtered_export` を外すと画面メニューが消えます。ソースに登録されたエクスポートAPIはサーバーに残り、通常の権限確認が引き続き適用されます。APIの削除まで必要な場合は、この機能を含まないサーバーと出力ワーカーへ戻してください。
 
+`task_context` を外すと画面とAPIを無効にします。保存済みの背景情報とDBテーブルは維持し、再び有効にすると同じ情報を参照できます。タスクを削除した場合は、そのタスクの背景情報も削除します。Djangoアプリとマイグレーションは、無効時もサーバーと全workerに登録したままにします。
+
+背景情報のAPI設定 `CVAT_TASK_CONTEXT_ENABLED` は `cvatctl` が選択から生成します。`.env` への手動指定は不要です。このソースを使用するサーバーの起動時には、選択にかかわらず既存の起動処理が背景情報用テーブルのマイグレーションも適用します。DBの保存と復元は、既存の[バックアップ手順](backup-restore.md)に含めて行います。
+
 ## 確認コマンドの範囲
 
 `config` と `doctor` は、選択された拡張名と、解決済みの `client_plugins`、UIイメージを表示します。選択した画面プラグインの入口ファイルがない場合や、Composeでそのビルド引数が失われた場合は失敗します。選択が変わるとUIイメージの識別子も変わります。
+
+`task_context` についてはAPIの有効状態も表示し、選択時にサーバー側のソースが存在することと、ComposeのAPI設定が選択と一致することを確認します。`check` は起動記録で有効だった場合に、DjangoアプリとDBテーブルの存在、サーバー内のAPI設定を確認します。患者情報などの登録内容は読み出しません。
 
 `status` はコンテナーの状態を表示します。画面プラグインは個別のサービスではなく `cvat_ui` に含まれます。`down` は保存された起動構成を使って停止し、データと共有ネットワークを保持します。`check` は記録済みイメージと実行中イメージなどを照合します。ブラウザーでのプラグイン登録や操作、実際の推論の成功までを保証するものではありません。
 

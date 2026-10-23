@@ -14,8 +14,9 @@ import Text from 'antd/lib/typography/Text';
 
 import CVATTooltip from 'components/common/cvat-tooltip';
 import { CombinedState } from 'reducers';
-import { DimensionType } from 'cvat-core-wrapper';
+import { DimensionType, Job } from 'cvat-core-wrapper';
 import { showStatistics } from 'actions/annotation-actions';
+import { usePlugins } from 'utils/hooks';
 
 interface StateToProps {
     visible: boolean;
@@ -26,6 +27,7 @@ interface StateToProps {
     stopFrame: number;
     dimension: DimensionType;
     assignee: any | null;
+    jobInstance: Job;
 }
 
 interface DispatchToProps {
@@ -57,6 +59,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
         stopFrame,
         dimension,
         assignee: assignee?.username || 'Nobody',
+        jobInstance: state.annotation.job.instance,
     };
 }
 
@@ -79,7 +82,13 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
         bugTracker,
         closeStatistics,
         dimension,
+        jobInstance,
     } = props;
+
+    const infoSections = usePlugins(
+        (state: CombinedState) => state.plugins.components.annotationPage.info.sections,
+        { jobInstance, visible },
+    );
 
     const is2D = dimension === DimensionType.DIMENSION_2D;
     const baseProps = {
@@ -91,15 +100,7 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
         closable: false,
     };
 
-    if (collecting || !data) {
-        return (
-            <Modal {...baseProps}>
-                <Spin style={{ margin: '0 50%' }} />
-            </Modal>
-        );
-    }
-
-    const rows = Object.keys(data.label).map((key: string) => ({
+    const rows = Object.keys(data?.label || {}).map((key: string) => ({
         key,
         label: key,
         rectangle: `${data.label[key].rectangle.shape} / ${data.label[key].rectangle.track}`,
@@ -116,22 +117,24 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
         total: data.label[key].total,
     }));
 
-    rows.push({
-        key: '___total',
-        label: 'Total',
-        rectangle: `${data.total.rectangle.shape} / ${data.total.rectangle.track}`,
-        polygon: `${data.total.polygon.shape} / ${data.total.polygon.track}`,
-        polyline: `${data.total.polyline.shape} / ${data.total.polyline.track}`,
-        points: `${data.total.points.shape} / ${data.total.points.track}`,
-        ellipse: `${data.total.ellipse.shape} / ${data.total.ellipse.track}`,
-        cuboid: `${data.total.cuboid.shape} / ${data.total.cuboid.track}`,
-        skeleton: `${data.total.skeleton.shape} / ${data.total.skeleton.track}`,
-        mask: `${data.total.mask.shape}`,
-        tag: data.total.tag,
-        manually: data.total.manually,
-        interpolated: data.total.interpolated,
-        total: data.total.total,
-    });
+    if (data) {
+        rows.push({
+            key: '___total',
+            label: 'Total',
+            rectangle: `${data.total.rectangle.shape} / ${data.total.rectangle.track}`,
+            polygon: `${data.total.polygon.shape} / ${data.total.polygon.track}`,
+            polyline: `${data.total.polyline.shape} / ${data.total.polyline.track}`,
+            points: `${data.total.points.shape} / ${data.total.points.track}`,
+            ellipse: `${data.total.ellipse.shape} / ${data.total.ellipse.track}`,
+            cuboid: `${data.total.cuboid.shape} / ${data.total.cuboid.track}`,
+            skeleton: `${data.total.skeleton.shape} / ${data.total.skeleton.track}`,
+            mask: `${data.total.mask.shape}`,
+            tag: data.total.tag,
+            manually: data.total.manually,
+            interpolated: data.total.interpolated,
+            total: data.total.total,
+        });
+    }
 
     const makeShapesTracksTitle = (title: string): JSX.Element => (
         <CVATTooltip title='Shapes / Tracks'>
@@ -302,16 +305,25 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
                         </Col>
                     </Row>
                 )}
+                {infoSections.sort((left, right) => left.weight - right.weight).map(({
+                    component: Component,
+                }, index) => (
+                    <Component key={index} targetProps={{ jobInstance, visible }} />
+                ))}
                 <Row justify='space-around' className='cvat-job-info-statistics'>
                     <Col span={24}>
                         <Text className='cvat-text'>Annotations statistics</Text>
-                        <Table
-                            scroll={{ x: 'max-content', y: 400 }}
-                            bordered
-                            pagination={false}
-                            columns={is2D ? columns : columns3D}
-                            dataSource={rows}
-                        />
+                        {collecting || !data ? (
+                            <Spin style={{ margin: '0 50%' }} />
+                        ) : (
+                            <Table
+                                scroll={{ x: 'max-content', y: 400 }}
+                                bordered
+                                pagination={false}
+                                columns={is2D ? columns : columns3D}
+                                dataSource={rows}
+                            />
+                        )}
                     </Col>
                 </Row>
             </div>

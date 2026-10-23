@@ -185,6 +185,7 @@ COPY --parents \
     backend_entrypoint.d cvat supervisord utils \
     backend_entrypoint.sh \
     components/analytics/clickhouse/init.py \
+    components/task_context \
     manage.py \
     rqscheduler.py \
     wait_for_deps.sh \
