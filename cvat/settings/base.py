@@ -148,11 +148,7 @@ INSTALLED_APPS = [
     "cvat.apps.consensus",
     "cvat.apps.access_tokens",
     "cvat.apps.growth",
-    # Keep the extension model registered even when its UI and API are disabled.
-    "components.task_context",
 ]
-
-CVAT_TASK_CONTEXT_ENABLED = os.getenv("CVAT_TASK_CONTEXT_ENABLED", "0") == "1"
 
 AUTH_USER_MODEL = "iam.User"
 

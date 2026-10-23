@@ -19,7 +19,6 @@ Including another URLconf
 """
 
 from django.apps import apps
-from django.conf import settings
 from django.contrib import admin
 from django.urls import include, path
 
@@ -30,9 +29,6 @@ urlpatterns = [
     path("api/filtered-export/", include("cvat.apps.dataset_manager.filtered_export.urls")),
     path("django-rq/", include("django_rq.urls")),
 ]
-
-if settings.CVAT_TASK_CONTEXT_ENABLED:
-    urlpatterns.append(path("api/task-context/", include("components.task_context.urls")))
 
 if apps.is_installed("cvat.apps.log_viewer"):
     urlpatterns.append(path("", include("cvat.apps.log_viewer.urls")))

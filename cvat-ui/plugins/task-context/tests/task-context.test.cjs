@@ -30,80 +30,88 @@ function load(name, mocks = {}, globals = {}) {
     return module.exports;
 }
 
-const { createAPI, validateDraft, errorMessage } = load('api.ts');
-const result = (extra = {}) => ({ task_id: 7, fields: [], notes: '', version: 0, can_edit: true, ...extra });
+const { createAPI, errorMessage } = load('api.ts');
+const guide = (extra = {}) => ({ id: 11, task_id: 7, project_id: null, markdown: '# 撮影情報\n\n撮影場所: 東京', ...extra });
 const task = { type: 'tasks', id: 7, taskId: 7 };
-const draft = { fields: [{ name: '撮影場所', value: '東京\n第二撮影室' }], notes: '追加情報' };
+const job = { type: 'jobs', id: 100, taskId: 7 };
 
-test('task context is read and replaced with an explicit organization and version', async () => {
+test('task information reads the standard task guide without creating or saving anything', async () => {
     const requests = [];
     const api = createAPI(async (request) => {
         requests.push(request);
-        return { data: result() };
+        return { data: requests.length === 1 ? { id: 7, guide_id: 11 } : guide() };
     }, '/api/', task, 'team', () => 'owner');
-    await api.read();
-    await api.save(draft, 3);
-    assert.equal(requests[0].method, 'GET');
-    assert.equal(requests[0].url, '/api/task-context/tasks/7/');
-    assert.equal(requests[0].data, undefined);
-    assert.equal(requests[1].method, 'PUT');
-    assert.equal(requests[1].url, '/api/task-context/tasks/7/');
-    assert.deepEqual(plain(requests[1].data), { ...draft, version: 3 });
+    assert.deepEqual(plain(await api.read()), guide());
+    assert.deepEqual(requests.map((request) => request.url), ['/api/tasks/7', '/api/guides/11']);
+    assert.deepEqual(plain(requests[0].params), { org: 'team' });
+    assert.equal(requests[1].params, undefined);
     for (const request of requests) {
-        assert.deepEqual(plain(request.params), { org: 'team' });
+        assert.equal(request.method, 'GET');
+        assert.equal(request.data, undefined);
         assert.equal(request.headers.Accept, 'application/vnd.cvat+json');
         assert.equal(request['axios-retry'].retries, 0);
     }
+    assert.equal(api.save, undefined);
 });
 
-test('job views read through job authorization and save against the shared task', async () => {
+test('job information selects task_guide_id and never the existing project guide_id', async () => {
     const requests = [];
     const api = createAPI(async (request) => {
         requests.push(request);
-        return { data: result({ can_edit: false }) };
-    }, '/api', { type: 'jobs', id: 100, taskId: 7 }, '', () => 'owner');
-    assert.equal((await api.read()).can_edit, false);
-    await api.save(draft, 0);
-    assert.equal(requests[0].url, '/api/task-context/jobs/100/');
-    assert.equal(requests[1].url, '/api/task-context/tasks/7/');
+        return { data: requests.length === 1 ? { id: 100, task_id: 7, task_guide_id: 11, guide_id: 99 } : guide() };
+    }, '/api', job, '', () => 'owner');
+    assert.equal((await api.read()).id, 11);
+    assert.deepEqual(requests.map((request) => request.url), ['/api/jobs/100', '/api/guides/11']);
     assert.equal(requests[0].params.org, '');
+    assert.equal(requests[1].params, undefined);
 });
 
-test('a response for another task or with malformed permissions is rejected', async () => {
-    for (const data of [result({ task_id: 8 }), result({ can_edit: 'true' }), result({ version: -1 }),
-        result({ fields: [{}] }), null]) {
-        const api = createAPI(async () => ({ data }), '/api', task, '', () => 'owner');
-        await assert.rejects(api.read());
-    }
-});
-
-test('invalid targets and versions fail before a request', async () => {
-    let calls = 0;
-    const send = async () => { calls++; return { data: result() }; };
-    for (const target of [{ ...task, id: -1 }, { ...task, id: 8 }, { ...task, type: 'projects' },
-        { ...task, taskId: NaN }, { ...task, id: 0.5 }]) {
-        assert.throws(() => createAPI(send, '/api', target, '', () => 'owner'));
-    }
-    const api = createAPI(send, '/api', task, '', () => 'owner');
-    for (const version of [-1, 0.5, NaN, Number.MAX_SAFE_INTEGER + 1]) {
-        await assert.rejects(api.save(draft, version));
-    }
-    assert.equal(calls, 0);
-});
-
-test('conflicts and failed writes are not retried or rebased automatically', async () => {
-    for (const reason of [{ response: { status: 409 } }, { response: { status: 403 } }, new Error('timeout')]) {
+test('missing task guides remain empty and never fall back to the project guide', async () => {
+    for (const [target, resource] of [[task, { id: 7, guide_id: null }],
+        [job, { id: 100, task_id: 7, guide_id: 99, task_guide_id: null }]]) {
         let calls = 0;
-        const api = createAPI(async () => { calls++; throw reason; }, '/api', task, '', () => 'owner');
-        await assert.rejects(api.save(draft, 0), (error) => error === reason);
+        const api = createAPI(async () => { calls++; return { data: resource }; }, '/api', target, '', () => 'owner');
+        assert.equal(await api.read(), null);
         assert.equal(calls, 1);
     }
 });
 
-test('identity changes invalidate a session permanently, including personal workspace changes', async () => {
+test('wrong resources and missing task_guide_id are rejected before guide retrieval', async () => {
+    for (const [target, resource] of [[task, { id: 8, guide_id: 11 }],
+        [job, { id: 100, task_id: 8, task_guide_id: 11 }],
+        [job, { id: 100, task_id: 7, guide_id: 99 }],
+        [task, { id: 7, guide_id: '11' }], [task, { id: 7, guide_id: 0 }], [task, null]]) {
+        let calls = 0;
+        const api = createAPI(async () => { calls++; return { data: resource }; }, '/api', target, '', () => 'owner');
+        await assert.rejects(api.read());
+        assert.equal(calls, 1);
+    }
+});
+
+test('guides for another task or a project are never shown as this task information', async () => {
+    for (const invalid of [guide({ task_id: 8 }), guide({ project_id: 2 }), guide({ id: 12 }),
+        guide({ markdown: 42 }), null]) {
+        let calls = 0;
+        const api = createAPI(async () => ({ data: ++calls === 1 ? { id: 7, guide_id: 11 } : invalid }),
+            '/api', task, '', () => 'owner');
+        await assert.rejects(api.read());
+    }
+});
+
+test('invalid targets fail before a request', () => {
+    let calls = 0;
+    const send = async () => { calls++; return { data: null }; };
+    for (const target of [{ ...task, id: -1 }, { ...task, id: 8 }, { ...task, type: 'projects' },
+        { ...task, taskId: NaN }, { ...task, id: 0.5 }]) {
+        assert.throws(() => createAPI(send, '/api', target, '', () => 'owner'));
+    }
+    assert.equal(calls, 0);
+});
+
+test('an identity change invalidates the session permanently', async () => {
     let owner = 'user:personal';
     let calls = 0;
-    const api = createAPI(async () => { calls++; return { data: result() }; }, '/api', task, '', () => owner);
+    const api = createAPI(async () => { calls++; return { data: null }; }, '/api', task, '', () => owner);
     owner = 'user:organization';
     await assert.rejects(api.read());
     owner = 'user:personal';
@@ -111,56 +119,70 @@ test('identity changes invalidate a session permanently, including personal work
     assert.equal(calls, 0);
 });
 
-test('responses and errors arriving after identity changes are discarded', async () => {
+test('a session change during task retrieval prevents the follow-up guide request', async () => {
+    let owner = 'a';
+    let finish;
+    let calls = 0;
+    const api = createAPI(() => { calls++; return new Promise((resolve) => { finish = resolve; }); },
+        '/api', task, '', () => owner);
+    const pending = api.read();
+    owner = 'b';
+    finish({ data: { id: 7, guide_id: 11 } });
+    await assert.rejects(pending, /画面を開き直/);
+    assert.equal(calls, 1);
+});
+
+test('responses and failures from a previous session are discarded during guide retrieval', async () => {
     for (const rejected of [false, true]) {
         let owner = 'a';
+        let calls = 0;
         let resolve;
         let reject;
-        const api = createAPI(() => new Promise((yes, no) => { resolve = yes; reject = no; }),
-            '/api', task, '', () => owner);
+        let started;
+        const guideStarted = new Promise((ready) => { started = ready; });
+        const api = createAPI(() => {
+            calls++;
+            if (calls === 1) return Promise.resolve({ data: { id: 7, guide_id: 11 } });
+            return new Promise((yes, no) => { resolve = yes; reject = no; started(); });
+        }, '/api', task, '', () => owner);
         const pending = api.read();
+        await guideStarted;
         owner = 'b';
         if (rejected) reject(new Error('old request'));
-        else resolve({ data: result() });
+        else resolve({ data: guide() });
         await assert.rejects(pending, /画面を開き直/);
     }
 });
 
 test('unmount disposal aborts requests and prevents later use', async () => {
     let request;
-    const api = createAPI(async (value) => { request = value; return { data: result() }; },
+    const api = createAPI(async (value) => { request = value; return { data: { id: 7, guide_id: null } }; },
         '/api', task, '', () => 'owner');
     await api.read();
     api.dispose();
     assert.equal(request.signal.aborted, true);
-    await assert.rejects(api.save(draft, 0));
+    await assert.rejects(api.read());
 });
 
-test('validation supports empty values and notes-only data but rejects blank or duplicate names', () => {
-    for (const value of [draft, { fields: [], notes: 'メモ' }, { fields: [{ name: '番号', value: '' }], notes: '' }]) {
-        assert.equal(validateDraft(value), '');
+test('read errors are preserved and never trigger writes or retries', async () => {
+    for (const reason of [{ response: { status: 403 } }, { response: { status: 404 } }, new Error('timeout')]) {
+        let calls = 0;
+        const api = createAPI(async () => { calls++; throw reason; }, '/api', task, '', () => 'owner');
+        await assert.rejects(api.read(), (error) => error === reason);
+        assert.equal(calls, 1);
     }
-    for (const fields of [[{ name: ' ', value: '1' }],
-        [{ name: ' A ', value: '1' }, { name: 'A', value: '2' }],
-        [{ name: 'N'.repeat(129), value: '' }], [{ name: 'A', value: 'v'.repeat(4097) }],
-        Array.from({ length: 65 }, (_, index) => ({ name: String(index), value: '' }))]) {
-        assert.notEqual(validateDraft({ fields, notes: '' }), '');
-    }
-    assert.notEqual(validateDraft({ fields: [], notes: 'n'.repeat(16385) }), '');
-});
-
-test('backend validation details and authorization errors remain readable', () => {
-    assert.equal(errorMessage({ response: { status: 400, data: { detail: 'Size limit' } } }), 'Size limit');
+    assert.equal(errorMessage({ response: { status: 400, data: { detail: 'Invalid request' } } }), 'Invalid request');
     assert.match(errorMessage({ response: { status: 403 } }), /権限/);
 });
 
-test('registration is idempotent, uses the Info and task slots, and unsubscribes on removal', () => {
+test('only task details link to the standard editor; closed Info and anonymous sessions stay inactive', () => {
     let builder;
     let ready;
     let registrations = 0;
     let openedFor = '';
     let apiCreations = 0;
     const actions = [];
+    const navigations = [];
     const state = { auth: { user: { id: 1 } }, organizations: { current: { id: 2, slug: 'team' } } };
     const React = {
         createElement: (type, props, ...children) => ({ type, props, children }),
@@ -171,6 +193,7 @@ test('registration is idempotent, uses the Info and task slots, and unsubscribes
     };
     load('index.tsx', {
         '@modules/react': { __esModule: true, default: React, ...React },
+        '@modules/react-router': { useHistory: () => ({ push: (path) => navigations.push(path) }) },
         '@modules/axios': { __esModule: true, default: { request: () => {} } },
         '@ant-design/icons': { InfoCircleOutlined: 'InfoIcon' },
         'antd/lib/button': { __esModule: true, default: 'Button' },
@@ -199,10 +222,21 @@ test('registration is idempotent, uses the Info and task slots, and unsubscribes
     infoProps.targetProps.visible = true;
     const rendered = Info(infoProps);
     assert.equal(rendered.props.taskId, 7);
+    assert.equal(rendered.props.onEdit, undefined);
     rendered.props.createAPI();
     assert.equal(apiCreations, 1);
+    const TaskButton = actions[0].component;
+    const taskProps = { targetProps: { task: { id: 7 } } };
+    const closed = TaskButton(taskProps);
+    assert.equal(closed.children[1].props.open, false);
+    closed.children[0].props.onClick();
+    const opened = TaskButton(taskProps);
+    assert.equal(opened.children[1].props.open, true);
+    opened.children[1].children[0].props.onEdit();
+    assert.deepEqual(navigations, ['/tasks/7/guide']);
     state.auth.user = null;
     assert.equal(Info(infoProps), null);
+    assert.equal(TaskButton(taskProps), null);
     plugin.destructor();
     assert.deepEqual(actions.filter((action) => action.type === 'remove').map((action) => action.slot), [
         'taskPage.details.topBar.extras', 'annotationPage.info.sections',

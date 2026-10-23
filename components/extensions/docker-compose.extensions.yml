@@ -12,7 +12,6 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      CVAT_TASK_CONTEXT_ENABLED: ${CVAT_TASK_CONTEXT_ENABLED:-0}
       CVAT_NUCLIO_HOST: ${CVAT_AI_GATEWAY_HOST:-nuclio}
       CVAT_NUCLIO_PORT: ${CVAT_AI_GATEWAY_PORT:-8070}
       CVAT_NUCLIO_DEFAULT_TIMEOUT: ${CVAT_AI_GATEWAY_TIMEOUT:-120}

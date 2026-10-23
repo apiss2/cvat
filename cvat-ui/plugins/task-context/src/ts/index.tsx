@@ -4,6 +4,7 @@ import React, {
     useCallback, useEffect, useState, useSyncExternalStore,
 } from '@modules/react';
 import Axios from '@modules/axios';
+import { useHistory } from '@modules/react-router';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import Button from 'antd/lib/button';
 import Modal from 'antd/lib/modal';
@@ -25,6 +26,7 @@ const builder: ComponentBuilder = ({
 
     function TaskButton({ targetProps }: TaskProps): JSX.Element | null {
         const owner = useIdentity();
+        const history = useHistory();
         const [openedFor, setOpenedFor] = useState('');
         const taskId = targetProps.task.id;
         const key = `${owner}:${taskId}`;
@@ -43,7 +45,8 @@ const builder: ComponentBuilder = ({
                 <Button icon={<InfoCircleOutlined />} onClick={() => setOpenedFor(key)}>タスク情報</Button>
                 <Modal open={open} width={800} footer={null} destroyOnClose
                     title='タスク情報' onCancel={() => setOpenedFor('')}>
-                    {open && <TaskContextPanel key={key} taskId={taskId} createAPI={apiFactory} />}
+                    {open && <TaskContextPanel key={key} taskId={taskId} createAPI={apiFactory}
+                        onEdit={() => history.push(`/tasks/${taskId}/guide`)} />}
                 </Modal>
             </>
         );

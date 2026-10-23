@@ -9,7 +9,7 @@
 |---|---|
 | 初めて環境を構築する、機能を有効にする | [導入と共通設定](installation.md) |
 | 機能の管理対象、設定変更、追加時の開発手順を確認する | [拡張機能の管理](management.md) |
-| タスク共通の背景情報を登録して参照する | [タスクの背景情報](task-context.md) |
+| 標準AnnotationGuideの背景情報をInfoから参照する | [タスクの背景情報](task-context.md) |
 | SAM2とSAM3.1の重みを選び、関数を配備する | [モデルの選択と配備](model-selection.md) |
 | devで確認した変更を本番へ反映する | [更新手順](update.md) |
 | データ、設定、使用イメージを保存して復旧する | [バックアップと復元](backup-restore.md) |

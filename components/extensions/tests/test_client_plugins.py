@@ -52,15 +52,6 @@ def make_manager(cli, tmp_path):
         path = root / f"cvat-ui/{plugin}/src/ts/index.tsx"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
-    for relative in (
-        "components/task_context/apps.py",
-        "components/task_context/models.py",
-        "components/task_context/urls.py",
-        "components/task_context/migrations/0001_initial.py",
-    ):
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
     env = tmp_path / "deployment.env"
@@ -94,9 +85,6 @@ def model_for(cli, manager):
                 "CVAT_NUCLIO_INVOKE_METHOD": "dashboard",
                 "CVAT_NUCLIO_FUNCTION_NAMESPACE": "nuclio",
             }
-    services["cvat_server"].setdefault("environment", {})["CVAT_TASK_CONTEXT_ENABLED"] = (
-        env["CVAT_TASK_CONTEXT_ENABLED"]
-    )
     return {"services": services, "networks": {"cvat": {"external": True, "name": "test_cvat"}}}
 
 
@@ -143,15 +131,6 @@ def test_selection_overrides_stale_paths_and_preserves_custom_plugins(make_manag
     manager = make_manager(selected, f"CVAT_CLIENT_PLUGINS={paths}\n")
     expected = ["custom/extra", *(path for name, path in CLIENTS.items() if name in selected.split(","))]
     assert manager.values["CVAT_CLIENT_PLUGINS"].split(":") == expected
-
-
-@pytest.mark.parametrize("selected,expected", [("", "0"), ("task_context", "1")])
-@pytest.mark.parametrize("stale", ["0", "1"])
-def test_task_context_api_setting_follows_selection(make_manager, monkeypatch, selected, expected, stale):
-    monkeypatch.setenv("CVAT_TASK_CONTEXT_ENABLED", stale)
-    manager = make_manager(selected, f"CVAT_TASK_CONTEXT_ENABLED={stale}\n")
-    assert manager.values["CVAT_TASK_CONTEXT_ENABLED"] == expected
-    assert manager.env["CVAT_TASK_CONTEXT_ENABLED"] == expected
 
 
 @pytest.mark.parametrize("selected", ["unknown", "selective-ai", "selective_ai,selective_ai"])
@@ -207,40 +186,12 @@ def test_configuration_rejects_missing_plugin_source(cli, make_manager, monkeypa
         manager.configuration()
 
 
-@pytest.mark.parametrize("relative", [
-    "components/task_context/apps.py",
-    "components/task_context/models.py",
-    "components/task_context/urls.py",
-    "components/task_context/migrations/0001_initial.py",
-])
-def test_configuration_rejects_missing_task_context_backend(make_manager, monkeypatch, cli, relative):
-    manager = make_manager("task_context")
-    (manager.root / relative).unlink()
-    monkeypatch.setattr(manager, "version_check", lambda: None)
-    monkeypatch.setattr(manager, "run", lambda *a, **k: pytest.fail("Must reject before Compose config"))
-    with pytest.raises(cli.OperationError, match="Missing source"):
-        manager.configuration()
-
-
 @pytest.mark.parametrize("feature", CLIENTS)
 def test_compose_validation_rejects_lost_plugin(cli, make_manager, monkeypatch, feature):
     manager = make_manager(feature)
     model, _ = configure(cli, manager, monkeypatch)
     model["services"]["cvat_ui"]["build"]["args"]["CLIENT_PLUGINS"] = ""
     with pytest.raises(cli.OperationError, match="CLIENT_PLUGINS argument lost"):
-        cli.validate_model(model, manager.env)
-
-
-@pytest.mark.parametrize("selected,actual", [("task_context", "0"), ("task_context", None), ("", "1")])
-def test_compose_validation_rejects_wrong_task_context_api_state(cli, make_manager, monkeypatch, selected, actual):
-    manager = make_manager(selected)
-    model, _ = configure(cli, manager, monkeypatch)
-    environment = model["services"]["cvat_server"]["environment"]
-    if actual is None:
-        environment.pop("CVAT_TASK_CONTEXT_ENABLED")
-    else:
-        environment["CVAT_TASK_CONTEXT_ENABLED"] = actual
-    with pytest.raises(cli.OperationError, match="task context API setting"):
         cli.validate_model(model, manager.env)
 
 
@@ -276,7 +227,6 @@ def test_cli_reports_resolved_client_plugins(cli, make_manager, monkeypatch, cap
     summary = json.loads(capsys.readouterr().out)
     assert summary["extensions"] == list(manager.extensions)
     assert summary["client_plugins"] == (list(CLIENTS.values()) if selected else [])
-    assert summary["task_context_enabled"] == ("task_context" in manager.extensions)
 
 
 @pytest.mark.parametrize("selected", CLIENTS)
@@ -305,9 +255,6 @@ def test_build_and_up_share_ui_lifecycle_without_gpu(cli, make_manager, monkeypa
     saved = cli.read_json(manager.state / "active.json")
     assert saved["extensions"] == [selected]
     assert saved["model"]["services"]["cvat_ui"]["build"]["args"]["CLIENT_PLUGINS"] == CLIENTS[selected]
-    assert saved["model"]["services"]["cvat_server"]["environment"]["CVAT_TASK_CONTEXT_ENABLED"] == (
-        "1" if selected == "task_context" else "0"
-    )
     assert manager.matches_configuration(saved, model)
     changed = copy.deepcopy(model)
     changed["services"]["cvat_ui"]["build"]["args"]["CLIENT_PLUGINS"] = ""
@@ -330,7 +277,7 @@ def test_down_uses_recorded_ui_even_after_selection_changes(cli, make_manager, m
 
 
 @pytest.mark.parametrize("previous_selection,current_selection", [("task_context", ""), ("", "task_context")])
-def test_check_uses_recorded_task_context_selection(
+def test_task_context_check_uses_recorded_images_without_backend_commands(
     cli, make_manager, monkeypatch, previous_selection, current_selection,
 ):
     previous = make_manager(previous_selection)
@@ -348,19 +295,13 @@ def test_check_uses_recorded_task_context_selection(
         return "OK"
 
     monkeypatch.setattr(manager, "run", run)
+    monkeypatch.setattr(manager, "configuration", lambda: pytest.fail("Use the recorded configuration"))
     manager.check()
-    checks = [command for command in calls if "shell" in command]
-    if previous_selection:
-        assert len(checks) == 1
-        check = checks[0]
-        assert check == manager.compose(
-            "exec", "-T", "cvat_server", "python3", "-m", "django",
-            "shell", "-c", check[-1], frozen=True,
-        )
-        assert "settings.CVAT_TASK_CONTEXT_ENABLED" in check[-1]
-        assert "connection.introspection.table_names()" in check[-1]
-    else:
-        assert checks == []
+    assert [
+        "docker", "image", "inspect", model["services"]["cvat_ui"]["image"], "--format", "{{.Id}}",
+    ] in calls
+    assert manager.compose("ps", "-q", "cvat_ui", frozen=True) in calls
+    assert all("exec" not in command for command in calls)
 
 
 def test_status_uses_recorded_task_context_configuration(cli, make_manager, monkeypatch):
