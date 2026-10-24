@@ -69,6 +69,7 @@ FROM build-image-base AS build-image
 
 COPY cvat/requirements/ /tmp/cvat/requirements/
 COPY utils/dataset_manifest/requirements.txt /tmp/utils/dataset_manifest/requirements.txt
+COPY components/dicom_import/requirements.txt /tmp/dicom-requirements.txt
 
 # Exclude av from the requirements file
 RUN sed -i '/^av==/d' /tmp/utils/dataset_manifest/requirements.txt
@@ -79,6 +80,7 @@ ARG CVAT_CONFIGURATION="production"
 RUN --mount=type=cache,target=/root/.cache/pip/http-v2 \
     DATUMARO_HEADLESS=1 python3 -m pip wheel --no-deps --only-binary lxml,xmlsec \
     -r /tmp/cvat/requirements/${CVAT_CONFIGURATION}.txt \
+    -r /tmp/dicom-requirements.txt \
     -w /tmp/wheelhouse
 
 FROM golang:1.27.1 AS build-smokescreen
@@ -185,6 +187,7 @@ COPY --parents \
     backend_entrypoint.d cvat supervisord utils \
     backend_entrypoint.sh \
     components/analytics/clickhouse/init.py \
+    components/dicom_import \
     manage.py \
     rqscheduler.py \
     wait_for_deps.sh \

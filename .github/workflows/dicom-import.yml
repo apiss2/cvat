@@ -1,0 +1,38 @@
+name: DICOM import
+on:
+  pull_request:
+    paths:
+      - 'components/dicom_import/**'
+      - 'components/extensions/catalog.py'
+      - 'components/extensions/entrypoint.py'
+      - 'cvat-ui/plugins/dicom-import/**'
+      - '.github/workflows/dicom-import.yml'
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: >-
+          python -m pip install -r components/dicom_import/requirements.txt
+          numpy==2.2.6 opencv-python-headless==4.12.0.88 pytest==8.4.1
+      - run: PYTHONPATH=. python -m pytest -c /dev/null -q components/dicom_import/tests
+      - run: npm install --prefix /tmp/dicom-ts typescript@5.8.3
+      - run: >-
+          /tmp/dicom-ts/node_modules/.bin/tsc --strict --target es2020
+          --module commonjs --lib es2020,dom --outDir /tmp/dicom-test-build
+          cvat-ui/plugins/dicom-import/src/ts/archive.ts
+          cvat-ui/plugins/dicom-import/src/ts/api.ts
+      - run: >-
+          DICOM_TEST_BUILD=/tmp/dicom-test-build
+          node --test cvat-ui/plugins/dicom-import/tests/import.test.cjs
