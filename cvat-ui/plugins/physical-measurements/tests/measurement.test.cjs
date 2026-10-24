@@ -16,77 +16,72 @@ assert.deepEqual(output.diagnostics, [], `Cannot transpile ${file}`);
 const loaded = { exports: {} };
 const factory = vm.runInThisContext(`(function(module, exports) {${output.outputText}\n})`, { filename: file });
 factory(loaded, loaded.exports);
-const { parseMeasurementConfig, resolveSpacing, polylineLength, formatLength } = loaded.exports;
+const { parsePixelSpacing, resolveSpacing, polylineLength, formatLength } = loaded.exports;
 
 const mm = (x = 0.3, y = 0.4) => ({ x, y, unit: 'mm' });
-const config = (overrides = {}) => ({ version: 1, default: mm(), frames: {}, ...overrides });
-
-test('parsing preserves explicit frame exclusions and detaches caller objects', () => {
-    const input = config({ frames: { 0: mm(0.5, 0.5), 17: null } });
-    const parsed = parseMeasurementConfig(input);
-    assert.deepEqual(parsed, input);
-    input.default.x = 99;
-    input.frames[0].y = 99;
-    input.frames[17] = mm();
-    assert.deepEqual(parsed.default, mm());
-    assert.deepEqual(parsed.frames[0], mm(0.5, 0.5));
-    assert.equal(parsed.frames[17], null);
+const tag = (value = '0.4\\0.3', frame = 100, extra = {}) => ({
+    objectType: 'tag', frame, label: { name: 'DicomTag', attributes: [{ id: 17, name: '00280030' }] },
+    attributes: { 17: value }, ...extra,
 });
 
-test('an entirely uncalibrated task is valid', () => {
-    const parsed = parseMeasurementConfig(config({ default: null }));
-    assert.equal(resolveSpacing(parsed, 0), null);
-    assert.equal(resolveSpacing(null, 0), null);
+test('DICOM PixelSpacing stores row before column, and accepts decimal/scientific DS values', () => {
+    assert.deepEqual(parsePixelSpacing('0.4\\0.3'), mm());
+    assert.deepEqual(parsePixelSpacing(' +4.E-1 \\ .3 '), mm());
+    assert.deepEqual(parsePixelSpacing('1\\2'), mm(2, 1));
 });
 
-test('unknown, missing and unsupported configuration fields are rejected', () => {
-    const invalid = [
-        null, [], true, 'config', {},
-        config({ version: 2 }), config({ version: '1' }),
-        { version: 1, frames: {} }, { version: 1, default: null },
-        config({ defaut: mm() }), config({ revision: 'server-token' }),
-        config({ frames: [] }), config({ frames: null }), config({ frames: new Date() }),
-    ];
-    invalid.forEach((value) => assert.throws(() => parseMeasurementConfig(value), TypeError));
+test('spacing rejects non-DS, missing, nonpositive and non-finite values', () => {
+    const invalid = [null, undefined, [0.4, 0.3], 0.4, '', ' ', '0.4', '0.4,0.3', '[0.4,0.3]',
+        '0.4\\0.3\\1', '0.4\\', '\\0.3', '0.4\\0', '0\\0.3', '-0.4\\0.3',
+        'NaN\\0.3', 'Infinity\\0.3', '0x10\\0.3', '0.4mm\\0.3', '1e309\\0.3', '1e-999\\0.3'];
+    invalid.forEach((value) => assert.equal(parsePixelSpacing(value), null, String(value)));
 });
 
-test('both spacing axes require positive finite numbers and exactly the supported unit', () => {
-    for (const field of ['x', 'y']) {
-        for (const value of [0, -0.1, NaN, Infinity, -Infinity, '0.3', true, null, undefined]) {
-            const invalid = { ...mm(), [field]: value };
-            assert.throws(() => parseMeasurementConfig(config({ default: invalid })), /default/);
-            assert.throws(() => parseMeasurementConfig(config({ frames: { 9: invalid } })), /frames\[9\]/);
-        }
+test('only a current-frame DicomTag tag with the exact numeric tag attribute provides spacing', () => {
+    assert.deepEqual(resolveSpacing([tag()], 100), mm());
+    assert.equal(resolveSpacing([tag()], 99), null);
+    assert.equal(resolveSpacing([tag('0.8\\0.6', 101)], 100), null);
+    assert.equal(resolveSpacing([tag(undefined, 100, { objectType: 'shape' })], 100), null);
+    assert.equal(resolveSpacing([tag(undefined, 100, {
+        label: { name: 'Other', attributes: [{ id: 17, name: '00280030' }] },
+    })], 100), null);
+    assert.equal(resolveSpacing([tag(undefined, 100, {
+        label: { name: 'DicomTag', attributes: [{ id: 17, name: 'PixelSpacing' }] },
+    })], 100), null);
+    assert.deepEqual(resolveSpacing([tag('0.8\\0.6', 101), tag()], 100), mm());
+});
+
+test('missing metadata never falls back to a label default, another frame or another tag number', () => {
+    assert.equal(resolveSpacing([], 100), null);
+    assert.equal(resolveSpacing([tag(undefined, 100, { attributes: {} })], 100), null);
+    assert.equal(resolveSpacing([tag(undefined, 100, {
+        label: { name: 'DicomTag', attributes: [{ id: 17, name: '00280030', defaultValue: '0.4\\0.3' }] },
+        attributes: {},
+    })], 100), null);
+    assert.equal(resolveSpacing([tag(undefined, 100, {
+        label: { name: 'DicomTag', attributes: [{ id: 17, name: '00181164' }] },
+    })], 100), null);
+});
+
+test('matching duplicate tags are accepted, but conflicting, missing or malformed duplicates are not', () => {
+    assert.deepEqual(resolveSpacing([tag(), tag('4e-1\\3e-1')], 100), mm());
+    for (const other of [tag('0.5\\0.3'), tag('broken'), tag(''), tag(undefined, 100, { attributes: {} })]) {
+        assert.equal(resolveSpacing([tag(), other], 100), null);
+        assert.equal(resolveSpacing([other, tag()], 100), null);
     }
-    for (const value of [{ x: 1, y: 1 }, { ...mm(), z: 1 }, { ...mm(), unit: 'cm' }, [0.3, 0.4]]) {
-        assert.throws(() => parseMeasurementConfig(config({ default: value })), /default/);
-    }
 });
 
-test('frame keys are canonical nonnegative safe integers, with no prototype keys', () => {
-    for (const frame of ['-1', '1.2', '01', '00', '+1', ' 1', '1e2', '9007199254740992', '__proto__', 'constructor']) {
-        const frames = Object.fromEntries([[frame, mm()]]);
-        assert.throws(() => parseMeasurementConfig(config({ frames })), /Invalid task frame number/);
-    }
-    const parsed = parseMeasurementConfig(config({ frames: { 0: null, 9007199254740991: mm() } }));
-    assert.deepEqual(resolveSpacing(parsed, Number.MAX_SAFE_INTEGER), mm());
-});
-
-test('task-relative frame overrides and exclusions take precedence without leaking across frames', () => {
-    const parsed = parseMeasurementConfig(config({ frames: { 100: mm(1, 2), 101: null } }));
-    assert.deepEqual(resolveSpacing(parsed, 99), mm());
-    assert.deepEqual(resolveSpacing(parsed, 100), mm(1, 2));
-    assert.equal(resolveSpacing(parsed, 101), null);
-    assert.deepEqual(resolveSpacing(parsed, 102), mm());
+test('invalid frame numbers and ambiguous PixelSpacing attribute definitions are rejected', () => {
     for (const frame of [-1, 0.5, NaN, Infinity, '100', Number.MAX_SAFE_INTEGER + 1]) {
-        assert.equal(resolveSpacing(parsed, frame), null);
+        assert.equal(resolveSpacing([tag()], frame), null);
     }
-});
-
-test('a malformed runtime override cannot silently use the task calibration', () => {
-    for (const override of [undefined, {}, { ...mm(), x: 0 }]) {
-        assert.equal(resolveSpacing(config({ frames: { 5: override } }), 5), null);
-    }
+    assert.equal(resolveSpacing([tag(undefined, 100, {
+        label: { name: 'DicomTag', attributes: [{ name: '00280030' }] },
+    })], 100), null);
+    assert.equal(resolveSpacing([tag(undefined, 100, {
+        label: { name: 'DicomTag', attributes: [{ id: 17, name: '00280030' }, { id: 18, name: '00280030' }] },
+        attributes: { 17: '0.4\\0.3', 18: '0.4\\0.3' },
+    })], 100), null);
 });
 
 test('isotropic spacing measures image coordinates with fractional vertices', () => {

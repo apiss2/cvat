@@ -34,7 +34,6 @@ from rest_framework.parsers import JSONParser
 from rest_framework.renderers import JSONRenderer
 
 import cvat.apps.dataset_manager as dm
-from components.physical_measurements.backup import export_task_calibration, import_task_calibration
 from cvat.apps.dataset_manager.util import (
     ExportCacheManager,
     TmpDirManager,
@@ -844,7 +843,6 @@ class TaskExporter(_ExporterBase, _TaskBackupBase):
         self._write_manifest(zip_obj, target_dir)
         self._write_annotations(zip_obj, target_dir)
         self._write_annotation_guide(zip_obj, target_dir)
-        export_task_calibration(self._db_task, zip_obj, target_dir)
 
     def export_to(self, file: str | ZipFile, target_dir: str = "") -> None:
         if isinstance(file, str):
@@ -1286,7 +1284,6 @@ class TaskImporter(_ImporterBase, _TaskBackupBase):
 
     def import_task(self):
         self._import_task()
-        import_task_calibration(self._db_task, self._file, self._subdir)
         self._import_annotations()
         self._import_annotation_guide()
         return self._db_task

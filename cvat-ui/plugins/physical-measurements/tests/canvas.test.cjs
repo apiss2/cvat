@@ -87,11 +87,10 @@ function fixture() {
     };
 }
 
-const calibrated = () => ({
-    version: 1, default: { x: 0.3, y: 0.4, unit: 'mm' },
-    frames: { 101: { x: 0.6, y: 0.8, unit: 'mm' }, 102: null },
-    revision: 1, supported: true, unavailable_reason: null, frame_count: 200,
-});
+const calibrated = () => (shape) => {
+    const spacing = { 100: { x: 0.3, y: 0.4, unit: 'mm' }, 101: { x: 0.6, y: 0.8, unit: 'mm' } };
+    return shapeText(shape.frame, spacing[shape.frame] ?? null)(shape);
+};
 
 test('without a callback the native canvas emits no additional measurement text', () => {
     const f = fixture();
@@ -116,7 +115,7 @@ test('calibration replacement and hook removal recreate existing labels immediat
     const f = fixture();
     f.view.addText(f.state);
     const originalText = f.view.svgTexts[1];
-    f.model.configure({ shapeText: shapeText(calibrated()) });
+    f.model.configure({ shapeText: calibrated() });
     assert.equal(originalText.removed, true);
     assert.equal(f.extra(), '7 mm');
     const physicalText = f.view.svgTexts[1];
@@ -126,9 +125,9 @@ test('calibration replacement and hook removal recreate existing labels immediat
     assert.equal(f.model.configuration.shapeText, null);
 });
 
-test('stationary tracks recalculate for frame overrides and return to pixels on excluded frames', () => {
+test('stationary tracks recalculate when frame metadata changes or is absent', () => {
     const f = fixture();
-    f.model.configure({ shapeText: shapeText(calibrated()) });
+    f.model.configure({ shapeText: calibrated() });
     f.view.addText(f.state);
     assert.equal(f.extra(), '7 mm');
     f.update({ ...f.state, frame: 101 });
@@ -141,7 +140,7 @@ test('stationary tracks recalculate for frame overrides and return to pixels on 
 
 test('vertex changes recalculate from geometry while uncalibrated frame changes retain native text', () => {
     const f = fixture();
-    f.model.configure({ shapeText: shapeText(calibrated()) });
+    f.model.configure({ shapeText: calibrated() });
     f.view.addText(f.state);
     f.update({ ...f.state, points: [0, 0, 10, 10] });
     assert.equal(f.extra(), '5 mm');

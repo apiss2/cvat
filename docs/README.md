@@ -14,7 +14,7 @@
 | ONNXモデルを登録、更新してCVATで使う | [モデル管理](model-registry/README.md) |
 | タグ条件で画像を選んで自動アノテーションを実行する | [選択した画像への自動アノテーション](annotation/selective-ai.md) |
 | アノテーション条件に合う画像をエクスポートする | [条件を指定したエクスポート](annotation/filtered-export.md) |
-| 画像のspacingを指定し、polylineの長さをmmで表示する | [画像の物理長を表示する](annotation/physical-measurements.md) |
+| DicomTagのPixelSpacingからpolylineの長さをmmで表示する | [画像の物理長を表示する](annotation/physical-measurements.md) |
 | フィルターでフレームを移動し、他の図形も表示する | [フレーム移動用フィルター](annotation/frame-navigation-filter.md) |
 | SAM2またはSAM3.1でポリゴンやマスクを追跡する | [共通の追跡操作](annotation/tracking.md) |
 | SAM2を導入して画像にマスクを作成する | [SAM2](sam2/README.md) |

@@ -6,69 +6,45 @@ export interface PixelSpacing {
     unit: 'mm';
 }
 
-export interface MeasurementConfig {
-    version: 1;
-    default: PixelSpacing | null;
-    // Keys are task-relative frame numbers, including when a job starts after frame zero.
-    frames: Record<string, PixelSpacing | null>;
+export interface DicomTagState {
+    objectType: string;
+    frame: number;
+    label: { name: string; attributes: readonly { id?: number; name: string }[] };
+    attributes: Readonly<Record<number, unknown>>;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-    const prototype = Object.getPrototypeOf(value);
-    return prototype === Object.prototype || prototype === null;
+function isSpacing(value: PixelSpacing): boolean {
+    return typeof value.x === 'number' && Number.isFinite(value.x) && value.x > 0 &&
+        typeof value.y === 'number' && Number.isFinite(value.y) && value.y > 0 && value.unit === 'mm';
 }
 
-function hasExactlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
-    const actual = Object.keys(value);
-    return actual.length === keys.length && actual.every((key) => keys.includes(key));
-}
-
-function isSpacing(value: unknown): value is PixelSpacing {
-    return isRecord(value) && hasExactlyKeys(value, ['x', 'y', 'unit']) &&
-        typeof value.x === 'number' && Number.isFinite(value.x) && value.x > 0 &&
-        typeof value.y === 'number' && Number.isFinite(value.y) && value.y > 0 &&
-        value.unit === 'mm';
-}
-
-function parseSpacing(value: unknown, field: string): PixelSpacing | null {
-    if (value === null) return null;
-    if (!isSpacing(value)) {
-        throw new TypeError(`${field} must be null or {x, y, unit: "mm"} with positive finite numbers`);
-    }
-    return { x: value.x, y: value.y, unit: 'mm' };
-}
-
-// API concurrency tokens are separate from this portable configuration. Reject
-// unknown fields so misspelled calibration settings cannot silently become defaults.
-export function parseMeasurementConfig(value: unknown): MeasurementConfig {
-    if (!isRecord(value) || !hasExactlyKeys(value, ['version', 'default', 'frames'])) {
-        throw new TypeError('Configuration must contain exactly version, default and frames');
-    }
-    if (value.version !== 1) throw new TypeError('version must be 1');
-    if (!isRecord(value.frames)) throw new TypeError('frames must be an object');
-
-    const defaultSpacing = parseSpacing(value.default, 'default');
-    const frames: MeasurementConfig['frames'] = {};
-    for (const [frame, spacing] of Object.entries(value.frames)) {
-        if (!/^(0|[1-9]\d*)$/.test(frame) || !Number.isSafeInteger(Number(frame))) {
-            throw new TypeError(`Invalid task frame number: ${frame}`);
-        }
-        frames[frame] = parseSpacing(spacing, `frames[${frame}]`);
-    }
-
-    return { version: 1, default: defaultSpacing, frames };
-}
-
-export function resolveSpacing(config: MeasurementConfig | null, frame: number): PixelSpacing | null {
-    if (!config || config.version !== 1 || !isRecord(config.frames) ||
-        !Number.isSafeInteger(frame) || frame < 0) return null;
-
-    // An explicit null (or an invalid runtime override) disables measurement on
-    // that frame. It must never fall back to a different calibration.
-    const spacing = Object.prototype.hasOwnProperty.call(config.frames, String(frame)) ?
-        config.frames[frame] : config.default;
+// DICOM DS permits decimal/scientific notation, but not hexadecimal, Infinity
+// or empty components. PixelSpacing stores row (Y), then column (X), in mm.
+export function parsePixelSpacing(value: unknown): PixelSpacing | null {
+    if (typeof value !== 'string') return null;
+    const parts = value.split('\\').map((part) => part.trim());
+    // eslint-disable-next-line security/detect-unsafe-regex -- Decimal/exponent separators bound backtracking.
+    const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?$/;
+    if (parts.length !== 2 || !parts.every((part) => decimal.test(part))) return null;
+    const spacing: PixelSpacing = { x: Number(parts[1]), y: Number(parts[0]), unit: 'mm' };
     return isSpacing(spacing) ? spacing : null;
+}
+
+export function resolveSpacing(states: readonly DicomTagState[], frame: number): PixelSpacing | null {
+    if (!Number.isSafeInteger(frame) || frame < 0) return null;
+    let spacing: PixelSpacing | null = null;
+    for (const state of states) {
+        if (state.objectType !== 'tag' || state.frame !== frame || state.label.name !== 'DicomTag') continue;
+        const specs = state.label.attributes.filter((attribute) => attribute.name === '00280030');
+        if (specs.length !== 1 || typeof specs[0].id !== 'number') return null;
+        const { id } = specs[0];
+        if (!Object.prototype.hasOwnProperty.call(state.attributes, id)) return null;
+        const current = parsePixelSpacing(state.attributes[id]);
+        // Conflicting or malformed duplicate tags cannot establish a calibration.
+        if (!current || (spacing && (current.x !== spacing.x || current.y !== spacing.y))) return null;
+        spacing = current;
+    }
+    return spacing;
 }
 
 // CVAT polyline shapes and tracks store their geometry in image coordinates and
