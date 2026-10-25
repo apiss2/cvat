@@ -106,7 +106,9 @@ def _first(*values) -> str:
 
 
 def render_markdown(source: dict, result: dict) -> str:
-    extracted = result.get("extracted") or {}
+    extracted = result.get("extracted")
+    if extracted is None:
+        extracted = {}
     if not isinstance(extracted, dict):
         raise GuideImportError("result.extracted must be an object or null")
     overview = [
