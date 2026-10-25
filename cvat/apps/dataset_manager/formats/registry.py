@@ -100,8 +100,8 @@ def importer(name, version, ext, display_name=None, enabled=True, dimension=Dime
             f_or_cls,
             Importer,
             name=name,
-            ext=ext,
             version=version,
+            ext=ext,
             display_name=display_name,
             enabled=enabled,
             dimension=dimension,
@@ -142,6 +142,7 @@ import cvat.apps.dataset_manager.formats.mots
 import cvat.apps.dataset_manager.formats.openimages
 import cvat.apps.dataset_manager.formats.pascal_voc
 import cvat.apps.dataset_manager.formats.pointcloud
+import cvat.apps.dataset_manager.formats.task_guide
 import cvat.apps.dataset_manager.formats.velodynepoint
 import cvat.apps.dataset_manager.formats.vggface2
 import cvat.apps.dataset_manager.formats.widerface
