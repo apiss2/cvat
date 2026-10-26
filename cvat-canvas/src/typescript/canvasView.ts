@@ -2538,7 +2538,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
                 }
             }
 
-            const recreateText = configuration.textContent !== this.configuration.textContent;
+            const recreateText = configuration.textContent !== this.configuration.textContent ||
+                configuration.shapeText !== this.configuration.shapeText;
             const updateTextPosition = configuration.displayAllText !== this.configuration.displayAllText ||
                 configuration.textFontSize !== this.configuration.textFontSize ||
                 configuration.textPosition !== this.configuration.textPosition ||
@@ -3301,6 +3302,7 @@ export class CanvasViewImpl implements CanvasView, Listener {
             if (
                 drawnState.label.id !== state.label.id ||
                 drawnState.zOrder !== state.zOrder ||
+                (this.configuration.shapeText && drawnState.frame !== state.frame) ||
                 pointsUpdated ||
                 rotationUpdated ||
                 drawnStateDescriptions.length !== stateDescriptions.length ||
@@ -4338,6 +4340,9 @@ export class CanvasViewImpl implements CanvasView, Listener {
         const withDescriptions = content.includes('descriptions');
         const withDimensions = content.includes('dimensions');
         const withLayer = content.includes('layer') || content.includes('zOrder');
+        const shapeText = this.configuration.shapeText?.({
+            shapeType: state.shapeType, points: state.points, frame: state.frame,
+        });
 
         const textFontSize = this.configuration.textFontSize || 12;
         const {
@@ -4402,6 +4407,11 @@ export class CanvasViewImpl implements CanvasView, Listener {
                             x: 0,
                         })
                         .addClass('cvat_canvas_text_dimensions');
+                }
+                if (shapeText) {
+                    block.tspan(shapeText)
+                        .attr({ dy: '1.25em', x: 0 })
+                        .addClass('cvat_canvas_text_extra');
                 }
                 if (withDescriptions) {
                     descriptions.forEach((desc: string, idx: number) => {

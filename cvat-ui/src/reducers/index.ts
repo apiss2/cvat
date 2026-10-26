@@ -455,6 +455,9 @@ export interface PluginsState {
             player: {
                 slider: PluginComponent[];
             };
+            info: {
+                sections: PluginComponent[];
+            };
             menuActions: {
                 items: PluginComponent[];
             };

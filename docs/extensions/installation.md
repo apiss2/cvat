@@ -60,7 +60,12 @@ CVAT_EXTRA_COMPOSE_FILES=
 
 追加Composeは記載した順に読み込みます。docker-compose.override.ymlの暗黙の読み込みに依存しません。機能用Composeと管理対象のUIプラグインは、CVAT_EXTENSIONSの選択に応じて自動設定されます。
 UltraSAMは標準のAI Toolsを使うため専用UIは不要で、UltraSAMだけの構成では追跡用Redisを起動しません。
-選択実行、フレーム移動用フィルター、条件付きエクスポートも同じ設定で選びます。拡張名の一覧と設定変更は[拡張機能の管理](management.md)を参照してください。
+選択実行、フレーム移動用フィルター、条件付きエクスポート、物理長表示も同じ設定で選びます。
+物理長表示は `physical_measurements` を追加します。
+GPUと追加サービスは不要です。
+拡張名の一覧と設定変更は[拡張機能の管理](management.md)を参照してください。
+
+標準のAnnotationGuideに記載した患者情報や撮影場所などをInfoから参照する場合は、`task_context` を追加します。標準のガイド機能を利用し、API経路やDBテーブルを新設しません。追加サービスとGPUも不要です。初回は、Job APIに参照用の `task_guide_id` を追加するこの変更を含むサーバーとUIを配備してください。導入後の有効化・無効化は、選択に応じたUIの再ビルドで切り替えます。操作は[タスクの背景情報](task-context.md)を参照してください。
 
 ## モデル管理の接続を設定する
 

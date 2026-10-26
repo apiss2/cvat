@@ -1212,6 +1212,9 @@ class JobReadSerializer(serializers.ModelSerializer):
     project_id = serializers.ReadOnlyField(source="get_project_id", allow_null=True)
     project_name = serializers.SerializerMethodField()
     guide_id = serializers.ReadOnlyField(source="get_guide_id", allow_null=True)
+    task_guide_id = serializers.IntegerField(
+        source="segment.task.annotation_guide.id", read_only=True, allow_null=True, default=None
+    )
     start_frame = serializers.ReadOnlyField(source="segment.start_frame")
     stop_frame = serializers.ReadOnlyField(source="segment.stop_frame")
     frame_count = serializers.ReadOnlyField(source="segment.frame_count")
@@ -1260,6 +1263,7 @@ class JobReadSerializer(serializers.ModelSerializer):
             "project_name",
             "assignee",
             "guide_id",
+            "task_guide_id",
             "dimension",
             "mode",
             "media_type",

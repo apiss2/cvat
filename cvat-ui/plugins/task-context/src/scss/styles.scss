@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: MIT
+
+.cvat-task-context {
+    margin: 16px 0;
+    padding: 16px;
+    border: 1px solid #e8e8e8;
+    border-radius: 6px;
+
+    &-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+
+    &-loading {
+        padding: 24px;
+        text-align: center;
+    }
+
+    &-content {
+        max-height: 320px;
+        overflow: auto;
+        overflow-wrap: anywhere;
+    }
+}

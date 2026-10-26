@@ -50,10 +50,12 @@ EXTENSION_COMPOSE = {
     "ultrasam": ("components/ultrasam/docker-compose.ultrasam.yml",),
     "sam31": ("components/sam31/docker-compose.sam31.yml",),
     "model_registry": ("components/model_registry/docker-compose.gateway.yml",),
-    # Client-only extensions use the shared UI image, not separate services.
+    # These extensions use the shared backend/UI images, not separate services.
     "frame_navigation_filter": (),
     "selective_ai": (),
     "filtered_export": (),
+    "physical_measurements": (),
+    "task_context": (),
 }
 EXTENSION_PLUGINS = {
     "sam2": "plugins/sam2",
@@ -62,6 +64,8 @@ EXTENSION_PLUGINS = {
     "frame_navigation_filter": "plugins/frame-navigation-filter",
     "selective_ai": "plugins/selective-ai",
     "filtered_export": "plugins/filtered-export",
+    "physical_measurements": "plugins/physical-measurements",
+    "task_context": "plugins/task-context",
 }
 FINAL_COMPOSE = "components/extensions/docker-compose.extensions.yml"
 COMPOSE_FILES = (
