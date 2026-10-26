@@ -28,7 +28,7 @@ from PIL import Image
 from pytest_cases import parametrize
 
 from shared.tasks.utils import parse_frame_step
-from shared.utils.config import get_method, make_api_client, patch_method
+from shared.utils.config import get_method, make_api_client, patch_method, post_method
 from shared.utils.helpers import generate_image_files
 
 from .utils import (
@@ -766,6 +766,86 @@ class TestGetJobs:
             self._test_get_job_200(user["username"], job["id"], expected_data=expected_job)
         else:
             self._test_get_job_403(user["username"], job["id"])
+
+
+@pytest.mark.usefixtures("restore_db_per_function")
+class TestGetJobGuides:
+    @pytest.mark.parametrize(
+        "in_project, has_task_guide, has_project_guide",
+        [
+            (False, False, False),
+            (False, True, False),
+            (True, False, True),
+            (True, True, False),
+            (True, True, True),
+        ],
+    )
+    def test_job_assignee_can_resolve_task_guide_without_task_access(
+        self,
+        admin_user,
+        jobs,
+        tasks,
+        projects,
+        users,
+        is_task_staff,
+        in_project,
+        has_task_guide,
+        has_project_guide,
+    ):
+        job = next(
+            job
+            for job in jobs
+            if tasks[job["task_id"]]["organization"] is None
+            and bool(job["project_id"]) == in_project
+            and tasks[job["task_id"]]["guide_id"] is None
+            and (not in_project or projects[job["project_id"]]["guide_id"] is None)
+        )
+        assignee = next(
+            user
+            for user in users
+            if user["groups"] == ["worker"] and not is_task_staff(user["id"], job["task_id"])
+        )
+        username = assignee["username"]
+        response = patch_method(admin_user, f"jobs/{job['id']}", {"assignee": assignee["id"]})
+        assert response.status_code == HTTPStatus.OK
+
+        guide_ids = {"task": None, "project": None}
+        for target, create in (("task", has_task_guide), ("project", has_project_guide)):
+            if create:
+                response = post_method(
+                    admin_user,
+                    "guides",
+                    {f"{target}_id": job[f"{target}_id"], "markdown": f"# {target} details"},
+                )
+                assert response.status_code == HTTPStatus.CREATED
+                guide_ids[target] = response.json()["id"]
+
+        # A job-only assignee must not need permission to retrieve the parent task.
+        assert get_method(username, f"tasks/{job['task_id']}").status_code == HTTPStatus.FORBIDDEN
+        response = get_method(username, f"jobs/{job['id']}")
+        assert response.status_code == HTTPStatus.OK
+        data = response.json()
+        assert data["task_guide_id"] == guide_ids["task"]
+        assert data["guide_id"] == guide_ids["project" if in_project else "task"]
+
+        response = get_method(username, "jobs", task_id=job["task_id"])
+        assert response.status_code == HTTPStatus.OK
+        listed = next(item for item in response.json()["results"] if item["id"] == job["id"])
+        assert listed["task_guide_id"] == data["task_guide_id"]
+        assert listed["guide_id"] == data["guide_id"]
+
+        # Both IDs refer to standard guides, with standard read/write permissions.
+        for target, guide_id in guide_ids.items():
+            if guide_id is not None:
+                response = get_method(username, f"guides/{guide_id}")
+                assert response.status_code == HTTPStatus.OK
+                assert response.json()["markdown"] == f"# {target} details"
+                assert (
+                    patch_method(
+                        username, f"guides/{guide_id}", {"markdown": "changed"}
+                    ).status_code
+                    == HTTPStatus.FORBIDDEN
+                )
 
 
 @pytest.mark.usefixtures("restore_db_per_class")

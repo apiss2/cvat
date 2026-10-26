@@ -9495,6 +9495,10 @@ components:
           type: integer
           readOnly: true
           nullable: true
+        task_guide_id:
+          type: integer
+          readOnly: true
+          nullable: true
         dimension:
           type: string
           readOnly: true

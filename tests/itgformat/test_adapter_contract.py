@@ -172,6 +172,153 @@ def test_semantic_mask_roundtrip_with_overlap_and_hole(adapter, tmp_path):
     np.testing.assert_array_equal(recovered["a"], b)
 
 
+def test_dicom_spacing_is_image_specific_and_does_not_consume_mask_bits(
+    adapter, tmp_path
+):
+    items = [
+        Item(
+            "frame100",
+            [
+                Ann(AnnType.mask, image=np.ones((5, 7), bool)),
+                Ann(AnnType.label, 1, attributes={"00280030": "0.30\\0.25"}),
+            ],
+        ),
+        Item("frame101", [Ann(AnnType.label, 1, attributes={"00280030": "0.6\\0.5"})]),
+        Item("frame102"),
+    ]
+    adapter.export_items(items, ["organ", "DicomTag"], tmp_path)
+    for index, expected in enumerate(((0.25, 0.3, 1), (0.5, 0.6, 1), (1, 1, 1))):
+        header, mask = read_mask(tmp_path / f"frame{index + 100}.mask.hdr")
+        assert header.spacing_xyz == expected
+        assert header.bit_names == {0: "organ"}
+        assert header.byte_count == 1
+        assert mask.all() if index == 0 else not mask.any()
+
+
+@pytest.mark.parametrize(
+    "attributes,expected",
+    [
+        ({"00280030": " +3e-1 \\ .25 "}, (0.25, 0.3, 1)),
+        (
+            {"00280030": "0.12345678901234\\0.23456789012345"},
+            (0.23456789012345, 0.12345678901234, 1),
+        ),
+        ({}, (1, 1, 1)),
+        ({"PixelSpacing": "0.3\\0.25"}, (1, 1, 1)),
+        ({"00280030": ""}, (1, 1, 1)),
+        ({"00280030": "0.3"}, (1, 1, 1)),
+        ({"00280030": "0.3,0.25"}, (1, 1, 1)),
+        ({"00280030": "0.3\\0.25\\1"}, (1, 1, 1)),
+        ({"00280030": "\\0.25"}, (1, 1, 1)),
+        ({"00280030": "0\\0.25"}, (1, 1, 1)),
+        ({"00280030": "-0.3\\0.25"}, (1, 1, 1)),
+        ({"00280030": "NaN\\0.25"}, (1, 1, 1)),
+        ({"00280030": "Infinity\\0.25"}, (1, 1, 1)),
+        ({"00280030": "1e999\\0.25"}, (1, 1, 1)),
+        ({"00280030": "1e-999\\0.25"}, (1, 1, 1)),
+        ({"00280030": "0x2\\0.25"}, (1, 1, 1)),
+        ({"00280030": [0.3, 0.25]}, (1, 1, 1)),
+        ({"00280030": True}, (1, 1, 1)),
+    ],
+)
+def test_dicom_spacing_validation_uses_only_00280030(
+    adapter, tmp_path, attributes, expected
+):
+    adapter.export_items(
+        [
+            Item(
+                "a",
+                [
+                    Ann(AnnType.mask, image=np.ones((5, 7), bool)),
+                    Ann(AnnType.label, 1, attributes=attributes),
+                ],
+            )
+        ],
+        ["organ", "DicomTag"],
+        tmp_path,
+    )
+    header, mask = read_mask(tmp_path / "a.mask.hdr")
+    assert header.spacing_xyz == expected
+    assert mask.all()
+
+
+@pytest.mark.parametrize(
+    "second,expected",
+    [
+        ({"00280030": ".30\\2.5e-1"}, (0.25, 0.3, 1)),
+        ({"00280030": "0.4\\0.25"}, (1, 1, 1)),
+        ({"00280030": "bad"}, (1, 1, 1)),
+        ({"00280030": ""}, (1, 1, 1)),
+        ({}, (1, 1, 1)),
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_duplicate_dicom_tags_must_agree(adapter, tmp_path, second, expected, reverse):
+    tags = [
+        Ann(AnnType.label, 1, attributes={"00280030": "0.3\\0.25"}),
+        Ann(AnnType.label, 1, attributes=second),
+    ]
+    if reverse:
+        tags.reverse()
+    adapter.export_items(
+        [Item("a", [Ann(AnnType.mask, image=np.ones((5, 7), bool)), *tags])],
+        ["organ", "DicomTag"],
+        tmp_path,
+    )
+    assert read_mask(tmp_path / "a.mask.hdr")[0].spacing_xyz == expected
+
+
+def test_dicom_metadata_does_not_create_masks_for_bbox_only_export(adapter, tmp_path):
+    adapter.export_items(
+        [
+            Item(
+                "a",
+                [
+                    Ann(AnnType.bbox, points=[0, 0, 2, 2]),
+                    Ann(AnnType.label, 1, attributes={"00280030": "0.3\\0.25"}),
+                ],
+            )
+        ],
+        ["box", "DicomTag"],
+        tmp_path,
+    )
+    assert (tmp_path / "a.bb").read_text() == "0 0 0 2 2 1 box\n"
+    assert not list(tmp_path.glob("*.mask.*"))
+
+
+def test_shapes_named_dicom_tag_are_not_spacing_metadata(adapter, tmp_path):
+    adapter.export_items(
+        [
+            Item(
+                "a",
+                [
+                    Ann(AnnType.mask, image=np.ones((5, 7), bool)),
+                    Ann(
+                        AnnType.bbox,
+                        1,
+                        points=[0, 0, 2, 2],
+                        attributes={"00280030": "0.3\\0.25"},
+                    ),
+                ],
+            )
+        ],
+        ["organ", "DicomTag"],
+        tmp_path,
+    )
+    assert read_mask(tmp_path / "a.mask.hdr")[0].spacing_xyz == (1, 1, 1)
+    assert (tmp_path / "a.bb").read_text().endswith(" DicomTag\n")
+
+
+@pytest.mark.parametrize("name", ["OtherTag", "dicomtag", "DICOMTag"])
+def test_other_tags_are_still_rejected_with_pixel_spacing(adapter, tmp_path, name):
+    with pytest.raises(FormatError, match="unsupported annotation label"):
+        adapter.export_items(
+            [Item("a", [Ann(AnnType.label, attributes={"00280030": "0.3\\0.25"})])],
+            [name],
+            tmp_path,
+        )
+
+
 def test_full_width_masks_and_many_boxes(adapter, tmp_path):
     labels = [f"c{i:02}" for i in range(40)]
     annotations = [Ann(AnnType.mask, i, np.ones((5, 7), bool)) for i in range(32)]

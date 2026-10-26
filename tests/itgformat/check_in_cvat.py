@@ -92,6 +92,37 @@ class NativeChecks(unittest.TestCase):
             self.assertEqual(int(np.count_nonzero(packed)), 9)
             self.assertFalse((root / "a.bb").exists())
 
+    def test_dicom_pixel_spacing_with_real_label_annotations(self):
+        items = [
+            dm.DatasetItem(
+                id="frame100",
+                media=self.make_image(),
+                annotations=[
+                    dm.Polygon([1, 1, 4, 1, 4, 4, 1, 4], label=0),
+                    dm.Label(label=1, attributes={"00280030": "0.30\\0.25"}),
+                ],
+            ),
+            dm.DatasetItem(
+                id="frame101",
+                media=self.make_image(),
+                annotations=[dm.Label(label=1, attributes={"00280030": "0.6\\0.5"})],
+            ),
+            dm.DatasetItem(id="frame102", media=self.make_image()),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            export_items(items, ["region", "DicomTag"], root)
+            for index, expected in enumerate(
+                ((0.25, 0.3, 1), (0.5, 0.6, 1), (1, 1, 1))
+            ):
+                with self.subTest(frame=index + 100):
+                    header, packed = read_mask(root / f"frame{index + 100}.mask.hdr")
+                    self.assertEqual(header.spacing_xyz, expected)
+                    self.assertEqual(header.bit_names, {0: "region"})
+                    self.assertEqual(
+                        int(np.count_nonzero(packed)), 9 if index == 0 else 0
+                    )
+
     def test_bb_only_import_matches_task(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -110,6 +110,8 @@ export interface Configuration {
     textFontSize?: number;
     textPosition?: 'auto' | 'center';
     textContent?: string;
+    // Optional display-only text supplied by a client extension in image coordinates.
+    shapeText?: ((shape: { shapeType: string; points: readonly number[]; frame: number }) => string | null) | null;
     undefinedAttrValue?: string;
     showProjections?: boolean;
     showConflicts?: boolean;
@@ -473,6 +475,7 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
                 controlPointsSize: consts.BASE_POINT_SIZE,
                 textPosition: consts.DEFAULT_SHAPE_TEXT_POSITION,
                 textContent: consts.DEFAULT_SHAPE_TEXT_CONTENT,
+                shapeText: null,
                 undefinedAttrValue: consts.DEFAULT_UNDEFINED_ATTR_VALUE,
                 hideEditedObject: false,
                 focusedObjectPadding: 50,
@@ -1017,6 +1020,10 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
     }
 
     public configure(configuration: Configuration): void {
+        if (configuration.shapeText === null || typeof configuration.shapeText === 'function') {
+            this.data.configuration.shapeText = configuration.shapeText;
+        }
+
         if (typeof configuration.displayAllText === 'boolean') {
             this.data.configuration.displayAllText = configuration.displayAllText;
         }
