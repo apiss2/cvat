@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -49,6 +50,10 @@ SEGMENT_TYPES = {
     dm.AnnotationType.ellipse,
 }
 SUPPORTED_TYPES = SEGMENT_TYPES | {dm.AnnotationType.bbox}
+PIXEL_SPACING_NUMBER = re.compile(
+    r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[Ee][+-]?[0-9]+)?"
+)
+DEFAULT_SPACING = (1.0, 1.0, 1.0)
 
 
 def freeze_items(extractor) -> list[dm.DatasetItem]:
@@ -65,6 +70,35 @@ def _name(ann, labels: list[str]) -> str:
     if ann.label is None or not 0 <= ann.label < len(labels):
         raise FormatError("Annotation has no valid class")
     return labels[ann.label]
+
+
+def _is_dicom_tag(ann, labels: list[str]) -> bool:
+    return ann.type == dm.AnnotationType.label and _name(ann, labels) == "DicomTag"
+
+
+def _pixel_spacing(item, labels: list[str]) -> tuple[float, float, float]:
+    """Use only this image's DicomTag; ambiguous or invalid metadata is uncalibrated."""
+    resolved = None
+    for ann in item.annotations:
+        if not _is_dicom_tag(ann, labels):
+            continue
+        value = ann.attributes.get("00280030")
+        if not isinstance(value, str):
+            return DEFAULT_SPACING
+        parts = [part.strip() for part in value.split("\\")]
+        if len(parts) != 2 or not all(
+            PIXEL_SPACING_NUMBER.fullmatch(part) for part in parts
+        ):
+            return DEFAULT_SPACING
+        # DICOM PixelSpacing is row spacing, then column spacing, in millimetres.
+        y, x = map(float, parts)
+        if not all(math.isfinite(number) and number > 0 for number in (x, y)):
+            return DEFAULT_SPACING
+        spacing = (x, y, 1.0)
+        if resolved is not None and spacing != resolved:
+            return DEFAULT_SPACING
+        resolved = spacing
+    return resolved or DEFAULT_SPACING
 
 
 def rasterize(ann, width: int, height: int) -> np.ndarray:
@@ -116,6 +150,8 @@ def export_items(
         checked_size(width, height)
         for ann in item.annotations:
             if not _visible(ann):
+                continue
+            if _is_dicom_tag(ann, labels):
                 continue
             if ann.type not in SUPPORTED_TYPES:
                 raise FormatError(
@@ -181,7 +217,12 @@ def export_items(
             packed = pack_segments(
                 segments, width, height, bit_names, byte_count=byte_count
             )
-            write_mask(root / (stem + ".mask.hdr"), packed, bit_names)
+            write_mask(
+                root / (stem + ".mask.hdr"),
+                packed,
+                bit_names,
+                spacing_xyz=_pixel_spacing(item, labels),
+            )
         if has_boxes:
             boxes = [
                 Box(*ann.points, _name(ann, labels))

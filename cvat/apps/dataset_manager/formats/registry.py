@@ -123,6 +123,7 @@ def make_exporter(name):
 
 
 # pylint: disable=unused-import
+import components.dicom_import.format
 import cvat.apps.dataset_manager.formats.audio_tsv
 import cvat.apps.dataset_manager.formats.camvid
 import cvat.apps.dataset_manager.formats.cityscapes
@@ -142,6 +143,7 @@ import cvat.apps.dataset_manager.formats.mots
 import cvat.apps.dataset_manager.formats.openimages
 import cvat.apps.dataset_manager.formats.pascal_voc
 import cvat.apps.dataset_manager.formats.pointcloud
+import cvat.apps.dataset_manager.formats.task_guide
 import cvat.apps.dataset_manager.formats.velodynepoint
 import cvat.apps.dataset_manager.formats.vggface2
 import cvat.apps.dataset_manager.formats.widerface

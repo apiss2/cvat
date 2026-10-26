@@ -66,6 +66,9 @@ const defaultState: PluginsState = {
             player: {
                 slider: [],
             },
+            info: {
+                sections: [],
+            },
             menuActions: {
                 items: [],
             },

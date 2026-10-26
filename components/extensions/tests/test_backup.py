@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: MIT
 """Unit tests require Python only; no Docker daemon or production data is used."""
-from contextlib import redirect_stdout
-from copy import deepcopy
 import importlib.util
 import io
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 MODULE = Path(__file__).resolve().parents[1] / "backup.py"
@@ -36,9 +36,14 @@ class Fixture(unittest.TestCase):
         self.password = self.state / "password"
         self.password.write_text("test-only-password\n")
         self.password.chmod(0o600)
-        backup.save_json(self.state / "backup.json", {
-            "repository": str(self.repository), "password_file": str(self.password), "version": 1,
-        })
+        backup.save_json(
+            self.state / "backup.json",
+            {
+                "repository": str(self.repository),
+                "password_file": str(self.password),
+                "version": 1,
+            },
+        )
         self.calls = []
         self.completed = []
         self.fail = None
@@ -47,15 +52,29 @@ class Fixture(unittest.TestCase):
         self.env_file = self.base / "config.env"
         self.env_file.write_text("CVAT_EXTENSIONS=\n")
         self.env_file.chmod(0o600)
-        self.identity = {"daemon": "test", "project": "test", "network": "test", "namespace": "test"}
+        self.identity = {
+            "daemon": "test",
+            "project": "test",
+            "network": "test",
+            "namespace": "test",
+        }
         self.model = {
             "services": {
-                "cvat_server": {"environment": {
-                    "CVAT_POSTGRES_HOST": "cvat_db", "CVAT_REDIS_INMEM_HOST": "cvat_redis_inmem",
-                    "CVAT_REDIS_ONDISK_HOST": "cvat_redis_ondisk",
-                }, "volumes": [{"type": "volume", "source": "data"}]},
-                "cvat_db": {}, "cvat_redis_inmem": {}, "cvat_redis_ondisk": {},
-            }, "volumes": {"data": {"name": "test_data"}},
+                "cvat_server": {
+                    "environment": {
+                        "CVAT_POSTGRES_HOST": "cvat_db",
+                        "CVAT_REDIS_INMEM_HOST": "cvat_redis_inmem",
+                        "CVAT_REDIS_ONDISK_HOST": "cvat_redis_ondisk",
+                    },
+                    "volumes": [
+                        {"type": "volume", "source": "data", "target": "/home/django/data"}
+                    ],
+                },
+                "cvat_db": {},
+                "cvat_redis_inmem": {},
+                "cvat_redis_ondisk": {},
+            },
+            "volumes": {"data": {"name": "test_data"}},
         }
         self.saved = {"model": self.model, "identity": self.identity, "extensions": []}
         self.write_saved()
@@ -88,12 +107,22 @@ class Fixture(unittest.TestCase):
             def run(self, args):
                 fixture.calls.append(args)
                 if args[:3] == ["docker", "volume", "inspect"]:
-                    return json.dumps([{"Driver": "local", "Options": None, "Mountpoint": str(fixture.data)}])
+                    return json.dumps(
+                        [{"Driver": "local", "Options": None, "Mountpoint": str(fixture.data)}]
+                    )
                 if args[:3] == ["docker", "ps", "-q"]:
                     return "live" if self.running or self.foreign else ""
                 if args[:2] == ["docker", "inspect"]:
-                    return json.dumps(self.foreign or [{"Id": "live", "Config": {"Labels": {
-                        "com.docker.compose.project": self.project}}, "Mounts": []}])
+                    return json.dumps(
+                        self.foreign
+                        or [
+                            {
+                                "Id": "live",
+                                "Config": {"Labels": {"com.docker.compose.project": self.project}},
+                                "Mounts": [],
+                            }
+                        ]
+                    )
                 if args[-2:] == ["rev-parse", "HEAD"]:
                     return "a" * 40
                 return ""
@@ -108,18 +137,46 @@ class Fixture(unittest.TestCase):
         self.calls.append(args)
         index = args.index(backup.IMAGE) + 1
         args = args[index:]
-        operation = next((x for x in ("snapshots", "backup", "tag", "restore", "version", "check", "init") if x in args), "?")
+        operation = next(
+            (
+                x
+                for x in (
+                    "snapshots",
+                    "backup",
+                    "tag",
+                    "restore",
+                    "dump",
+                    "version",
+                    "check",
+                    "init",
+                )
+                if x in args
+            ),
+            "?",
+        )
         self.events.append(operation)
         if operation == self.fail:
             raise backup.BackupError("Injected command failure")
         if operation == "snapshots":
             return json.dumps(self.completed)
         if operation == "backup":
+            binding = next(x for x in self.calls[-1] if "target=/source/metadata" in x)
+            metadata = Path(binding.split("source=", 1)[1].split(",target=", 1)[0])
+            self.manifest = json.loads((metadata / "manifest.json").read_text())
             self.tags = [args[n + 1] for n, x in enumerate(args) if x == "--tag"]
-            return json.dumps({"message_type": "summary", "snapshot_id": "12345678", "data_added": 12})
+            return json.dumps(
+                {"message_type": "summary", "snapshot_id": "12345678", "data_added": 12}
+            )
+        if operation == "dump":
+            return json.dumps(self.manifest)
         if operation == "tag":
-            self.completed.append({"id": "abcdef01" * 8, "time": "2026-01-01T00:00:00Z",
-                                   "tags": [backup.COMPLETE, *[x for x in self.tags if x != backup.PENDING]]})
+            self.completed.append(
+                {
+                    "id": "abcdef01" * 8,
+                    "time": "2026-01-01T00:00:00Z",
+                    "tags": [backup.COMPLETE, *[x for x in self.tags if x != backup.PENDING]],
+                }
+            )
         return ""
 
     def create(self, **kwargs):
@@ -181,8 +238,10 @@ class SafetyTests(Fixture):
             self.repo.select("latest")
 
     def test_ambiguous_snapshot_is_rejected(self):
-        self.completed = [{"id": "abcdef01" + x, "time": "2025", "tags": [backup.COMPLETE]}
-                          for x in ("0" * 56, "1" * 56)]
+        self.completed = [
+            {"id": "abcdef01" + x, "time": "2025", "tags": [backup.COMPLETE]}
+            for x in ("0" * 56, "1" * 56)
+        ]
         with self.assertRaises(backup.BackupError):
             self.repo.select("abcdef01")
 
@@ -211,18 +270,24 @@ class SafetyTests(Fixture):
             backup.validate_destinations(self.repo, [{"type": "bind", "source": str(self.base)}])
 
     def test_foreign_writer_is_rejected(self):
-        self.manager.foreign = [{"Id": "foreign", "Mounts": [{"Type": "volume", "Name": "test_data", "RW": True}]}]
+        self.manager.foreign = [
+            {"Id": "foreign", "Mounts": [{"Type": "volume", "Name": "test_data", "RW": True}]}
+        ]
         with self.assertRaises(backup.BackupError):
             self.create()
         self.assertNotIn("backup", self.events)
 
     def test_foreign_parent_bind_writer_is_rejected(self):
-        self.manager.foreign = [{"Id": "foreign", "Mounts": [{"Type": "bind", "Source": str(self.base), "RW": True}]}]
+        self.manager.foreign = [
+            {"Id": "foreign", "Mounts": [{"Type": "bind", "Source": str(self.base), "RW": True}]}
+        ]
         with self.assertRaises(backup.BackupError):
             self.create()
 
     def test_readonly_foreign_reader_is_allowed(self):
-        self.manager.foreign = [{"Id": "reader", "Mounts": [{"Type": "volume", "Name": "test_data", "RW": False}]}]
+        self.manager.foreign = [
+            {"Id": "reader", "Mounts": [{"Type": "volume", "Name": "test_data", "RW": False}]}
+        ]
         self.create()
 
     def test_mismatched_recorded_compose_is_rejected(self):
@@ -250,7 +315,13 @@ class SafetyTests(Fixture):
             self.create()
 
     def test_missing_bind_source_is_rejected(self):
-        self.model["services"]["cvat_server"]["volumes"].append({"type": "bind", "source": str(self.base / "missing")})
+        self.model["services"]["cvat_server"]["volumes"].append(
+            {
+                "type": "bind",
+                "source": str(self.base / "missing"),
+                "target": "/missing",
+            }
+        )
         self.write_saved()
         with self.assertRaises(FileNotFoundError):
             self.create(stop=True)
@@ -259,12 +330,16 @@ class SafetyTests(Fixture):
     def test_duplicate_and_nested_binds_are_collapsed(self):
         (self.data / "nested").mkdir()
         self.model["services"]["cvat_server"]["volumes"] += [
-            {"type": "bind", "source": str(x)} for x in (self.data, self.data, self.data / "nested")]
+            {"type": "bind", "source": str(x), "target": f"/bind/{index}"}
+            for index, x in enumerate((self.data, self.data, self.data / "nested"))
+        ]
         entries, _ = backup.sources(self.manager, self.saved)
         self.assertEqual(sum(x["type"] == "bind" for x in entries), 1)
 
     def test_anonymous_volumes_are_rejected(self):
-        self.model["services"]["cvat_db"]["volumes"] = [{"type": "volume"}]
+        self.model["services"]["cvat_db"]["volumes"] = [
+            {"type": "volume", "target": "/var/lib/postgresql/data"}
+        ]
         with self.assertRaises(backup.BackupError):
             backup.sources(self.manager, self.saved)
 
@@ -309,6 +384,7 @@ class SafetyTests(Fixture):
 
     def test_metadata_permissions_are_preserved(self):
         original = self.repo.run
+
         def inspect(args):
             if "backup" in args:
                 binding = next(x for x in args if "target=/source/metadata" in x)
@@ -318,21 +394,37 @@ class SafetyTests(Fixture):
                 manifest = json.loads((source / "manifest.json").read_text())
                 self.assertEqual(manifest["strategy"], "cold-filesystem")
             return original(args)
+
         self.repo.run = inspect
         self.create()
 
     def test_runtime_mount_drift_is_rejected(self):
-        containers = [{"Config": {"Labels": {"com.docker.compose.service": "cvat_db"}},
-                       "Mounts": [{"Type": "volume", "Name": "other_data"}]}]
+        containers = [
+            {
+                "Config": {"Labels": {"com.docker.compose.service": "cvat_db"}},
+                "Mounts": [
+                    {
+                        "Type": "volume",
+                        "Name": "other_data",
+                        "Destination": "/var/lib/postgresql/data",
+                    }
+                ],
+            }
+        ]
         with self.assertRaises(backup.BackupError):
             backup.sources(self.manager, self.saved, containers)
 
     def test_recorded_runtime_mount_is_accepted(self):
-        containers = [{"Config": {"Labels": {"com.docker.compose.service": "cvat_server"}},
-                       "Mounts": [{"Type": "volume", "Name": "test_data"}]}]
+        containers = [
+            {
+                "Config": {"Labels": {"com.docker.compose.service": "cvat_server"}},
+                "Mounts": [
+                    {"Type": "volume", "Name": "test_data", "Destination": "/home/django/data"}
+                ],
+            }
+        ]
         entries, _ = backup.sources(self.manager, self.saved, containers)
         self.assertEqual(entries[0]["source"], "test_data")
-
 
     def test_initialize_generates_private_password_and_settings(self):
         self.repo.values = {}
@@ -384,11 +476,13 @@ class SafetyTests(Fixture):
 
     def test_writer_appearing_after_backup_prevents_promotion(self):
         original = self.repo.run
+
         def start_writer(args):
             result = original(args)
             if "backup" in args:
                 self.manager.running = True
             return result
+
         self.repo.run = start_writer
         with self.assertRaises(backup.BackupError):
             self.create()
@@ -401,13 +495,17 @@ class SafetyTests(Fixture):
 
     def test_cached_helper_does_not_require_a_pull(self):
         commands = []
+
         def cached(args):
             commands.append(args)
             if args[1:3] == ["context", "inspect"]:
-                return json.dumps([{"Endpoints": {"docker": {"Host": "unix:///var/run/docker.sock"}}}])
+                return json.dumps(
+                    [{"Endpoints": {"docker": {"Host": "unix:///var/run/docker.sock"}}}]
+                )
             if args[1] == "info":
                 return "linux"
             return "sha256:cached"
+
         self.repo.run = cached
         with patch.dict(os.environ, {}, clear=True):
             self.repo.docker_check()
@@ -416,7 +514,9 @@ class SafetyTests(Fixture):
 
 class CliTests(unittest.TestCase):
     def test_help_does_not_need_manager_or_docker(self):
-        result = subprocess.run([sys.executable, str(MODULE), "backup", "--help"], capture_output=True, text=True)
+        result = subprocess.run(
+            [sys.executable, str(MODULE), "backup", "--help"], capture_output=True, text=True
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--stop", result.stdout)
 
@@ -426,8 +526,7 @@ class CliTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 cli.main(args)
         self.assertEqual(execute.call_args.args[1][2:], args)
-        self.assertTrue(execute.call_args.args[1][1].endswith("manage.py"))
-
+        self.assertTrue(execute.call_args.args[1][1].endswith("entrypoint.py"))
 
     def test_backup_command_is_routed_with_global_options(self):
         args = ["--state-dir", "/tmp/state", "backup", "--help"]
@@ -437,9 +536,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(execute.call_args.args[1][2:], args)
         self.assertTrue(execute.call_args.args[1][1].endswith("backup.py"))
 
+    def test_model_id_named_backup_is_not_a_backup_command(self):
+        args = ["--model-id", "backup", "--confirm", "purge-deleted"]
+        with patch.object(cli.os, "execv", side_effect=SystemExit(0)) as execute:
+            with self.assertRaises(SystemExit):
+                cli.main(args)
+        self.assertEqual(execute.call_args.args[1][2:], args)
+        self.assertTrue(execute.call_args.args[1][1].endswith("entrypoint.py"))
+
     def test_backup_options_work_before_and_after_command(self):
-        for args in (["--env-file", "/tmp/env", "backup", "create", "--stop"],
-                     ["backup", "create", "--env-file", "/tmp/env", "--stop"]):
+        for args in (
+            ["--env-file", "/tmp/env", "backup", "create", "--stop"],
+            ["backup", "create", "--env-file", "/tmp/env", "--stop"],
+        ):
             parsed = backup.parser().parse_args(args)
             self.assertEqual(parsed.env_file, Path("/tmp/env"))
             self.assertTrue(parsed.stop)

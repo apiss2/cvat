@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 """Client-extension lifecycle contracts; Docker and registry setup are test doubles."""
+
 import copy
 import importlib.util
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import ModuleType
 
 import pytest
@@ -15,6 +16,8 @@ CLIENTS = {
     "frame_navigation_filter": "plugins/frame-navigation-filter",
     "selective_ai": "plugins/selective-ai",
     "filtered_export": "plugins/filtered-export",
+    "physical_measurements": "plugins/physical-measurements",
+    "task_context": "plugins/task-context",
 }
 
 
@@ -60,7 +63,10 @@ def make_manager(cli, tmp_path):
         env.chmod(0o600)
         instance = cli.Manager(root, env, state)
         instance.identity = lambda: {
-            "project": "test", "network": "test_cvat", "namespace": "nuclio", "daemon": "test"
+            "project": "test",
+            "network": "test_cvat",
+            "namespace": "nuclio",
+            "daemon": "test",
         }
         return instance
 
@@ -71,11 +77,20 @@ def model_for(cli, manager):
     env = manager.env
     services = {
         name: {"image": env["CVAT_EXT_SERVER_IMAGE"], "pull_policy": "never"}
-        for name in ("cvat_server", "cvat_worker_import", "cvat_worker_export", "cvat_worker_annotation")
+        for name in (
+            "cvat_server",
+            "cvat_worker_import",
+            "cvat_worker_export",
+            "cvat_worker_annotation",
+        )
     }
     services["cvat_ui"] = {
-        "image": env["CVAT_EXT_UI_IMAGE"], "pull_policy": "never",
-        "build": {"dockerfile": "Dockerfile.ui", "args": {"CLIENT_PLUGINS": env["CVAT_CLIENT_PLUGINS"]}},
+        "image": env["CVAT_EXT_UI_IMAGE"],
+        "pull_policy": "never",
+        "build": {
+            "dockerfile": "Dockerfile.ui",
+            "args": {"CLIENT_PLUGINS": env["CVAT_CLIENT_PLUGINS"]},
+        },
     }
     if set(manager.extensions) & cli.SERVERLESS_EXTENSIONS:
         services["nuclio"] = {"image": "nuclio:test"}
@@ -101,16 +116,41 @@ def configure(cli, manager, monkeypatch):
     return manager.configuration(), calls
 
 
-@pytest.mark.parametrize("selected,expected", [
-    ("", []),
-    ("frame_navigation_filter", [CLIENTS["frame_navigation_filter"]]),
-    ("selective_ai", [CLIENTS["selective_ai"]]),
-    ("filtered_export", [CLIENTS["filtered_export"]]),
-    ("selective_ai,frame_navigation_filter", [CLIENTS["frame_navigation_filter"], CLIENTS["selective_ai"]]),
-    ("filtered_export,frame_navigation_filter", [CLIENTS["frame_navigation_filter"], CLIENTS["filtered_export"]]),
-    ("filtered_export,selective_ai", [CLIENTS["selective_ai"], CLIENTS["filtered_export"]]),
-    ("filtered_export,selective_ai,frame_navigation_filter", list(CLIENTS.values())),
-])
+@pytest.mark.parametrize(
+    "selected,expected",
+    [
+        ("", []),
+        ("frame_navigation_filter", [CLIENTS["frame_navigation_filter"]]),
+        ("selective_ai", [CLIENTS["selective_ai"]]),
+        ("filtered_export", [CLIENTS["filtered_export"]]),
+        ("physical_measurements", [CLIENTS["physical_measurements"]]),
+        ("task_context", [CLIENTS["task_context"]]),
+        ("task_context,filtered_export", [CLIENTS["filtered_export"], CLIENTS["task_context"]]),
+        (
+            "task_context,physical_measurements",
+            [CLIENTS["physical_measurements"], CLIENTS["task_context"]],
+        ),
+        (
+            "selective_ai,frame_navigation_filter",
+            [CLIENTS["frame_navigation_filter"], CLIENTS["selective_ai"]],
+        ),
+        (
+            "filtered_export,frame_navigation_filter",
+            [CLIENTS["frame_navigation_filter"], CLIENTS["filtered_export"]],
+        ),
+        ("filtered_export,selective_ai", [CLIENTS["selective_ai"], CLIENTS["filtered_export"]]),
+        ("filtered_export,selective_ai,frame_navigation_filter", list(CLIENTS.values())[:3]),
+        (
+            "physical_measurements,frame_navigation_filter",
+            [CLIENTS["frame_navigation_filter"], CLIENTS["physical_measurements"]],
+        ),
+        (
+            "physical_measurements,filtered_export,selective_ai,frame_navigation_filter",
+            list(CLIENTS.values())[:4],
+        ),
+        (",".join(CLIENTS), list(CLIENTS.values())),
+    ],
+)
 def test_named_selection(cli, make_manager, selected, expected):
     manager = make_manager(selected)
     assert manager.values["CVAT_CLIENT_PLUGINS"].split(":") == (expected or [""])
@@ -122,11 +162,40 @@ def test_named_selection(cli, make_manager, selected, expected):
         assert name not in cli.FUNCTIONS
 
 
+@pytest.mark.parametrize("enable_import", [False, True])
+def test_dicom_metadata_extensions_share_the_standard_images(cli, tmp_path, enable_import):
+    from components.extensions.catalog import register
+
+    register(cli)
+    selection = ["physical_measurements", "task_context"]
+    if enable_import:
+        selection.append("dicom_import")
+    env = tmp_path / "metadata.env"
+    env.write_text("CVAT_EXTENSIONS=" + ",".join(selection) + "\nCOMPOSE_PROJECT_NAME=metadata\n")
+    env.chmod(0o600)
+    manager = cli.Manager(ROOT, env, tmp_path / "state")
+    assert manager.extensions == tuple(selection)
+    plugins = ["plugins/physical-measurements", "plugins/task-context"]
+    if enable_import:
+        plugins.append("plugins/dicom-import")
+    assert manager.values["CVAT_CLIENT_PLUGINS"].split(":") == plugins
+    command = manager.compose("config")
+    files = [command[index + 1] for index, value in enumerate(command) if value == "-f"]
+    dicom_compose = str(ROOT / "components/dicom_import/docker-compose.dicom.yml")
+    assert (dicom_compose in files) is enable_import
+    assert str(ROOT / cli.SERVERLESS_COMPOSE) not in files
+    assert manager.function_environment() == {}
+    assert manager.model_sources() == {}
+
+
 @pytest.mark.parametrize("selected", ["", *CLIENTS, ",".join(CLIENTS)])
 def test_selection_overrides_stale_paths_and_preserves_custom_plugins(make_manager, selected):
     paths = ":".join(["custom/extra", *CLIENTS.values(), "plugins/sam2", "custom/extra"])
     manager = make_manager(selected, f"CVAT_CLIENT_PLUGINS={paths}\n")
-    expected = ["custom/extra", *(path for name, path in CLIENTS.items() if name in selected.split(","))]
+    expected = [
+        "custom/extra",
+        *(path for name, path in CLIENTS.items() if name in selected.split(",")),
+    ]
     assert manager.values["CVAT_CLIENT_PLUGINS"].split(":") == expected
 
 
@@ -140,10 +209,12 @@ def test_invalid_selection_reports_all_choices(cli, make_manager, selected):
 
 def test_all_existing_extensions_can_be_combined(cli, make_manager):
     selected = ",".join(cli.EXTENSION_COMPOSE)
-    manager = make_manager(selected,
+    manager = make_manager(
+        selected,
         "SAM2_REDIS_PASSWORD=" + "a" * 48 + "\nSAM31_REDIS_PASSWORD=" + "b" * 48 + "\n"
         "CVAT_MODEL_REGISTRY_URL=https://registry.example.test\n"
-        "CVAT_MODEL_GATEWAY_SECRETS_DIR=/test/secrets\n")
+        "CVAT_MODEL_GATEWAY_SECRETS_DIR=/test/secrets\n",
+    )
     assert manager.extensions == tuple(cli.EXTENSION_COMPOSE)
     assert manager.values["CVAT_CLIENT_PLUGINS"].split(":") == list(cli.EXTENSION_PLUGINS.values())
     assert manager.values["CVAT_AI_GATEWAY_HOST"] == "model-gateway"
@@ -151,13 +222,22 @@ def test_all_existing_extensions_can_be_combined(cli, make_manager):
     assert set(manager.function_environment()) == set(cli.OWNERS)
 
 
-@pytest.mark.parametrize("selected,serverless", [
-    ("frame_navigation_filter", False), ("selective_ai", True),
-    ("frame_navigation_filter,selective_ai", True),
-    ("filtered_export", False),
-    ("frame_navigation_filter,filtered_export", False),
-    (",".join(CLIENTS), True),
-])
+@pytest.mark.parametrize(
+    "selected,serverless",
+    [
+        ("frame_navigation_filter", False),
+        ("selective_ai", True),
+        ("frame_navigation_filter,selective_ai", True),
+        ("filtered_export", False),
+        ("frame_navigation_filter,filtered_export", False),
+        ("physical_measurements", False),
+        ("task_context", False),
+        ("task_context,filtered_export", False),
+        ("task_context,physical_measurements", False),
+        ("physical_measurements,frame_navigation_filter", False),
+        (",".join(CLIENTS), True),
+    ],
+)
 def test_compose_uses_only_required_existing_overlays(cli, make_manager, selected, serverless):
     manager = make_manager(selected)
     command = manager.compose("config")
@@ -176,7 +256,9 @@ def test_configuration_rejects_missing_plugin_source(cli, make_manager, monkeypa
     path = manager.root / f"cvat-ui/{CLIENTS[feature]}/src/ts/index.tsx"
     path.unlink()
     monkeypatch.setattr(manager, "version_check", lambda: None)
-    monkeypatch.setattr(manager, "run", lambda *a, **k: pytest.fail("Must reject before Compose config"))
+    monkeypatch.setattr(
+        manager, "run", lambda *a, **k: pytest.fail("Must reject before Compose config")
+    )
     with pytest.raises(cli.OperationError, match="Missing source"):
         manager.configuration()
 
@@ -203,25 +285,38 @@ def test_selection_changes_only_ui_image_tag_for_same_source(cli, make_manager, 
     for selected in ("", *CLIENTS, ",".join(CLIENTS)):
         manager = make_manager(selected)
         model, _ = configure(cli, manager, monkeypatch)
-        images.append((model["services"]["cvat_server"]["image"], model["services"]["cvat_ui"]["image"]))
+        images.append(
+            (model["services"]["cvat_server"]["image"], model["services"]["cvat_ui"]["image"])
+        )
     assert len({backend for backend, _ in images}) == 1
     assert len({ui for _, ui in images}) == len(CLIENTS) + 2
 
 
 @pytest.mark.parametrize("command", ["config", "doctor"])
-@pytest.mark.parametrize("selected", ["", ",".join(CLIENTS)])
-def test_cli_reports_resolved_client_plugins(cli, make_manager, monkeypatch, capsys, command, selected):
+@pytest.mark.parametrize("selected", ["", "physical_measurements", ",".join(CLIENTS)])
+def test_cli_reports_resolved_client_plugins(
+    cli, make_manager, monkeypatch, capsys, command, selected
+):
     manager = make_manager(selected)
     model, _ = configure(cli, manager, monkeypatch)
     monkeypatch.setattr(cli, "Manager", lambda *args: manager)
     monkeypatch.setattr(manager, "configuration", lambda: model)
-    monkeypatch.setattr(sys, "argv", [
-        "cvatctl", "--env-file", str(manager.env_file), "--state-dir", str(manager.state), command,
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cvatctl",
+            "--env-file",
+            str(manager.env_file),
+            "--state-dir",
+            str(manager.state),
+            command,
+        ],
+    )
     cli.main()
     summary = json.loads(capsys.readouterr().out)
     assert summary["extensions"] == list(manager.extensions)
-    assert summary["client_plugins"] == (list(CLIENTS.values()) if selected else [])
+    assert summary["client_plugins"] == [CLIENTS[name] for name in manager.extensions]
 
 
 @pytest.mark.parametrize("selected", CLIENTS)
@@ -249,7 +344,10 @@ def test_build_and_up_share_ui_lifecycle_without_gpu(cli, make_manager, monkeypa
     assert not any("build" in command for command in calls)
     saved = cli.read_json(manager.state / "active.json")
     assert saved["extensions"] == [selected]
-    assert saved["model"]["services"]["cvat_ui"]["build"]["args"]["CLIENT_PLUGINS"] == CLIENTS[selected]
+    assert (
+        saved["model"]["services"]["cvat_ui"]["build"]["args"]["CLIENT_PLUGINS"]
+        == CLIENTS[selected]
+    )
     assert manager.matches_configuration(saved, model)
     changed = copy.deepcopy(model)
     changed["services"]["cvat_ui"]["build"]["args"]["CLIENT_PLUGINS"] = ""
@@ -269,3 +367,140 @@ def test_down_uses_recorded_ui_even_after_selection_changes(cli, make_manager, m
     assert manager.compose("down", "--timeout", "120", frozen=True) in calls
     assert all("--volumes" not in call and "-v" not in call for call in calls)
     assert cli.read_json(manager.state / "active.json")["extensions"] == list(CLIENTS)
+
+
+def test_status_uses_recorded_measurement_ui_after_disable(cli, make_manager, monkeypatch):
+    previous = make_manager("physical_measurements")
+    model, _ = configure(cli, previous, monkeypatch)
+    previous.freeze(model)
+    manager = make_manager("")
+    calls = []
+    monkeypatch.setattr(cli, "Manager", lambda *args: manager)
+    monkeypatch.setattr(
+        manager, "configuration", lambda: pytest.fail("Use the recorded deployment")
+    )
+    monkeypatch.setattr(manager, "functions", lambda: [])
+    monkeypatch.setattr(manager, "run", lambda command, **kwargs: calls.append(command) or "")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cvatctl",
+            "--env-file",
+            str(manager.env_file),
+            "--state-dir",
+            str(manager.state),
+            "status",
+        ],
+    )
+    cli.main()
+    assert calls == [manager.compose("ps", "--all", frozen=True)]
+    assert cli.read_json(manager.state / "active.json")["extensions"] == ["physical_measurements"]
+
+
+@pytest.mark.parametrize("wrong_ui_image", [False, True])
+def test_check_verifies_measurement_ui_without_starting_work(
+    cli,
+    make_manager,
+    monkeypatch,
+    wrong_ui_image,
+):
+    manager = make_manager("physical_measurements")
+    model, _ = configure(cli, manager, monkeypatch)
+    manager.freeze(
+        model, {service["image"]: "sha256:recorded" for service in model["services"].values()}
+    )
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:3] == ["docker", "image", "inspect"]:
+            return "sha256:recorded"
+        if command[:2] == ["docker", "inspect"]:
+            return (
+                "sha256:different"
+                if wrong_ui_image and command[2] == "cvat_ui"
+                else "sha256:recorded"
+            )
+        for service in model["services"]:
+            if command == manager.compose("ps", "-q", service, frozen=True):
+                return service
+        pytest.fail(f"Unexpected command: {command}")
+
+    monkeypatch.setattr(manager, "run", run)
+    if wrong_ui_image:
+        with pytest.raises(cli.OperationError, match="cvat_ui: running image ID differs"):
+            manager.check()
+    else:
+        manager.check()
+    assert manager.compose("ps", "-q", "cvat_ui", frozen=True) in calls
+    assert all("exec" not in call and "up" not in call and "build" not in call for call in calls)
+
+
+@pytest.mark.parametrize(
+    "previous_selection,current_selection", [("task_context", ""), ("", "task_context")]
+)
+def test_task_context_check_uses_recorded_images_without_backend_commands(
+    cli,
+    make_manager,
+    monkeypatch,
+    previous_selection,
+    current_selection,
+):
+    previous = make_manager(previous_selection)
+    model, _ = configure(cli, previous, monkeypatch)
+    previous.freeze(model)
+    manager = make_manager(current_selection)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:3] == ["docker", "image", "inspect"] or command[:2] == ["docker", "inspect"]:
+            return "sha256:fixture"
+        if "ps" in command:
+            return "container-id"
+        return "OK"
+
+    monkeypatch.setattr(manager, "run", run)
+    monkeypatch.setattr(
+        manager, "configuration", lambda: pytest.fail("Use the recorded configuration")
+    )
+    manager.check()
+    assert [
+        "docker",
+        "image",
+        "inspect",
+        model["services"]["cvat_ui"]["image"],
+        "--format",
+        "{{.Id}}",
+    ] in calls
+    assert manager.compose("ps", "-q", "cvat_ui", frozen=True) in calls
+    assert all("exec" not in command for command in calls)
+
+
+def test_status_uses_recorded_task_context_configuration(cli, make_manager, monkeypatch):
+    previous = make_manager("task_context")
+    model, _ = configure(cli, previous, monkeypatch)
+    previous.freeze(model)
+    manager = make_manager("")
+    calls = []
+    monkeypatch.setattr(cli, "Manager", lambda *args: manager)
+    monkeypatch.setattr(manager, "functions", lambda: [])
+    monkeypatch.setattr(manager, "run", lambda command, **kwargs: calls.append(command) or "")
+    monkeypatch.setattr(
+        manager, "configuration", lambda: pytest.fail("Use the recorded configuration")
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cvatctl",
+            "--env-file",
+            str(manager.env_file),
+            "--state-dir",
+            str(manager.state),
+            "status",
+        ],
+    )
+    cli.main()
+    assert calls == [manager.compose("ps", "--all", frozen=True)]

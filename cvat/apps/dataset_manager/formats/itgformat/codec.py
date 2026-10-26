@@ -176,10 +176,11 @@ def parse_header(text: str) -> Header:
 
 
 def format_header(header: Header) -> str:
-    sx, sy, sz = header.spacing_xyz
+    # Preserve the numeric PixelSpacing values instead of rounding them to 9 digits.
+    sx, sy, sz = (str(float(value)).removesuffix(".0") for value in header.spacing_xyz)
     first = (
         f"{header.width} {header.height} 1 {header.byte_count} "
-        f"{sx:.9g} {sy:.9g} {sz:.9g} mask\n"
+        f"{sx} {sy} {sz} mask\n"
     )
     return first + "".join(
         f"{bit} {name}\n" for bit, name in sorted(header.bit_names.items())
@@ -260,10 +261,18 @@ def read_mask(hdr_path: Path) -> tuple[Header, np.ndarray]:
     )
 
 
-def write_mask(hdr_path: Path, mask: np.ndarray, bit_names: Mapping[int, str]) -> None:
+def write_mask(
+    hdr_path: Path,
+    mask: np.ndarray,
+    bit_names: Mapping[int, str],
+    *,
+    spacing_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> None:
     """Write HDR pixel width from the unsigned array dtype, including for all-zero masks."""
     dtype = _checked_mask_dtype(mask)
-    header = Header(mask.shape[1], mask.shape[0], dict(bit_names), dtype.itemsize)
+    header = Header(
+        mask.shape[1], mask.shape[0], dict(bit_names), dtype.itemsize, spacing_xyz
+    )
     defined = sum(1 << bit for bit in header.bit_names)
     if np.any(mask & dtype.type(int(np.iinfo(dtype).max) ^ defined)):
         raise FormatError("Mask uses an undefined bit")

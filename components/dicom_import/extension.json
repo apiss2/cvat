@@ -1,0 +1,5 @@
+{
+  "name": "dicom_import",
+  "client_plugin": "plugins/dicom-import",
+  "compose_files": ["components/dicom_import/docker-compose.dicom.yml"]
+}

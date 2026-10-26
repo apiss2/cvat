@@ -4,12 +4,10 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import shutil
@@ -17,6 +15,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -127,18 +127,35 @@ class Repository:
     def command(self, *args: str, mounts: list[str] | None = None) -> list[str]:
         private_directory(self.directory)
         if not self.password.is_file() or self.password.stat().st_mode & 0o077:
-            raise BackupError("The repository password file is missing or is not private (chmod 600)")
+            raise BackupError(
+                "The repository password file is missing or is not private (chmod 600)"
+            )
         if not self.password.stat().st_size:
             raise BackupError("The repository password file is empty")
         private_directory(self.cache)
         return [
-            "docker", "run", "--rm", "--network", "none", "--read-only",
-            "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,nodev",
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--security-opt",
+            "no-new-privileges",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev",
             *mount("bind", self.directory, "/repository", readonly=False),
             *mount("bind", self.password, "/run/restic-password"),
             *mount("bind", self.cache, "/cache", readonly=False),
-            *(mounts or []), IMAGE, "--repo", "/repository",
-            "--password-file", "/run/restic-password", "--cache-dir", "/cache", *args,
+            *(mounts or []),
+            IMAGE,
+            "--repo",
+            "/repository",
+            "--password-file",
+            "/run/restic-password",
+            "--cache-dir",
+            "/cache",
+            *args,
         ]
 
     def execute(self, *args: str, mounts: list[str] | None = None) -> str:
@@ -149,7 +166,11 @@ class Repository:
             raise BackupError("Backup settings already exist; they will not be overwritten")
         directory = safe_path(directory)
         password = safe_path(password or self.state / "backup-password")
-        if overlap(directory, ROOT) or overlap(directory, self.state) or overlap(directory, password):
+        if (
+            overlap(directory, ROOT)
+            or overlap(directory, self.state)
+            or overlap(directory, password)
+        ):
             raise BackupError("Repository must be outside the checkout, state and password paths")
         private_directory(directory)
         existing = any(directory.iterdir())
@@ -164,23 +185,41 @@ class Repository:
                 output.write(secrets.token_hex(32) + "\n")
         self.values = {"version": 1, "repository": str(directory), "password_file": str(password)}
         # Persist only after restic has accepted the password/repository.
-        self.execute("snapshots", "--json") if existing else self.execute("init", "--repository-version", "2")
+        (
+            self.execute("snapshots", "--json")
+            if existing
+            else self.execute("init", "--repository-version", "2")
+        )
         save_json(self.config, self.values)
-        print(f"Repository: {directory}\nPassword file: {password}\nKeep a separate secure copy of the password file.")
+        print(
+            f"Repository: {directory}\nPassword file: {password}\nKeep a separate secure copy of the password file."
+        )
 
     def snapshots(self, *, host: str | None = None) -> list[dict[str, Any]]:
         args = ["snapshots", "--json", "--tag", TAG]
         if host:
             args += ["--host", host]
         items = json.loads(self.execute(*args)) or []
-        return sorted((x for x in items if COMPLETE in x.get("tags", [])
-                       and PENDING not in x.get("tags", [])), key=lambda x: x["time"])
+        return sorted(
+            (
+                x
+                for x in items
+                if COMPLETE in x.get("tags", []) and PENDING not in x.get("tags", [])
+            ),
+            key=lambda x: x["time"],
+        )
 
     def select(self, reference: str) -> dict[str, Any]:
         items = self.snapshots()
-        matches = items[-1:] if reference == "latest" else [
-            x for x in items if re.fullmatch(r"[0-9a-f]{8,64}", reference) and x["id"].startswith(reference)
-        ]
+        matches = (
+            items[-1:]
+            if reference == "latest"
+            else [
+                x
+                for x in items
+                if re.fullmatch(r"[0-9a-f]{8,64}", reference) and x["id"].startswith(reference)
+            ]
+        )
         if len(matches) != 1:
             raise BackupError("Snapshot must identify exactly one completed cvatctl backup")
         return matches[0]
@@ -190,21 +229,53 @@ class Repository:
         target = safe_path(target)
         if any(overlap(target, x) for x in (ROOT, self.state, self.directory, self.password)):
             raise BackupError("Restore target overlaps the checkout or backup storage")
+        if target.exists():
+            raise FileExistsError(f"Restore target already exists: {target}")
+        manifest = json.loads(
+            self.execute("dump", snapshot["id"], "/source/metadata/manifest.json")
+        )
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("format") != 1
+            or not isinstance(manifest.get("sources"), list)
+            or not manifest["sources"]
+        ):
+            raise BackupError("Snapshot has no supported source manifest")
+        for entry in manifest["sources"]:
+            if not isinstance(entry, dict) or entry.get("type") not in ("bind", "volume"):
+                raise BackupError("Snapshot contains an unsupported source")
+            source = entry.get("host_path" if entry["type"] == "volume" else "source")
+            if not isinstance(source, str) or not Path(source).is_absolute():
+                raise BackupError("Snapshot source has no absolute host path")
+            if overlap(target, safe_path(source)):
+                raise BackupError("Restore target overlaps original deployment storage")
         # Never mount production data or overwrite an existing directory.
         target.mkdir(parents=True, exist_ok=False, mode=0o700)
-        print(self.execute("restore", snapshot["id"], "--target", "/restore", "--verify",
-                           mounts=mount("bind", target, "/restore", readonly=False)))
+        print(
+            self.execute(
+                "restore",
+                snapshot["id"],
+                "--target",
+                "/restore",
+                "--verify",
+                mounts=mount("bind", target, "/restore", readonly=False),
+            )
+        )
         print(f"Extracted to {target}. Production data was not changed.")
 
 
-def sources(manager: Any, saved: dict[str, Any], containers: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, str]], list[str]]:
+def sources(
+    manager: Any, saved: dict[str, Any], containers: list[dict[str, Any]] | None = None
+) -> tuple[list[dict[str, str]], list[str]]:
     """Resolve the recorded deployment, not potentially edited Compose/.env files."""
     model = saved["model"]
     services = model["services"]
     backend = services["cvat_server"].get("environment", {})
-    for key, service in (("CVAT_POSTGRES_HOST", "cvat_db"),
-                         ("CVAT_REDIS_INMEM_HOST", "cvat_redis_inmem"),
-                         ("CVAT_REDIS_ONDISK_HOST", "cvat_redis_ondisk")):
+    for key, service in (
+        ("CVAT_POSTGRES_HOST", "cvat_db"),
+        ("CVAT_REDIS_INMEM_HOST", "cvat_redis_inmem"),
+        ("CVAT_REDIS_ONDISK_HOST", "cvat_redis_ondisk"),
+    ):
         if service not in services or backend.get(key) != service:
             raise BackupError(f"External or nonstandard database unsupported: {key}")
     if "model_registry" in saved.get("extensions", []) and "model-registry" not in services:
@@ -212,7 +283,7 @@ def sources(manager: Any, saved: dict[str, Any], containers: list[dict[str, Any]
     result: dict[tuple[str, str], dict[str, str]] = {}
     skipped: list[str] = []
 
-    def add(kind: str, source: str) -> None:
+    def add(kind: str, source: str) -> tuple[str, str] | None:
         if kind == "tmpfs":
             return
         if not source or kind not in ("volume", "bind"):
@@ -229,8 +300,34 @@ def sources(manager: Any, saved: dict[str, Any], containers: list[dict[str, Any]
         key = (kind, source)
         destination = f"/source/{kind}/{hashlib.sha256(source.encode()).hexdigest()[:24]}"
         result[key] = {"type": kind, "source": source, "path": destination}
+        return key
 
-    for service in services.values():
+    def destination(value: str) -> str:
+        if not value or not Path(value).is_absolute():
+            raise BackupError("A recorded/runtime mount is missing its absolute container target")
+        # Normalize container paths lexically, never against the host filesystem.
+        return os.path.normpath(value)
+
+    file_sources = {}
+    for section in ("configs", "secrets"):
+        file_sources[section] = {}
+        for name, value in model.get(section, {}).items():
+            if not value.get("file"):
+                raise BackupError(f"External {section} require a separate backup")
+            file_sources[section][name] = add("bind", value["file"])
+
+    expected_mounts = {}
+    for service_name, service in services.items():
+        expected = expected_mounts[service_name] = {}
+
+        def expect(target: str, key: tuple[str, str] | None) -> None:
+            if key is None:
+                return
+            target = destination(target)
+            if target in expected and expected[target] != key:
+                raise BackupError(f"Conflicting recorded mounts for service: {service_name}")
+            expected[target] = key
+
         for item in service.get("volumes", []):
             kind, source = item.get("type", "volume"), item.get("source", "")
             if kind == "volume" and source:
@@ -238,17 +335,23 @@ def sources(manager: Any, saved: dict[str, Any], containers: list[dict[str, Any]
                 if not definition or not definition.get("name"):
                     raise BackupError(f"Missing recorded volume name: {source}")
                 source = definition["name"]
-            add(kind, source)
-    for section in ("configs", "secrets"):
-        for value in model.get(section, {}).values():
-            if not value.get("file"):
-                raise BackupError(f"External {section} require a separate backup")
-            add("bind", value["file"])
+            expect(item.get("target", ""), add(kind, source))
+        for section, prefix in (("configs", "/"), ("secrets", "/run/secrets")):
+            for item in service.get(section, []):
+                item = {"source": item} if isinstance(item, str) else item
+                name = item.get("source", "")
+                if name not in file_sources[section]:
+                    raise BackupError(f"Missing recorded {section} source: {name}")
+                target = os.path.join(prefix, item.get("target") or name)
+                expect(target, file_sources[section][name])
     # A manually modified container must not silently redirect us to old data.
     for container in containers or []:
-        service_name = (container.get("Config", {}).get("Labels") or {}).get("com.docker.compose.service")
+        service_name = (container.get("Config", {}).get("Labels") or {}).get(
+            "com.docker.compose.service"
+        )
         if service_name not in services:
             raise BackupError("Unrecorded Compose service found; reconcile the deployment first")
+        actual = {}
         for runtime_mount in container.get("Mounts", []):
             kind = runtime_mount["Type"]
             if kind == "tmpfs":
@@ -258,8 +361,11 @@ def sources(manager: Any, saved: dict[str, Any], containers: list[dict[str, Any]
                 source = str(safe_path(source))
                 if Path(source).is_socket():
                     continue
-            if (kind, source) not in result:
-                raise BackupError("Runtime mounts differ from the recorded Compose configuration")
+            actual[destination(runtime_mount.get("Destination", ""))] = (kind, source)
+        if actual != expected_mounts[service_name]:
+            raise BackupError(
+                f"Runtime mounts differ from the recorded Compose configuration: {service_name}"
+            )
     # The Nuclio functions and model workers live outside Compose.
     for item in [*manager.functions(), *manager.registry_workers(model)]:
         for item_mount in item.get("Mounts", []):
@@ -284,10 +390,14 @@ def sources(manager: Any, saved: dict[str, Any], containers: list[dict[str, Any]
         raise BackupError("No persistent named volumes found")
     # Avoid copying nested bind directories twice (also covers registry/data).
     entries = sorted(result.values(), key=lambda x: (x["type"], x["source"]))
-    entries = [x for x in entries if x["type"] != "bind" or not any(
-        y["type"] == "bind" and Path(y["source"]) in Path(x["source"]).parents
-        for y in entries
-    )]
+    entries = [
+        x
+        for x in entries
+        if x["type"] != "bind"
+        or not any(
+            y["type"] == "bind" and Path(y["source"]) in Path(x["source"]).parents for y in entries
+        )
+    ]
     return entries, sorted(set(skipped))
 
 
@@ -312,12 +422,18 @@ def assert_quiet(manager: Any, entries: list[dict[str, str]]) -> None:
             for entry in entries:
                 same_volume = entry["type"] == "volume" and item.get("Name") == entry["source"]
                 source = item.get("Source")
-                shared_path = source and overlap(Path(source), Path(entry.get("host_path", entry["source"])))
+                shared_path = source and overlap(
+                    Path(source), Path(entry.get("host_path", entry["source"]))
+                )
                 if same_volume or shared_path:
-                    raise BackupError(f"A running container can write backup data: {container['Id'][:12]}")
+                    raise BackupError(
+                        f"A running container can write backup data: {container['Id'][:12]}"
+                    )
 
 
-def create_backup(repo: Repository, manager: Any, *, stop: bool = False, plan: bool = False) -> None:
+def create_backup(
+    repo: Repository, manager: Any, *, stop: bool = False, plan: bool = False
+) -> None:
     active = manager.state / "active.json"
     frozen = manager.state / "active.compose.json"
     if not active.is_file() or not frozen.is_file():
@@ -326,24 +442,35 @@ def create_backup(repo: Repository, manager: Any, *, stop: bool = False, plan: b
     manager.assert_identity(saved)
     if saved["model"] != json.loads(frozen.read_text()):
         raise BackupError("Recorded Compose files disagree; refusing to guess backup sources")
-    identifiers = manager.run([
-        "docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={manager.project}"
-    ]).split()
+    identifiers = manager.run(
+        ["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={manager.project}"]
+    ).split()
     containers = json.loads(manager.run(["docker", "inspect", *identifiers])) if identifiers else []
     entries, skipped = sources(manager, saved, containers)
     validate_destinations(repo, entries)
     if plan:
-        print(json.dumps({"sources": entries, "excluded": skipped, "repository": str(repo.directory)}, indent=2))
+        print(
+            json.dumps(
+                {"sources": entries, "excluded": skipped, "repository": str(repo.directory)},
+                indent=2,
+            )
+        )
         return
     # Authenticate, resolve sources and read previous snapshots BEFORE stopping.
-    host = "cvatctl-" + hashlib.sha256(json.dumps(saved["identity"], sort_keys=True).encode()).hexdigest()[:24]
+    host = (
+        "cvatctl-"
+        + hashlib.sha256(json.dumps(saved["identity"], sort_keys=True).encode()).hexdigest()[:24]
+    )
     previous = repo.snapshots(host=host)
     source_mounts = []
     for entry in entries:
         source_mounts += mount(entry["type"], entry["source"], entry["path"])
     repo.execute("version", mounts=source_mounts)
     if stop:
-        print("Stopping CVAT using the recorded deployment. It will remain stopped for the update.", flush=True)
+        print(
+            "Stopping CVAT using the recorded deployment. It will remain stopped for the update.",
+            flush=True,
+        )
         manager.down()
     assert_quiet(manager, entries)
     token = "run-" + secrets.token_hex(16)
@@ -358,28 +485,57 @@ def create_backup(repo: Repository, manager: Any, *, stop: bool = False, plan: b
         save_json(metadata / "containers.json", containers)
         commit = manager.run(["git", "-C", str(manager.root), "rev-parse", "HEAD"]).strip()
         dirty = manager.run(["git", "-C", str(manager.root), "status", "--porcelain=v1"])
-        (metadata / "source.patch").write_text(manager.run([
-            "git", "-C", str(manager.root), "diff", "--binary", "HEAD"
-        ]))
-        save_json(metadata / "manifest.json", {
-            "format": 1, "strategy": "cold-filesystem", "git_commit": commit,
-            "git_status": dirty, "sources": entries, "excluded": skipped,
-            "identity": saved["identity"], "restic_image": IMAGE,
-            "limitations": ["No Docker images, untracked source files or remote object storage",
-                            "Restore databases with the recorded versions and architecture"],
-        })
+        (metadata / "source.patch").write_text(
+            manager.run(["git", "-C", str(manager.root), "diff", "--binary", "HEAD"])
+        )
+        save_json(
+            metadata / "manifest.json",
+            {
+                "format": 1,
+                "strategy": "cold-filesystem",
+                "git_commit": commit,
+                "git_status": dirty,
+                "sources": entries,
+                "excluded": skipped,
+                "identity": saved["identity"],
+                "restic_image": IMAGE,
+                "limitations": [
+                    "No Docker images, untracked source files or remote object storage",
+                    "Restore databases with the recorded versions and architecture",
+                ],
+            },
+        )
         mounts = mount("bind", metadata, "/source/metadata")
         for entry in entries:
             mounts += mount(entry["type"], entry["source"], entry["path"])
-        args = ["backup", "--json", "--host", host, "--tag", TAG,
-                "--tag", PENDING, "--tag", token, "--group-by", "host,paths,tags"]
+        args = [
+            "backup",
+            "--json",
+            "--host",
+            host,
+            "--tag",
+            TAG,
+            "--tag",
+            PENDING,
+            "--tag",
+            token,
+            "--group-by",
+            "host,paths,tags",
+        ]
         if previous:
             args += ["--parent", previous[-1]["id"]]
         print("Creating incremental snapshot...", flush=True)
         output = repo.execute(*args, "/source", mounts=mounts)
-        summaries = [x for line in output.splitlines() if line.strip()
-                     for x in [json.loads(line)] if x.get("message_type") == "summary"]
-        if len(summaries) != 1 or not re.fullmatch(r"[0-9a-f]{8,64}", summaries[0].get("snapshot_id", "")):
+        summaries = [
+            x
+            for line in output.splitlines()
+            if line.strip()
+            for x in [json.loads(line)]
+            if x.get("message_type") == "summary"
+        ]
+        if len(summaries) != 1 or not re.fullmatch(
+            r"[0-9a-f]{8,64}", summaries[0].get("snapshot_id", "")
+        ):
             raise BackupError("restic did not report a completed snapshot; no backup was promoted")
         assert_quiet(manager, entries)
         # Exit 3 and interrupted snapshots never become completed restore points.
@@ -401,9 +557,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("snapshot", nargs="?")
     result.add_argument("--repository", type=Path)
     result.add_argument("--password-file", type=Path)
-    result.add_argument("--stop", action="store_true", help="Stop the recorded deployment and leave it stopped")
-    result.add_argument("--read-data", action="store_true", help="For check: verify all stored data")
-    result.add_argument("--target", type=Path, help="For restore: new extraction directory, never production data")
+    result.add_argument(
+        "--stop", action="store_true", help="Stop the recorded deployment and leave it stopped"
+    )
+    result.add_argument(
+        "--read-data", action="store_true", help="For check: verify all stored data"
+    )
+    result.add_argument(
+        "--target", type=Path, help="For restore: new extraction directory, never production data"
+    )
     return result
 
 
@@ -424,7 +586,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.snapshot is not None and args.action != "restore":
         options.error("A snapshot ID is only supported with restore")
     sys.path.insert(0, str(ROOT))
+    from components.extensions import manage
+    from components.extensions.catalog import register
     from components.extensions.manage import Manager, OperationError, default_state
+
     env_file = safe_path(args.env_file)
     state = safe_path(args.state_dir or default_state(env_file))
     if overlap(state, ROOT):
@@ -436,10 +601,16 @@ def main(argv: list[str] | None = None) -> None:
             if args.action == "init":
                 repo.initialize(args.repository, args.password_file)
             elif args.action in ("plan", "create"):
+                register(manage)
                 manager = Manager(ROOT, env_file, state)
                 # Reject a .env that redirects Docker away from the helper's daemon.
-                if manager.identity()["daemon"] != repo.run(["docker", "info", "--format", "{{.ID}}"]).strip():
-                    raise BackupError("The deployment and backup helper use different Docker daemons")
+                if (
+                    manager.identity()["daemon"]
+                    != repo.run(["docker", "info", "--format", "{{.ID}}"]).strip()
+                ):
+                    raise BackupError(
+                        "The deployment and backup helper use different Docker daemons"
+                    )
                 create_backup(repo, manager, stop=args.stop, plan=args.action == "plan")
             elif args.action == "list":
                 print(json.dumps(repo.snapshots(), indent=2))
@@ -458,5 +629,8 @@ if __name__ == "__main__":
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
-        print("Interrupted. CVAT may be stopped; inspect cvatctl status before resuming.", file=sys.stderr)
+        print(
+            "Interrupted. CVAT may be stopped; inspect cvatctl status before resuming.",
+            file=sys.stderr,
+        )
         sys.exit(130)

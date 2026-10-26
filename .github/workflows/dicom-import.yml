@@ -1,0 +1,61 @@
+name: DICOM metadata extensions
+on:
+  pull_request:
+    paths:
+      - 'components/dicom_import/**'
+      - 'components/extensions/catalog.py'
+      - 'components/extensions/backup.py'
+      - 'components/extensions/cli.py'
+      - 'components/extensions/cvatctl'
+      - 'components/extensions/entrypoint.py'
+      - 'components/extensions/manage.py'
+      - 'components/extensions/tests/**'
+      - 'cvat-ui/plugins/dicom-import/**'
+      - 'cvat-ui/plugins/physical-measurements/**'
+      - 'cvat-ui/plugins/task-context/**'
+      - 'cvat-canvas/src/typescript/canvasModel.ts'
+      - 'cvat-canvas/src/typescript/canvasView.ts'
+      - 'cvat/apps/dataset_manager/formats/task_guide*.py'
+      - 'cvat/apps/dataset_manager/formats/itgformat/**'
+      - 'tests/python/unit/test_task_guide_import.py'
+      - 'tests/itgformat/**'
+      - '.github/workflows/dicom-import.yml'
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - run: >-
+          python -m pip install -r components/dicom_import/requirements.txt
+          numpy==2.2.6 opencv-python-headless==4.12.0.88 pytest==8.4.1 'Pillow>=12.3.0'
+      - run: >-
+          PYTHONPATH=. python -m pytest -c /dev/null -q
+          components/dicom_import/tests tests/itgformat
+          components/extensions/tests/test_cvatctl.py
+          components/extensions/tests/test_client_plugins.py
+          components/extensions/tests/test_functions.py
+      - run: python -m unittest discover -s tests/python/unit -p test_task_guide_import.py
+      - run: python -m unittest discover -s components/extensions/tests -p 'test_backup*.py'
+      - run: npm install --prefix /tmp/dicom-ts typescript@5.8.3
+      - run: >-
+          /tmp/dicom-ts/node_modules/.bin/tsc --strict --target es2020
+          --module commonjs --lib es2020,dom --outDir /tmp/dicom-test-build
+          cvat-ui/plugins/dicom-import/src/ts/archive.ts
+          cvat-ui/plugins/dicom-import/src/ts/api.ts
+      - run: >-
+          DICOM_TEST_BUILD=/tmp/dicom-test-build
+          NODE_PATH=/tmp/dicom-ts/node_modules
+          node --test cvat-ui/plugins/dicom-import/tests/import.test.cjs
+          cvat-ui/plugins/physical-measurements/tests/*.test.cjs
+          cvat-ui/plugins/task-context/tests/*.test.cjs

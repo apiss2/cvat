@@ -4,24 +4,26 @@
 CVAT_BACKUP_DOCKER_TEST=1 python -m unittest discover \
     -s components/extensions/tests -p test_backup_docker.py -v
 """
-from contextlib import redirect_stdout
 import hashlib
 import io
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import time
 import unittest
 import uuid
+from contextlib import redirect_stdout
+from pathlib import Path
 
 from test_backup import backup
 
 
-@unittest.skipUnless(os.environ.get("CVAT_BACKUP_DOCKER_TEST") == "1" and shutil.which("docker"),
-                     "Requires explicit opt-in and a local Docker daemon")
+@unittest.skipUnless(
+    os.environ.get("CVAT_BACKUP_DOCKER_TEST") == "1" and shutil.which("docker"),
+    "Requires explicit opt-in and a local Docker daemon",
+)
 class DockerRoundTrip(unittest.TestCase):
     def test_incremental_and_postgres_restore(self):
         base = Path(tempfile.mkdtemp(prefix="cvatctl-backup-test-"))
@@ -41,41 +43,92 @@ class DockerRoundTrip(unittest.TestCase):
             for volume in volumes:
                 run(["docker", "volume", "create", volume])
             subprocess.run(["git", "init", str(base)], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(base), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-                            "commit", "--allow-empty", "-m", "fixture"], check=True, capture_output=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(base),
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "fixture",
+                ],
+                check=True,
+                capture_output=True,
+            )
             with redirect_stdout(io.StringIO()):
                 repo.initialize(base / "repository", None)
-            model = {"services": {
-                "cvat_server": {"environment": {"CVAT_POSTGRES_HOST": "cvat_db",
-                    "CVAT_REDIS_INMEM_HOST": "cvat_redis_inmem", "CVAT_REDIS_ONDISK_HOST": "cvat_redis_ondisk"}},
-                "cvat_db": {"volumes": [{"type": "volume", "source": "db"}]},
-                "cvat_redis_inmem": {}, "cvat_redis_ondisk": {},
-            }, "volumes": {"db": {"name": volumes[0]}}}
-            identity = {"project": name, "daemon": run(["docker", "info", "--format", "{{.ID}}"]).strip()}
-            backup.save_json(state / "active.json", {"model": model, "identity": identity, "extensions": []})
+            model = {
+                "services": {
+                    "cvat_server": {
+                        "environment": {
+                            "CVAT_POSTGRES_HOST": "cvat_db",
+                            "CVAT_REDIS_INMEM_HOST": "cvat_redis_inmem",
+                            "CVAT_REDIS_ONDISK_HOST": "cvat_redis_ondisk",
+                        }
+                    },
+                    "cvat_db": {
+                        "volumes": [
+                            {"type": "volume", "source": "db", "target": "/var/lib/postgresql/data"}
+                        ]
+                    },
+                    "cvat_redis_inmem": {},
+                    "cvat_redis_ondisk": {},
+                },
+                "volumes": {"db": {"name": volumes[0]}},
+            }
+            identity = {
+                "project": name,
+                "daemon": run(["docker", "info", "--format", "{{.ID}}"]).strip(),
+            }
+            backup.save_json(
+                state / "active.json", {"model": model, "identity": identity, "extensions": []}
+            )
             backup.save_json(state / "active.compose.json", model)
 
             class Manager:
                 root, env_file, project = base, env, name
+
                 def __init__(self):
                     self.state = state
+
                 def run(self, args):
                     return run(args)
+
                 def assert_identity(self, saved):
                     assert saved["identity"] == identity
+
                 def functions(self):
                     return []
+
                 def registry_workers(self, model):
                     return []
+
                 def down(self):
                     run(["docker", "stop", "--time", "120", db])
 
             def start(container, volume):
-                run(["docker", "run", "-d", "--name", container,
-                     "--label", "com.docker.compose.project=" + name,
-                     "--label", "com.docker.compose.service=cvat_db",
-                     "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
-                     *backup.mount("volume", volume, "/var/lib/postgresql/data", readonly=False), "postgres:15-alpine"])
+                run(
+                    [
+                        "docker",
+                        "run",
+                        "-d",
+                        "--name",
+                        container,
+                        "--label",
+                        "com.docker.compose.project=" + name,
+                        "--label",
+                        "com.docker.compose.service=cvat_db",
+                        "-e",
+                        "POSTGRES_HOST_AUTH_METHOD=trust",
+                        *backup.mount("volume", volume, "/var/lib/postgresql/data", readonly=False),
+                        "postgres:15-alpine",
+                    ]
+                )
                 for _ in range(120):
                     try:
                         run(["docker", "exec", container, "pg_isready", "-U", "postgres"])
@@ -85,11 +138,29 @@ class DockerRoundTrip(unittest.TestCase):
                 self.fail("PostgreSQL did not become ready")
 
             start(db, volumes[0])
-            run(["docker", "exec", db, "psql", "-U", "postgres", "-c",
-                 "CREATE TABLE marker(value text); INSERT INTO marker VALUES ('before');"])
+            run(
+                [
+                    "docker",
+                    "exec",
+                    db,
+                    "psql",
+                    "-U",
+                    "postgres",
+                    "-c",
+                    "CREATE TABLE marker(value text); INSERT INTO marker VALUES ('before');",
+                ]
+            )
             # Random data makes deduplication observable without relying on timing.
-            run(["docker", "exec", db, "sh", "-ec",
-                 "dd if=/dev/urandom of=/var/lib/postgresql/data/test-payload bs=1048576 count=8"])
+            run(
+                [
+                    "docker",
+                    "exec",
+                    db,
+                    "sh",
+                    "-ec",
+                    "dd if=/dev/urandom of=/var/lib/postgresql/data/test-payload bs=1048576 count=8",
+                ]
+            )
             with redirect_stdout(io.StringIO()):
                 backup.create_backup(repo, Manager(), stop=True)
             first = repo.snapshots()[-1]["id"]
@@ -97,12 +168,23 @@ class DockerRoundTrip(unittest.TestCase):
                 backup.create_backup(repo, Manager())
             # Only metadata should be new while the database remains stopped.
             text = output.getvalue()
-            report, _ = json.JSONDecoder().raw_decode(text[text.index("{"):])
+            report, _ = json.JSONDecoder().raw_decode(text[text.index("{") :])
             self.assertLess(report["summary"]["data_added"], 1024 * 1024)
             run(["docker", "start", db])
             for _ in range(120):
                 try:
-                    run(["docker", "exec", db, "psql", "-U", "postgres", "-c", "INSERT INTO marker VALUES ('after');"])
+                    run(
+                        [
+                            "docker",
+                            "exec",
+                            db,
+                            "psql",
+                            "-U",
+                            "postgres",
+                            "-c",
+                            "INSERT INTO marker VALUES ('after');",
+                        ]
+                    )
                     break
                 except backup.BackupError:
                     time.sleep(0.5)
@@ -113,12 +195,35 @@ class DockerRoundTrip(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 repo.restore(first, target)
             path = target / "source/volume" / hashlib.sha256(volumes[0].encode()).hexdigest()[:24]
-            run(["docker", "run", "--rm", "--network", "none",
-                 *backup.mount("bind", path, "/from"),
-                 *backup.mount("volume", volumes[1], "/to", readonly=False),
-                 "--entrypoint", "sh", backup.IMAGE, "-ec", 'test -z "$(ls -A /to)"; cp -a /from/. /to/'])
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    *backup.mount("bind", path, "/from"),
+                    *backup.mount("volume", volumes[1], "/to", readonly=False),
+                    "--entrypoint",
+                    "sh",
+                    backup.IMAGE,
+                    "-ec",
+                    'test -z "$(ls -A /to)"; cp -a /from/. /to/',
+                ]
+            )
             start(restored, volumes[1])
-            result = run(["docker", "exec", restored, "psql", "-U", "postgres", "-Atc", "SELECT value FROM marker;"])
+            result = run(
+                [
+                    "docker",
+                    "exec",
+                    restored,
+                    "psql",
+                    "-U",
+                    "postgres",
+                    "-Atc",
+                    "SELECT value FROM marker;",
+                ]
+            )
             self.assertEqual(result.strip(), "before")
             repo.execute("check", "--read-data")
         finally:
@@ -127,10 +232,22 @@ class DockerRoundTrip(unittest.TestCase):
             for volume in volumes:
                 subprocess.run(["docker", "volume", "rm", volume], capture_output=True)
             # restic restores original ownership. Cleanup is restricted to this test's mkdtemp.
-            subprocess.run(["docker", "run", "--rm", "--network", "none",
-                            *backup.mount("bind", base, "/cleanup", readonly=False),
-                            "--entrypoint", "sh", backup.IMAGE, "-ec",
-                            "find /cleanup -mindepth 1 -delete"], capture_output=True)
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    *backup.mount("bind", base, "/cleanup", readonly=False),
+                    "--entrypoint",
+                    "sh",
+                    backup.IMAGE,
+                    "-ec",
+                    "find /cleanup -mindepth 1 -delete",
+                ],
+                capture_output=True,
+            )
             shutil.rmtree(base)
 
 

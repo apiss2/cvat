@@ -161,9 +161,12 @@ def projects_wlc(projects, labels):  # projects with labels count
 
 
 @pytest.fixture(scope="session")
-def jobs():
+def jobs(tasks):
     with open(ASSETS_DIR / "jobs.json") as f:
-        return Container(json.load(f)["results"])
+        results = json.load(f)["results"]
+    for job in results:
+        job["task_guide_id"] = tasks[job["task_id"]]["guide_id"]
+    return Container(results)
 
 
 @pytest.fixture(scope="session")
