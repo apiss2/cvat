@@ -1,4 +1,4 @@
-"""Regression tests for orchestration. Docker/nuctl are simulated, not integration-tested."""
+"""Orchestration regressions with simulated Docker, nuctl and model downloads."""
 
 import copy
 import importlib.util
@@ -18,6 +18,7 @@ spec = importlib.util.spec_from_file_location(
 )
 ops = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ops)
+functions = ops.gpu_functions
 
 
 def write_env(path, text=""):
@@ -26,7 +27,12 @@ def write_env(path, text=""):
         if "MR_PUBLIC_URL=" in text
         else "MR_PUBLIC_URL=http://localhost:8080/model-registry/\n"
     )
-    path.write_text("SAM2_REDIS_PASSWORD=" + "a" * 64 + "\n" + public + text)
+    password = (
+        ""
+        if "SAM2_REDIS_PASSWORD=" in text
+        else "SAM2_REDIS_PASSWORD=" + "a" * 64 + "\n"
+    )
+    path.write_text(password + public + text)
     path.chmod(0o600)
     return path
 
@@ -140,6 +146,7 @@ class Fake(ops.Manager):
         self.projects = "No projects found\n"
         self.running_compose = []
         self.rendered = []
+        self.staged_sources = []
         self.fail_build = False
         self.network_exists = True
         self.env.update(
@@ -244,8 +251,15 @@ class Fake(ops.Manager):
         if args[:2] == ["nuctl", "deploy"]:
             path = Path(args[args.index("--file") + 1])
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
-            data = yaml.safe_load(path.read_text())
+            data = json.loads(path.read_text())
             self.rendered.append(data)
+            source = Path(args[args.index("--path") + 1])
+            assert source.parent == self.state
+            handler = data["spec"]["handler"].split(":")[0] + ".py"
+            assert (source / handler).is_file()
+            self.staged_sources.append(
+                {p.name: p.read_bytes() for p in source.glob("*.py")}
+            )
             name = data["metadata"]["name"]
             self.items = [
                 i
@@ -264,7 +278,7 @@ class Fake(ops.Manager):
 
 
 @pytest.fixture
-def mgr(tmp_path):
+def mgr(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
     (root / ".dockerignore").write_text("/cvat-model-registry/\n")
@@ -274,8 +288,24 @@ def mgr(tmp_path):
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("services: {}\n")
-    for source in ops.FUNCTION_SOURCES.values():
+    for feature, source in functions.SOURCES.items():
         shutil.copytree(ROOT / source, root / source)
+        recipe = root / f"components/{feature}/build.json"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / f"components/{feature}/build.json", recipe)
+    shutil.copyfile(
+        ROOT / "components/extensions/functions.py",
+        root / "components/extensions/functions.py",
+    )
+
+    def download_checkpoint(feature, values, destination, source_root):
+        environment = functions.model_environment(feature, values)
+        checkpoint = Path(environment[feature.upper() + "_CHECKPOINT"])
+        target = destination / checkpoint.relative_to("/opt/nuclio")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"test checkpoint")
+
+    monkeypatch.setattr(functions, "download_checkpoint", download_checkpoint)
     path = root / "tests/itgformat/check_in_cvat.py"
     path.parent.mkdir(parents=True)
     path.write_text('print("test placeholder")')
@@ -297,17 +327,17 @@ def test_env_rejects_expansion_and_ambiguity(tmp_path, text):
 
 
 @pytest.mark.parametrize(
-    "extra",
+    "extra,error",
     [
-        "SAM2_REDIS_PASSWORD=short",
-        "NUCLIO_DASHBOARD_PORT=99999",
-        "COMPOSE_PROJECT_NAME=../bad",
-        "SAM2_REDIS_MAXMEMORY=bad",
-        "SAM2_REDIS_VOLUME=/tmp/data",
+        ("SAM2_REDIS_PASSWORD=short", ValueError),
+        ("NUCLIO_DASHBOARD_PORT=99999", ops.OperationError),
+        ("COMPOSE_PROJECT_NAME=../bad", ops.OperationError),
+        ("SAM2_REDIS_MAXMEMORY=bad", ValueError),
+        ("SAM2_REDIS_VOLUME=/tmp/data", ops.OperationError),
     ],
 )
-def test_settings_invalid(tmp_path, extra):
-    with pytest.raises(ops.OperationError):
+def test_settings_invalid(tmp_path, extra, error):
+    with pytest.raises(error, match=extra.split("=", 1)[0]):
         ops.settings(write_env(tmp_path / "config", extra))
 
 
@@ -334,6 +364,7 @@ def test_config_order_and_frozen(mgr):
     disabled_paths = (
         *ops.EXTENSION_COMPOSE["model_registry"],
         *ops.EXTENSION_COMPOSE["ultrasam"],
+        *ops.EXTENSION_COMPOSE["sam31"],
         *ops.LOCAL_REGISTRY_COMPOSE,
     )
     assert paths == [
@@ -477,7 +508,7 @@ def test_empty_project_deploy_and_secret_hygiene(mgr):
     mgr.deploy(mgr.model)
     assert any(c[:3] == ["nuctl", "create", "project"] for c in mgr.calls)
     assert len(mgr.rendered) == 2
-    assert not list(mgr.state.glob("sam2-*.yaml"))
+    assert not list(mgr.state.glob("sam2-*"))
     assert all("a" * 64 not in " ".join(c) for c in mgr.calls)
     tracker = mgr.rendered[1]
     assert (
@@ -520,7 +551,7 @@ def test_deploy_reuses_unchanged_functions(mgr):
 def test_deploy_source_change_rebuilds(mgr):
     mgr.deploy(mgr.model)
     mgr.calls = []
-    p = mgr.root / ops.NUCLIO_SOURCE / "main.py"
+    p = mgr.root / functions.SOURCES["sam2"] / "main.py"
     p.write_text(p.read_text() + "\n# changed\n")
     mgr.deploy(mgr.model)
     assert len([c for c in mgr.calls if c[:2] == ["nuctl", "deploy"]]) == 2
@@ -545,12 +576,19 @@ def test_failed_nuctl_removes_secret_file(mgr):
     mgr.run = run
     with pytest.raises(ops.OperationError):
         mgr.deploy(mgr.model)
-    assert not list(mgr.state.glob("sam2-*.yaml"))
+    assert not list(mgr.state.glob("sam2-*"))
 
 
-def test_render_rejects_changed_layout():
-    with pytest.raises(ops.OperationError):
-        ops.render_function("namespace: elsewhere", "nuclio", "image", None)
+def test_render_preserves_source_recipe(mgr):
+    path = mgr.root / "components/sam2/build.json"
+    original = path.read_bytes()
+    rendered = functions.render_function(
+        "pth-sam2-tracker", mgr.values, "test:image", mgr.root
+    )
+    assert path.read_bytes() == original
+    assert rendered["metadata"]["namespace"] == mgr.values["NUCLIO_NAMESPACE"]
+    assert rendered["spec"]["build"]["image"] == "test:image"
+    assert rendered["spec"]["handler"] == "tracker_main:handler"
 
 
 def test_function_port_failure(mgr):
@@ -587,7 +625,13 @@ def test_live_unrecorded_environment_aborts(mgr):
 
 def test_check_checks_ui_and_all_backends(mgr):
     mgr.freeze(mgr.model)
-    mgr.items = [item(n) for n in ops.FUNCTION_FILES]
+    mgr.items = [item(n) for n in functions.FUNCTIONS["sam2"]]
+    for container in mgr.items:
+        name = container["Config"]["Labels"]["nuclio.io/function-name"]
+        container["Config"]["Env"] = [
+            f"{key}={value}"
+            for key, value in functions.runtime_environment(name, mgr.values).items()
+        ]
     mgr.check()
     assert any("cvat_ui" in c and "ps" in c for c in mgr.calls)
     for name in (
@@ -667,8 +711,13 @@ def test_static_compose_layout():
         "cvat_worker_consensus",
     }
     assert not (ROOT / "docker-compose.itgformat.yml").exists()
-    for path in (ROOT / ops.NUCLIO_SOURCE).glob("*-gpu.yaml"):
-        config = yaml.safe_load(path.read_text())
+    values = {
+        **functions.DEFAULTS,
+        "NUCLIO_NAMESPACE": "nuclio",
+        "SAM2_REDIS_PASSWORD": "a" * 64,
+    }
+    for name in functions.FUNCTIONS["sam2"]:
+        config = functions.render_function(name, values, "test:image")
         assert config["spec"]["platform"]["attributes"]["mountMode"] == "volume"
         assert (
             config["spec"]["platform"]["attributes"]["restartPolicy"]["name"]
@@ -775,13 +824,21 @@ def test_unknown_or_duplicate_feature_rejected(tmp_path, value):
         ops.settings(write_env(tmp_path / "config", f"CVAT_EXTENSIONS={value}\n"))
 
 
-def test_legacy_registry_enable_and_explicit_selection_precedence(tmp_path):
+def test_registry_enable_is_derived_from_explicit_selection(tmp_path):
     path = write_env(tmp_path / "config", "CVAT_MODEL_REGISTRY_ENABLED=1\n")
-    assert ops.settings(path)["CVAT_EXTENSIONS"] == "itgformat,sam2,model_registry"
+    values = ops.settings(path)
+    assert values["CVAT_EXTENSIONS"] == "itgformat,sam2"
+    assert values["CVAT_MODEL_REGISTRY_ENABLED"] == "0"
     path = write_env(path, "CVAT_MODEL_REGISTRY_ENABLED=1\nCVAT_EXTENSIONS=sam2\n")
     values = ops.settings(path)
     assert values["CVAT_MODEL_REGISTRY_ENABLED"] == "0"
     assert values["CVAT_CLIENT_PLUGINS"] == "plugins/sam2"
+    path = write_env(
+        path, "CVAT_MODEL_REGISTRY_ENABLED=0\nCVAT_EXTENSIONS=model_registry\n"
+    )
+    values = ops.settings(path)
+    assert values["CVAT_MODEL_REGISTRY_ENABLED"] == "1"
+    assert values["CVAT_CLIENT_PLUGINS"] == "plugins/model-registry"
 
 
 def test_feature_plugins_preserve_custom_plugins_without_stale_features(tmp_path):
@@ -794,11 +851,11 @@ def test_feature_plugins_preserve_custom_plugins_without_stale_features(tmp_path
     assert values["CVAT_CLIENT_PLUGINS"] == "plugins/custom:plugins/model-registry"
 
 
-def test_gateway_overlay_added_once_for_legacy_extra(mgr):
+def test_gateway_overlay_added_once_for_explicit_selection_and_extra(mgr):
     path = ops.EXTENSION_COMPOSE["model_registry"][0]
     write_env(
         mgr.env_file,
-        f"CVAT_MODEL_REGISTRY_ENABLED=1\nCVAT_EXTRA_COMPOSE_FILES={path}\n",
+        f"CVAT_EXTENSIONS=model_registry\nCVAT_EXTRA_COMPOSE_FILES={path}\n",
     )
     fresh = Fake(mgr.root, mgr.env_file, mgr.state)
     assert fresh.compose("config").count(str(fresh.root / path)) == 1
@@ -852,17 +909,17 @@ def test_missing_prebuilt_image_fails_before_startup(mgr):
 
 
 def test_sam2_images_are_transferable_across_runtime_configuration(mgr):
-    original = mgr.sam2_images("1.16.3")
+    original = mgr.function_images("1.16.3", "sam2")
     mgr.values["SAM2_REDIS_PASSWORD"] = "z" * 64
     mgr.values["CVAT_NETWORK_NAME"] = "production_cvat"
     mgr.values["NUCLIO_NAMESPACE"] = "production"
-    assert mgr.sam2_images("1.16.3") == original
-    assert mgr.sam2_images("1.16.4") != original
+    assert mgr.function_images("1.16.3", "sam2") == original
+    assert mgr.function_images("1.16.4", "sam2") != original
 
 
 def test_changed_redis_credentials_redeploy_tracker_with_same_image(mgr):
     mgr.deploy(mgr.model)
-    before = mgr.sam2_images("1.16.3")
+    before = mgr.function_images("1.16.3", "sam2")
     mgr.values["SAM2_REDIS_PASSWORD"] = "z" * 64
     mgr.calls = []
     mgr.deploy(mgr.model, no_build=True)
@@ -1220,7 +1277,7 @@ def test_ultrasam_only_settings_need_no_redis_and_no_plugin(tmp_path, gpu, expec
 
 @pytest.mark.parametrize("gpu", ["all", "-1", "0,1", "0;id", "MIG-1", "cuda:0"])
 def test_ultrasam_invalid_gpu_selection_rejected(tmp_path, gpu):
-    with pytest.raises(ops.OperationError, match="ULTRASAM_GPU_DEVICE"):
+    with pytest.raises(ValueError, match="ULTRASAM_GPU_DEVICE"):
         ops.settings(
             write_env(
                 tmp_path / "config",
@@ -1293,9 +1350,12 @@ def test_ultrasam_deploy_uses_own_source_network_and_gpu_without_redis_secret(mg
     fresh.values["ULTRASAM_GPU_DEVICE"] = "GPU-abcd-1234"
     fresh.deploy(fresh.model, feature="ultrasam")
     deployment = next(call for call in fresh.calls if call[:2] == ["nuctl", "deploy"])
-    assert deployment[deployment.index("--path") + 1] == str(
-        fresh.root / ops.ULTRASAM_SOURCE
-    )
+    source = Path(deployment[deployment.index("--path") + 1])
+    assert source.parent == fresh.state
+    assert not source.exists()
+    assert fresh.staged_sources[0]["main.py"] == (
+        fresh.root / functions.SOURCES["ultrasam"] / "main.py"
+    ).read_bytes()
     assert json.loads(deployment[deployment.index("--platform-config") + 1]) == {
         "attributes": {"network": "cvat_cvat"},
     }
@@ -1308,18 +1368,18 @@ def test_ultrasam_deploy_uses_own_source_network_and_gpu_without_redis_secret(mg
         function["spec"]["triggers"]["http"]["attributes"]["disablePortPublishing"]
         is True
     )
-    assert not list(fresh.state.glob("ultrasam-*.yaml"))
+    assert not list(fresh.state.glob("ultrasam-*"))
 
 
 def test_ultrasam_deploy_reuses_image_but_changes_device(mgr):
     fresh = select_extensions(mgr, "ultrasam")
     fresh.deploy(fresh.model, feature="ultrasam")
-    images = fresh.ultrasam_images("1.16.3")
+    images = fresh.function_images("1.16.3", "ultrasam")
     fresh.calls = []
     fresh.deploy(fresh.model, feature="ultrasam")
     assert not any(call[:2] == ["nuctl", "deploy"] for call in fresh.calls)
     fresh.values["ULTRASAM_GPU_DEVICE"] = "1"
-    assert fresh.ultrasam_images("1.16.3") == images
+    assert fresh.function_images("1.16.3", "ultrasam") == images
     fresh.deploy(fresh.model, feature="ultrasam", no_build=True)
     deployments = [call for call in fresh.calls if call[:2] == ["nuctl", "deploy"]]
     assert len(deployments) == 1
@@ -1333,7 +1393,7 @@ def test_ultrasam_deploy_reuses_image_but_changes_device(mgr):
 def test_ultrasam_source_fingerprint_changes_independently_of_sam2(mgr):
     fresh = select_extensions(mgr, "sam2,ultrasam")
     before = fresh.function_images("1.16.3")
-    path = fresh.root / ops.ULTRASAM_SOURCE / "main.py"
+    path = fresh.root / functions.SOURCES["ultrasam"] / "main.py"
     path.write_text(path.read_text() + "\n# source change\n")
     after = fresh.function_images("1.16.3")
     assert before["pth-ultrasam-interactor"] != after["pth-ultrasam-interactor"]
@@ -1342,7 +1402,7 @@ def test_ultrasam_source_fingerprint_changes_independently_of_sam2(mgr):
 
 def test_ultrasam_rejects_tracker_and_disabled_deploy_before_any_commands(mgr):
     fresh = select_extensions(mgr, "ultrasam")
-    with pytest.raises(ops.OperationError, match="image prompts only"):
+    with pytest.raises(ValueError, match="image prompts only"):
         fresh.deploy(fresh.model, "tracker", feature="ultrasam")
     assert not fresh.calls
     with pytest.raises(ops.OperationError, match="Add ultrasam"):
@@ -1423,40 +1483,24 @@ def test_missing_ultrasam_prebuilt_image_fails_before_startup(mgr):
     )
 
 
-@pytest.mark.parametrize(
-    "environment",
-    [
-        "",
-        "  env:\n  - name: EXISTING\n    value: keep\n",
-        '  env:\n  - name: CUDA_VISIBLE_DEVICES\n    value: "0"\n',
-    ],
-)
-def test_runtime_gpu_environment_render_preserves_yaml(environment):
-    source = "metadata:\n  name: test\nspec:\n  runtime: python:3.10\n" + environment
-    rendered = ops.render_function_environment(
-        source, "CUDA_VISIBLE_DEVICES", "GPU-abcd"
+@pytest.mark.parametrize("gpu", ["0", "2", "GPU-abcd"])
+def test_runtime_gpu_environment_is_serialized_once(mgr, gpu):
+    fresh = select_extensions(mgr, "ultrasam")
+    fresh.values["ULTRASAM_GPU_DEVICE"] = gpu
+    rendered = functions.render_function(
+        "pth-ultrasam-interactor", fresh.values, "test:image", fresh.root
     )
-    values = yaml.safe_load(rendered)["spec"]["env"]
-    assert sum(entry["name"] == "CUDA_VISIBLE_DEVICES" for entry in values) == 1
-    assert (
-        next(
-            entry["value"]
-            for entry in values
-            if entry["name"] == "CUDA_VISIBLE_DEVICES"
-        )
-        == "GPU-abcd"
-    )
-    if "EXISTING" in source:
-        assert {"name": "EXISTING", "value": "keep"} in values
+    # Deployment writes JSON directly; there is no YAML layout to rewrite.
+    values = json.loads(json.dumps(rendered))["spec"]["env"]
+    assert values == [{"name": "CUDA_VISIBLE_DEVICES", "value": gpu}]
 
 
-def test_runtime_gpu_environment_render_rejects_duplicate_or_changed_layout():
-    for source in (
-        'spec:\n  env:\n  - name: CUDA_VISIBLE_DEVICES\n    value: "0"\n  - name: CUDA_VISIBLE_DEVICES\n    value: "1"\n',
-        'spec:\n  env:\n    - name: CUDA_VISIBLE_DEVICES\n      value: "0"\n',
-    ):
-        with pytest.raises(ops.OperationError, match="environment layout"):
-            ops.render_function_environment(source, "CUDA_VISIBLE_DEVICES", "1")
+def test_runtime_environment_does_not_mutate_settings(mgr):
+    before = mgr.values.copy()
+    environment = functions.runtime_environment("pth-sam2-tracker", mgr.values)
+    assert mgr.values == before
+    environment["SAM2_REDIS_PASSWORD"] = "changed"
+    assert mgr.values["SAM2_REDIS_PASSWORD"] == "a" * 64
 
 
 @pytest.mark.parametrize("command", ["config", "doctor"])
@@ -1586,11 +1630,21 @@ def test_ultrasam_nuctl_mismatch_fails_before_build_or_start(mgr):
     )
 
 
-@pytest.mark.parametrize("file", ["main.py", "function-gpu.yaml"])
-def test_missing_ultrasam_source_fails_before_build_or_start(mgr, file):
+@pytest.mark.parametrize(
+    "file,error,match",
+    [
+        (
+            functions.SOURCES["ultrasam"] + "/main.py",
+            ValueError,
+            "Missing function handler",
+        ),
+        ("components/ultrasam/build.json", FileNotFoundError, "build.json"),
+    ],
+)
+def test_missing_ultrasam_source_fails_before_build_or_start(mgr, file, error, match):
     fresh = select_extensions(mgr, "ultrasam")
-    (fresh.root / ops.ULTRASAM_SOURCE / file).unlink()
-    with pytest.raises(ops.OperationError, match="Missing function"):
+    (fresh.root / file).unlink()
+    with pytest.raises(error, match=match):
         fresh.up()
     assert not any(
         "build" in call or "up" in call or "create" in call or "deploy" in call

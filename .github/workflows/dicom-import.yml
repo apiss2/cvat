@@ -8,6 +8,7 @@ on:
       - 'components/extensions/cli.py'
       - 'components/extensions/cvatctl'
       - 'components/extensions/entrypoint.py'
+      - 'components/extensions/functions.py'
       - 'components/extensions/manage.py'
       - 'components/extensions/tests/**'
       - 'cvat-ui/plugins/dicom-import/**'
@@ -18,6 +19,7 @@ on:
       - 'cvat/apps/dataset_manager/formats/task_guide*.py'
       - 'cvat/apps/dataset_manager/formats/itgformat/**'
       - 'tests/python/unit/test_task_guide_import.py'
+      - 'tests/extensions/**'
       - 'tests/itgformat/**'
       - '.github/workflows/dicom-import.yml'
 permissions:
@@ -38,13 +40,14 @@ jobs:
           node-version: '22'
       - run: >-
           python -m pip install -r components/dicom_import/requirements.txt
-          numpy==2.2.6 opencv-python-headless==4.12.0.88 pytest==8.4.1 'Pillow>=12.3.0'
+          numpy==2.2.6 opencv-python-headless==4.12.0.88 pytest==8.4.1 PyYAML==6.0.3 'Pillow>=12.3.0'
       - run: >-
           PYTHONPATH=. python -m pytest -c /dev/null -q
           components/dicom_import/tests tests/itgformat
           components/extensions/tests/test_cvatctl.py
           components/extensions/tests/test_client_plugins.py
           components/extensions/tests/test_functions.py
+          tests/extensions/test_operations.py
       - run: python -m unittest discover -s tests/python/unit -p test_task_guide_import.py
       - run: python -m unittest discover -s components/extensions/tests -p 'test_backup*.py'
       - run: npm install --prefix /tmp/dicom-ts typescript@5.8.3

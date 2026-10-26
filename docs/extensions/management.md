@@ -76,13 +76,19 @@ bash components/extensions/cvatctl check
 3. 既存の設定読み取り、選択に応じたビルド、起動記録、停止、確認処理を再利用します。必要な秘密情報、保存先、重み、追加サービスは事前検証し、不要な構成を自動追加しません。
 4. [設定例](../../components/extensions/config.example.env)、この管理対象一覧、機能のREADMEと回帰テストを同じ変更で更新します。新しい独自プラグインを、パスの手動追記だけで管理対象外のまま提出しません。
 
-今回の画面プラグイン管理の回帰テストは次で実行できます。
+拡張管理と画面プラグインの回帰テストは次で実行できます。PytestとPyYAMLが必要です。
 
 ```sh
-python3 -m pytest -q components/extensions/tests/test_client_plugins.py
+python3 -m pytest -q tests/extensions/test_operations.py \
+  components/extensions/tests/test_cvatctl.py \
+  components/extensions/tests/test_functions.py \
+  components/extensions/tests/test_client_plugins.py
 ```
 
 構成生成、有効化と無効化、既存拡張との併用、ビルド対象、保存された起動構成による停止を確認します。
+停止順序、再起動方針の復元、既存Redisボリュームとモデル保存先の維持、同じRedisボリュームへの二重書き込みの拒否も検証します。
+関数の定義と配備は `components/extensions/functions.py` の公開関数を通して確認します。
+このテスト群はGitHub Actionsの `DICOM metadata extensions` でも実行します。
 物理長表示では、選択解除後の `status` が稼働記録を使うことと、`check` がUIのイメージ不一致を検出し、アノテーションを変更しないことも確認します。
 Dockerの応答と無関係なモデル管理の初期化は代替実装を使用します。
 実配備と画面の確認は、それぞれのREADMEに記載した受入確認を別途実施してください。
