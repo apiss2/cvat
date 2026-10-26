@@ -14,6 +14,7 @@
 | 構造化JSONを各タスクのAnnotationGuideへ反映する | [タスク情報のJSON取り込み](task-guide-import.md) |
 | SAM2とSAM3.1の重みを選び、関数を配備する | [モデルの選択と配備](model-selection.md) |
 | devで確認した変更を本番へ反映する | [更新手順](update.md) |
+| 更新前にcvatctlで差分を保存する | [増分バックアップ](incremental-backup.md) |
 | データ、設定、使用イメージを保存して復旧する | [バックアップと復元](backup-restore.md) |
 | ONNXモデル管理の接続を設定する | [モデル管理サービスの配備](../model-registry/deployment.md) |
 
