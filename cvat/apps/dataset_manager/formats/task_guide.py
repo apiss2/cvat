@@ -115,19 +115,24 @@ def import_project_guides(source, project):
                 markdown = merge_markdown(guide.markdown if guide else "", updates[task.id])
             except GuideImportError as exc:
                 raise GuideImportError(f"Task {task.id}: {exc}") from exc
-            prepared.append((task.id, guide, markdown))
+            prepared.append((task, guide, markdown))
 
         created = updated = unchanged = 0
-        for task_id, guide, markdown in prepared:
+        for task, guide, markdown in prepared:
             if guide is None:
-                models.AnnotationGuide.objects.create(task_id=task_id, markdown=markdown)
+                models.AnnotationGuide.objects.create(task_id=task.id, markdown=markdown)
                 created += 1
             elif guide.markdown == markdown:
                 unchanged += 1
+                continue
             else:
                 guide.markdown = markdown
                 guide.save(update_fields=["markdown", "updated_date"])
                 updated += 1
+            # Standard task and project backups use their target's updated_date as a cache key.
+            task.touch()
+        if created or updated:
+            project.touch()
         # Counts and record positions only: never put patient identifiers/reports in request logs.
         meta.status = (
             f"Task guides: {created} created, {updated} updated, {unchanged} unchanged; "

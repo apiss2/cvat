@@ -1,15 +1,21 @@
 # SPDX-License-Identifier: MIT
 """Run without CVAT services: python -m unittest discover -s tests/python/unit -p test_task_guide_import.py"""
 
+import ast
 import importlib.util
 import io
 import json
+import os
+import shutil
 import sys
+import tempfile
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
+from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[3]
 FORMATS = ROOT / "cvat/apps/dataset_manager/formats"
@@ -307,10 +313,11 @@ class AdapterTests(unittest.TestCase):
     """Contract tests with mocked ORM/OPA/RQ, not CVAT/PostgreSQL integration tests."""
 
     def setUp(self):
-        self.project = SimpleNamespace(pk=7, organization_id=None)
+        self.in_transaction = False
+        self.project = self.timestamped(pk=7, id=7, organization_id=None)
         self.tasks = [
-            SimpleNamespace(id=1, name=image().name),
-            SimpleNamespace(id=2, name=video().name),
+            self.timestamped(id=1, name=image().name),
+            self.timestamped(id=2, name=video().name),
         ]
         self.project_manager = MagicMock()
         self.project_manager.select_for_update.return_value.get.return_value = self.project
@@ -335,7 +342,16 @@ class AdapterTests(unittest.TestCase):
         self.project_permission.Scopes = SimpleNamespace(IMPORT_DATASET="import:dataset")
         self.project_permission.create_base_perm.return_value.check_access.return_value.allow = True
         self.transaction = MagicMock()
-        self.transaction.atomic.side_effect = nullcontext
+
+        @contextmanager
+        def atomic():
+            self.in_transaction = True
+            try:
+                yield
+            finally:
+                self.in_transaction = False
+
+        self.transaction.atomic.side_effect = atomic
         self.meta = SimpleNamespace(status="", progress=0, org_id=None, save=MagicMock())
         self.project_data = type("ProjectData", (), {})
         self.error = type("CvatImportError", (Exception,), {})
@@ -383,6 +399,22 @@ class AdapterTests(unittest.TestCase):
         self.context_patch.start()
         self.addCleanup(self.context_patch.stop)
 
+    def timestamped(self, **attributes):
+        obj = SimpleNamespace(updated_date=datetime(2026, 1, 1, tzinfo=timezone.utc), **attributes)
+
+        def touch():
+            self.assertTrue(
+                self.in_transaction, "Timestamp writes must share the guide transaction"
+            )
+            obj.updated_date += timedelta(seconds=1)
+
+        obj.touch = MagicMock(side_effect=touch)
+        return obj
+
+    def assert_no_timestamps_changed(self):
+        for obj in [self.project, *self.tasks]:
+            obj.touch.assert_not_called()
+
     def run_import(self, rows=None):
         self.adapter.import_project_guides(stream(rows or [record()]), self.project)
 
@@ -403,6 +435,9 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(set(filters["spec__name__in"]), set(core.IDENTITY_TAGS))
         self.assertIn("2 created", self.meta.status)
         self.transaction.atomic.assert_called_once()
+        for task in self.tasks:
+            task.touch.assert_called_once_with()
+        self.project.touch.assert_called_once_with()
 
     def test_permission_denial_before_any_write(self):
         allowed = SimpleNamespace(check_access=lambda: SimpleNamespace(allow=True))
@@ -412,6 +447,7 @@ class AdapterTests(unittest.TestCase):
             self.run_import()
         self.guide_manager.create.assert_not_called()
         self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
 
     def test_project_import_permission_is_rechecked_before_reading_tasks(self):
         self.project_permission.create_base_perm.return_value.check_access.return_value.allow = (
@@ -425,6 +461,7 @@ class AdapterTests(unittest.TestCase):
         self.guide_manager.create.assert_not_called()
         self.permission.create_base_perm.assert_not_called()
         self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
 
     def test_workspace_change_after_enqueue_prevents_import(self):
         self.project.organization_id = 12
@@ -433,6 +470,7 @@ class AdapterTests(unittest.TestCase):
         self.task_manager.select_for_update.assert_not_called()
         self.guide_manager.create.assert_not_called()
         self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
 
     def test_same_organization_is_allowed(self):
         self.project.organization_id = self.meta.org_id = 12
@@ -447,6 +485,7 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(core.GuideImportError):
             self.run_import()
         self.guide_manager.create.assert_not_called()
+        self.assert_no_timestamps_changed()
 
     def test_unchanged_and_manual_content_preserved(self):
         markdown = core.merge_markdown("manual", reports(record())[0].markdown)
@@ -457,6 +496,29 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.guide_manager.create.call_count, 1)
         self.assertIn("1 unchanged", self.meta.status)
         self.assertEqual(self.permission.create_base_perm.call_args_list[0].args[2], "update")
+        self.tasks[0].touch.assert_not_called()
+        self.tasks[1].touch.assert_called_once_with()
+        self.project.touch.assert_called_once_with()
+
+    def test_all_guides_unchanged_preserve_task_and_project_timestamps(self):
+        markdown = core.merge_markdown("manual", reports(record())[0].markdown)
+        self.existing[:] = [
+            SimpleNamespace(task_id=task.id, markdown=markdown, save=MagicMock())
+            for task in self.tasks
+        ]
+        self.run_import()
+        self.guide_manager.create.assert_not_called()
+        for guide in self.existing:
+            guide.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+        self.assertIn("2 unchanged", self.meta.status)
+
+    def test_unmatched_task_timestamp_is_preserved(self):
+        self.tasks.append(self.timestamped(id=3, name=image(3, uid="1.2.4").name))
+        self.run_import()
+        self.tasks[2].touch.assert_not_called()
+        self.assertEqual(self.guide_manager.create.call_count, 2)
+        self.project.touch.assert_called_once_with()
 
     def test_existing_guide_updated_without_replacement(self):
         guide = SimpleNamespace(task_id=1, markdown="manual", save=MagicMock())
@@ -465,6 +527,8 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(guide.markdown.startswith("manual\n\n"))
         guide.save.assert_called_once_with(update_fields=["markdown", "updated_date"])
         self.assertIn("1 updated", self.meta.status)
+        self.tasks[0].touch.assert_called_once_with()
+        self.project.touch.assert_called_once_with()
 
     def test_unmatched_summary_contains_positions_not_patient_data(self):
         self.run_import([record(), record(uid="1.2.4", patient="SECRET_PATIENT")])
@@ -477,6 +541,122 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "write failed"):
             self.run_import()
         self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    def test_timestamp_failure_aborts_before_reporting_success(self):
+        self.tasks[0].touch.side_effect = RuntimeError("timestamp write failed")
+        with self.assertRaisesRegex(RuntimeError, "timestamp write failed"):
+            self.run_import()
+        self.project.touch.assert_not_called()
+        self.meta.save.assert_not_called()
+        self.assertFalse(self.in_transaction)
+
+    def test_standard_backup_cache_contains_created_and_updated_guides(self):
+        # Execute the standard cache logic unchanged, without importing service dependencies.
+        # ORM, locks and exporters are substitutes; ZIP files and cache reuse are real.
+        source = ROOT / "cvat/apps/engine/backup.py"
+        tree = ast.parse(source.read_text())
+        create_backup_node = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "create_backup"
+        )
+        backup_module = ast.Module(
+            body=[
+                ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
+                create_backup_node,
+            ],
+            type_ignores=[],
+        )
+        ast.fix_missing_locations(backup_module)
+        self.tasks[:] = self.tasks[:1]
+        task = self.tasks[0]
+
+        def create_guide(**attributes):
+            self.assertTrue(self.in_transaction)
+            guide = SimpleNamespace(**attributes, save=MagicMock())
+            self.existing.append(guide)
+            return guide
+
+        self.guide_manager.create.side_effect = create_guide
+        for existing in (False, True):
+            for target in (task, self.project):
+                with (
+                    self.subTest(existing=existing, target_id=target.id),
+                    tempfile.TemporaryDirectory() as cache,
+                ):
+                    self.existing[:] = (
+                        [SimpleNamespace(task_id=task.id, markdown="original", save=MagicMock())]
+                        if existing
+                        else []
+                    )
+                    exports = MagicMock()
+                    member = (
+                        "annotation_guide.md"
+                        if target is task
+                        else f"task_{task.id}/annotation_guide.md"
+                    )
+
+                    class Exporter:
+                        @staticmethod
+                        def get_object(instance_id):
+                            return target
+
+                        def __init__(self, instance_id, **kwargs):
+                            pass
+
+                        def export_to(exporter, filename):
+                            exports()
+                            with ZipFile(filename, "w") as archive:
+                                if self.existing:
+                                    archive.writestr(member, self.existing[0].markdown)
+
+                    namespace = {
+                        "timezone": SimpleNamespace(localtime=lambda value: value),
+                        "ExportCacheManager": SimpleNamespace(
+                            make_backup_file_path=lambda **key: str(
+                                Path(cache)
+                                / f"{key['instance_id']}_{key['instance_timestamp']}.zip"
+                            )
+                        ),
+                        "get_export_cache_lock": lambda *args, **kwargs: nullcontext(),
+                        "EXPORT_CACHE_LOCK_ACQUISITION_TIMEOUT": 10,
+                        "EXPORT_CACHE_LOCK_TTL": 30,
+                        "extend_export_file_lifetime": MagicMock(),
+                        "TmpDirManager": SimpleNamespace(
+                            get_tmp_directory_for_export=lambda **kwargs: tempfile.TemporaryDirectory()
+                        ),
+                        "os": os,
+                        "shutil": shutil,
+                    }
+                    exec(compile(backup_module, str(source), "exec"), namespace)
+
+                    def backup():
+                        return namespace["create_backup"](
+                            target.id, Exporter, MagicMock(), timedelta(hours=1)
+                        )
+
+                    original = backup()
+                    self.assertEqual(backup(), original)
+                    exports.assert_called_once()
+                    with ZipFile(original) as archive:
+                        if existing:
+                            self.assertEqual(archive.read(member), b"original")
+                        else:
+                            self.assertNotIn(member, archive.namelist())
+
+                    self.run_import()
+                    refreshed = backup()
+                    self.assertNotEqual(refreshed, original)
+                    self.assertEqual(exports.call_count, 2)
+                    with ZipFile(refreshed) as archive:
+                        markdown = archive.read(member).decode("utf-8")
+                        self.assertEqual(markdown, self.existing[0].markdown)
+                        self.assertIn("所見です。", markdown)
+
+                    self.run_import()
+                    self.assertEqual(backup(), refreshed)
+                    self.assertEqual(exports.call_count, 2)
 
 
 if __name__ == "__main__":
