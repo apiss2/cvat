@@ -110,6 +110,13 @@ def test_real_dicom_images_and_video_receive_the_same_study_report(tmp_path):
     plan = prepare(inputs, tmp_path / "converted", "site_with_underscores")
     assert len(plan.tasks) == 2
     assert sorted((task.video, task.frames) for task in plan.tasks) == [(False, 1), (True, 3)]
+    image_task = next(task for task in plan.tasks if not task.video)
+    assert image_task.name == "site_with_underscores_SYNTHETIC_PATIENT_20260102_43105431"
+    assert all(
+        values[guides.STUDY_UID] == STUDY_UID
+        for task in plan.tasks
+        for values in task.tags.values()
+    )
 
     names = {name for task in plan.tasks for values in task.tags.values() for name in values}
     attribute_ids = {name: index for index, name in enumerate(sorted(names), 1)}

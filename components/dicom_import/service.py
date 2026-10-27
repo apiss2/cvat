@@ -158,6 +158,33 @@ def import_user(meta, project):
     return user
 
 
+def check_existing_studies(project, incoming):
+    if not incoming:
+        return
+    tasks = dict(project.tasks.filter(name__in=incoming).values_list("id", "name"))
+    studies = {task_id: set() for task_id in tasks}
+    values = (
+        models.LabeledImageAttributeVal.objects.filter(
+            image__job__segment__task_id__in=tasks,
+            image__label__project_id=project.id,
+            image__label__name=LABEL_NAME,
+            spec__label__project_id=project.id,
+            spec__label__name=LABEL_NAME,
+            spec__name="0020000D",
+        )
+        .order_by()
+        .values_list("image__job__segment__task_id", "value")
+        .distinct()
+    )
+    for task_id, value in values.iterator():
+        studies[task_id].add(value.strip())
+    for task_id, name in tasks.items():
+        if studies[task_id] != {incoming[name]}:
+            raise DicomImportError(
+                "An existing task has the same name but a different or missing StudyInstanceUID"
+            )
+
+
 def import_project(source, temporary_directory, project):
     if os.environ.get("CVAT_DICOM_IMPORT_ENABLED") != "1":
         raise DicomImportError("DICOM import is disabled")
@@ -186,6 +213,9 @@ def import_project(source, temporary_directory, project):
     project = models.Project.objects.select_for_update().get(pk=project.id)
     user = import_user(meta, project)
     existing = set(project.tasks.values_list("name", flat=True))
+    check_existing_studies(
+        project, {name: uid for name, uid in plan.study_uids.items() if name in existing}
+    )
     tasks = []
     for task in plan.tasks:
         if task.name in existing:

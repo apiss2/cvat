@@ -62,7 +62,14 @@ def names(ds, prefix: str, video: bool) -> tuple[str, str]:
             fields["SOPInstanceUID"].replace(".", "")[-8:],
         )
     )
-    study = "_".join((prefix, fields["PatientID"], fields["StudyDate"], fields["StudyInstanceUID"]))
+    study = "_".join(
+        (
+            prefix,
+            fields["PatientID"],
+            fields["StudyDate"],
+            fields["StudyInstanceUID"].replace(".", "")[-8:],
+        )
+    )
     return checked_name(stem if video else study, task=True), checked_name(
         stem + (".mp4" if video else ".png")
     )
@@ -279,6 +286,7 @@ class Plan:
     skipped_tasks: set[str] = field(default_factory=set)
     high_bit_checked: int = 0
     ignored_files: int = 0
+    study_uids: dict[str, str] = field(default_factory=dict)
 
 
 def prepare(
@@ -311,6 +319,9 @@ def prepare(
             continue
         frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
         task_name, filename = names(ds, prefix, frames > 1)
+        study_uid = str(ds.StudyInstanceUID).strip()
+        if plan.study_uids.setdefault(task_name, study_uid) != study_uid:
+            raise DicomImportError("Different studies produce the same task name")
         if task_name in existing:
             plan.skipped_tasks.add(task_name)
             continue

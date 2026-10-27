@@ -74,6 +74,7 @@ def service(monkeypatch, tmp_path):
     )
     models = directory_models(settings)
     models.Project = SimpleNamespace(objects=MagicMock())
+    models.LabeledImageAttributeVal = SimpleNamespace(objects=MagicMock())
     signal = Signal()
     permission = MagicMock()
     permission.Scopes.IMPORT_DATASET = "import:dataset"
@@ -205,6 +206,54 @@ def test_permissions_are_rechecked_after_conversion_and_lock(service, monkeypatc
         service.import_project(None, tmp_path, project(service))
     ensure.assert_not_called()
     service.models.Project.objects.select_for_update.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "values",
+    [[], [""], ["1.3.34567890"], ["1.2.34567890", "1.3.34567890"]],
+)
+def test_existing_study_must_have_one_matching_full_uid(service, values):
+    current_project = project(service)
+    current_project.tasks.filter.return_value.values_list.return_value = [(9, "study")]
+    attributes = service.models.LabeledImageAttributeVal.objects.filter.return_value
+    rows = attributes.order_by.return_value.values_list.return_value.distinct.return_value
+    rows.iterator.return_value = ((9, value) for value in values)
+    with pytest.raises(DicomImportError, match="different or missing StudyInstanceUID"):
+        service.check_existing_studies(current_project, {"study": "1.2.34567890"})
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+@pytest.mark.parametrize("same_study", [False, True])
+def test_existing_study_is_checked_after_lock_before_skipping(
+    service, monkeypatch, tmp_path, preexisting, same_study
+):
+    current_project = project(service)
+    current_project.tasks.values_list.side_effect = [
+        ["study"] if preexisting else [],
+        ["study"],
+    ]
+    current_project.tasks.filter.return_value.values_list.return_value = [(9, "study")]
+    attributes = service.models.LabeledImageAttributeVal.objects.filter.return_value
+    rows = attributes.order_by.return_value.values_list.return_value.distinct.return_value
+    rows.iterator.return_value = iter([(9, "1.2.34567890" if same_study else "1.3.34567890")])
+    plan = Plan(
+        tasks=[] if preexisting else [PreparedTask("study", False)],
+        skipped_tasks={"study"} if preexisting else set(),
+        study_uids={"study": "1.2.34567890"},
+    )
+    monkeypatch.setattr(service, "read_upload", lambda *_: ("SYNTHETIC", []))
+    monkeypatch.setattr(service, "prepare", lambda *_args, **_kwargs: plan)
+    ensure = MagicMock()
+    monkeypatch.setattr(service, "ensure_label", ensure)
+    if same_study:
+        service.import_project(None, tmp_path, current_project)
+        assert "0 tasks created; 1 existing tasks skipped" in service.test_meta.status
+    else:
+        with pytest.raises(DicomImportError, match="different or missing StudyInstanceUID"):
+            service.import_project(None, tmp_path, current_project)
+    service.models.Project.objects.select_for_update.assert_called_once()
+    ensure.assert_not_called()
+    service.patch_task_data.assert_not_called()
 
 
 @pytest.mark.parametrize("kind", ["missing", "inactive", "changed_workspace"])

@@ -56,9 +56,10 @@ jobs:
           --module commonjs --lib es2020,dom --outDir /tmp/dicom-test-build
           cvat-ui/plugins/dicom-import/src/ts/archive.ts
           cvat-ui/plugins/dicom-import/src/ts/api.ts
+          cvat-ui/plugins/dicom-import/src/ts/selection.ts
       - run: >-
           DICOM_TEST_BUILD=/tmp/dicom-test-build
           NODE_PATH=/tmp/dicom-ts/node_modules
-          node --test cvat-ui/plugins/dicom-import/tests/import.test.cjs
+          node --test cvat-ui/plugins/dicom-import/tests/*.test.cjs
           cvat-ui/plugins/physical-measurements/tests/*.test.cjs
           cvat-ui/plugins/task-context/tests/*.test.cjs

@@ -4,7 +4,7 @@
 
 既存の設定を保持したまま、`.env` の `CVAT_EXTENSIONS` に `dicom_import` を追加します。通常の `components/extensions/cvatctl` の更新手順でサーバーとUIを再ビルドし、起動します。`config` と `doctor` に選択が反映されます。追加サービス、GPU、DBマイグレーションはありません。
 
-プロジェクトの Actions で **DICOM import** を開き、接頭辞（例: `GRD`）と入力を指定して登録します。フォルダ選択、DICOMファイル、ZIP、TAR、TAR.GZ、TGZに対応します。ファイルのドロップにも対応します。フォルダはフォルダ選択ボタンを使います。受付後は標準の Requests で進捗を確認し、画面を閉じてもサーバーの処理は継続します。送信前に閉じた場合は準備と通信を中止します。送信中に閉じた場合、既に受け付けた処理までは取り消しません。
+プロジェクトの Actions で **DICOM import** を開き、フォルダまたはファイルを選択するかドロップします。フォルダ内は下位フォルダまで探索し、DICOMファイル、ZIP、TAR、TAR.GZ、TGZを取り込みます。ドロップ領域の下にある必須の接頭辞欄へ、データの提供元などを示す文字列（例: `GRD`）を入力して登録します。受付後は標準の Requests で進捗を確認し、画面を閉じてもサーバーの処理は継続します。送信前に閉じた場合は準備と通信を中止します。送信中に閉じた場合、既に受け付けた処理までは取り消しません。
 
 登録は標準のプロジェクト用データセット取り込みAPIとキューを使います。一つの入力から複数タスクを作るため、通常のタスク作成画面ではなく、プロジェクトの Actions を入口としています。専用の保存APIや認証経路は追加しません。タスク用、ジョブ用のアノテーション取り込みにこの形式を指定した場合は拒否します。
 
@@ -19,10 +19,10 @@
 {prefix}_{PatientID}_{SeriesNumber}_{StudyDate}_{StudyTime}_{InstanceNumber:04}_{SOP suffix}.mp4
 ```
 
-静止画のタスク名は次の形式です。Series単位ではなく、同じStudyの静止画を一つにまとめます。マルチフレームDICOMは、上記MP4名から拡張子を除いた名前で、一つの動画タスクにします。
+静止画のタスク名は次の形式です。Study suffixはStudyInstanceUIDのピリオドを除いた末尾8桁です。8桁未満の場合は全桁を使います。Series単位ではなく、同じStudyの静止画を一つにまとめます。マルチフレームDICOMは、上記MP4名から拡張子を除いた名前で、一つの動画タスクにします。
 
 ```text
-{prefix}_{PatientID}_{StudyDate}_{StudyInstanceUID}
+{prefix}_{PatientID}_{StudyDate}_{Study suffix}
 ```
 
 DICOMタグの内容に基づくドプラ、カラー、エラストグラフィなどの除外条件は移植していません。画像でないDICOMや、対象外の通常ファイルは読み飛ばします。画像DICOMの変換失敗は黙って読み飛ばさず、取り込みを失敗として扱います。
@@ -37,7 +37,9 @@ HighBitがBitsStoredから期待される値と異なる場合は、補正前後
 
 ## 重複の扱い
 
-取り込み時にプロジェクトの既存タスク名と照合し、同名タスクは読み飛ばします。既存タスクへの画像追加やアノテーション更新は行いません。変換後にもプロジェクト行をロックして名前を再確認し、このインポーター同士の同時登録を直列化します。通常のCVATタスク作成APIには新しい一意制約を加えていないため、別経路で同名タスクを同時作成する操作までは禁止しません。
+取り込み時にプロジェクトの既存タスク名と照合し、同名タスクはDicomTagの完全なStudyInstanceUIDが一致する場合だけ読み飛ばします。UIDが異なる場合や確認できない場合はエラーにします。同じ入力内で異なるStudyInstanceUIDから同名タスクが生成される場合も、画像を混在させずエラーにします。完全なUIDはDicomTagに保存し、AnnotationGuideの照合にもその値を使います。
+
+既存タスクへの画像追加やアノテーション更新は行いません。変換後にプロジェクト行をロックして名前とUIDを再確認し、このインポーター同士の同時登録を直列化します。通常のCVATタスク作成APIには新しい一意制約を加えていないため、別経路で同名タスクを同時作成する操作までは禁止しません。
 
 静止画は新規タスクごとに、生成したPNGのSHA-256とバイト列の一致を確認して重複を除外します。出力名の順に最初の画像を残し、その画像のDICOMタグを採用します。同じ画素でも異なるメタデータを持つ後続画像のタグは統合しません。ハッシュは取り込み中だけ保持し、DB、Tag、マニフェストへ保存しません。既存タスクの画像を読み出して再照合する処理もありません。
 
@@ -77,9 +79,10 @@ PYTHONPATH=. python -m pytest -c /dev/null -q components/dicom_import/tests
 tsc --strict --target es2020 --module commonjs --lib es2020,dom \
   --outDir /tmp/dicom-test-build \
   cvat-ui/plugins/dicom-import/src/ts/archive.ts \
-  cvat-ui/plugins/dicom-import/src/ts/api.ts
+  cvat-ui/plugins/dicom-import/src/ts/api.ts \
+  cvat-ui/plugins/dicom-import/src/ts/selection.ts
 DICOM_TEST_BUILD=/tmp/dicom-test-build \
-  node --test cvat-ui/plugins/dicom-import/tests/import.test.cjs
+  node --test cvat-ui/plugins/dicom-import/tests/*.test.cjs
 ```
 
 単体テストは合成データを使用します。pydicomが導入されている環境では、合成DICOMの書き出しから復号、PNG重複除外、動画変換までを実行します。導入されていない場合、そのテストモジュールはスキップします。保存接続の試験ではORM、RQとOPAを代替実装にし、Data、Task、Jobの保存先メソッドは実モデルのソースから読み込みます。ディレクトリの清掃、最終status保存時の失敗、権限剥奪後の拒否を確認します。これらの試験を、稼働中のCVATでの結合試験と区別してください。

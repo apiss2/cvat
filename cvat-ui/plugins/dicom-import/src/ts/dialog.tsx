@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 import React, { useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { FolderOpenOutlined, InboxOutlined, UploadOutlined } from '@ant-design/icons';
 import {
-    Alert, Button, Input, Modal, Progress, Space, Typography,
+    Alert, Button, Form, Input, Modal, Progress, Space, Spin, theme, Typography,
 } from 'antd';
 import { pack } from './archive';
 import type { API } from './api';
+import { collectDroppedFiles, collectFiles } from './selection';
 
 export function openDialog(api: API, projectName: string, closed: () => void): {
     dispose: () => void; focus: () => void;
@@ -20,8 +22,11 @@ export function openDialog(api: API, projectName: string, closed: () => void): {
         api.dispose(); root.unmount(); host.remove(); closed();
     };
     function Dialog(): JSX.Element {
+        const { token } = theme.useToken();
         const [files, setFiles] = useState<File[]>([]);
         const [prefix, setPrefix] = useState('');
+        const [collecting, setCollecting] = useState(false);
+        const [dragging, setDragging] = useState(false);
         const [busy, setBusy] = useState(false);
         const [submitted, setSubmitted] = useState(false);
         const [progress, setProgress] = useState(0);
@@ -29,8 +34,23 @@ export function openDialog(api: API, projectName: string, closed: () => void): {
         const [requestID, setRequestID] = useState('');
         const folder = useRef<HTMLInputElement>(null);
         const picker = useRef<HTMLInputElement>(null);
+        const locked = collecting || busy || submitted;
+        const select = async (read: () => Promise<File[]>): Promise<void> => {
+            if (locked) return;
+            setCollecting(true); setFiles([]); setError(''); setProgress(0);
+            try {
+                const selected = await read();
+                if (disposed) return;
+                setFiles(selected);
+                if (!selected.length) setError('DICOMまたは対応する圧縮ファイルが見つかりませんでした。');
+            } catch (reason) {
+                if (!disposed) setError(reason instanceof Error ? reason.message : String(reason));
+            } finally {
+                if (!disposed) setCollecting(false);
+            }
+        };
         const submit = async (): Promise<void> => {
-            if (busy || submitted) return;
+            if (locked || !prefix.trim() || !files.length) return;
             setBusy(true); setError('');
             try {
                 await api.available();
@@ -51,29 +71,68 @@ export function openDialog(api: API, projectName: string, closed: () => void): {
             <Modal open title={`DICOM import: ${projectName}`} onCancel={dispose} maskClosable={false}
                 footer={<Space><Button onClick={dispose}>閉じる</Button>
                     <Button type='primary' onClick={submit} loading={busy}
-                        disabled={submitted || !prefix.trim() || !files.length}>登録</Button></Space>}>
-                <Space direction='vertical' style={{ width: '100%' }}>
-                    <Input aria-label='データソース接頭辞' placeholder='接頭辞（例: GRD）' value={prefix}
-                        disabled={busy || submitted} onChange={(event) => setPrefix(event.target.value)} />
-                    <Space>
-                        <Button disabled={busy || submitted} onClick={() => folder.current?.click()}>フォルダ</Button>
-                        <Button disabled={busy || submitted} onClick={() => picker.current?.click()}>
-                            ファイル／圧縮ファイル
-                        </Button>
-                    </Space>
-                    <input type='file' hidden multiple ref={(element) => {
-                        (folder as React.MutableRefObject<HTMLInputElement | null>).current = element;
-                        element?.setAttribute('webkitdirectory', '');
-                    }} onChange={(event) => setFiles(Array.from(event.target.files || []))} />
-                    <input type='file' hidden multiple ref={picker} accept='.zip,.tar,.tgz,.gz,.dcm,.dicom'
-                        onChange={(event) => setFiles(Array.from(event.target.files || []))} />
-                    <div role='region' aria-label='ファイルのドロップ領域'
-                        style={{ border: '1px dashed', padding: 16 }}
-                        onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
+                        disabled={locked || !prefix.trim() || !files.length}>登録</Button></Space>}>
+                <input type='file' hidden multiple disabled={locked} aria-label='フォルダを選択' ref={(element) => {
+                    (folder as React.MutableRefObject<HTMLInputElement | null>).current = element;
+                    element?.setAttribute('webkitdirectory', '');
+                }} onChange={(event) => {
+                    const selected = Array.from(event.target.files || []);
+                    event.target.value = '';
+                    if (selected.length) void select(() => collectFiles(selected, api.signal));
+                }} />
+                <input type='file' hidden multiple disabled={locked} ref={picker} aria-label='ファイルを選択'
+                    accept='.zip,.tar,.tar.gz,.tgz,.dcm,.dicom'
+                    onChange={(event) => {
+                        const selected = Array.from(event.target.files || []);
+                        event.target.value = '';
+                        if (selected.length) void select(() => collectFiles(selected, api.signal));
+                    }} />
+                <Space direction='vertical' size='middle' style={{ width: '100%' }}>
+                    <div role='region' aria-label='フォルダとファイルのドロップ領域' aria-busy={collecting}
+                        style={{
+                            border: `1px dashed ${dragging ? token.colorPrimary : token.colorBorder}`,
+                            borderRadius: token.borderRadiusLG,
+                            background: dragging ? token.colorPrimaryBg : token.colorFillAlter,
+                            padding: 24,
+                            textAlign: 'center',
+                        }}
+                        onDragOver={(event) => {
                             event.preventDefault();
-                            if (!busy && !submitted) setFiles(Array.from(event.dataTransfer.files));
-                        }}>ここにファイルをドロップ</div>
-                    <Typography.Text>{files.length}ファイル</Typography.Text>
+                            event.dataTransfer.dropEffect = locked ? 'none' : 'copy';
+                            if (!locked) setDragging(true);
+                        }} onDragLeave={() => setDragging(false)} onDrop={(event) => {
+                            event.preventDefault();
+                            setDragging(false);
+                            void select(() => collectDroppedFiles(event.dataTransfer, api.signal));
+                        }}>
+                        <Space direction='vertical' size='middle' style={{ width: '100%' }}>
+                            <InboxOutlined aria-hidden style={{ fontSize: 32, color: token.colorPrimary }} />
+                            <Typography.Text>フォルダまたはファイルをドロップ</Typography.Text>
+                            <Space wrap style={{ justifyContent: 'center' }}>
+                                <Button icon={<FolderOpenOutlined aria-hidden />} disabled={locked}
+                                    onClick={() => folder.current?.click()}>フォルダを選択</Button>
+                                <Button icon={<UploadOutlined aria-hidden />} disabled={locked}
+                                    onClick={() => picker.current?.click()}>ファイルを選択</Button>
+                            </Space>
+                            <Typography.Text type='secondary'>DICOM / ZIP / TAR / TAR.GZ / TGZ</Typography.Text>
+                        </Space>
+                    </div>
+                    <div role='status' aria-live='polite'>
+                        <Space>
+                            {collecting && <Spin size='small' />}
+                            <Typography.Text type={files.length ? undefined : 'secondary'}>
+                                {collecting ? 'ファイルを確認中…' : `${files.length.toLocaleString()} ファイル選択済み`}
+                            </Typography.Text>
+                        </Space>
+                    </div>
+                    <Form layout='vertical'>
+                        <Form.Item label='タスク名の接頭辞' required htmlFor='cvat-dicom-prefix'
+                            style={{ marginBottom: 0 }}>
+                            <Input id='cvat-dicom-prefix' required aria-required='true' placeholder='例: GRD'
+                                value={prefix} disabled={busy || submitted}
+                                onChange={(event) => setPrefix(event.target.value)} />
+                        </Form.Item>
+                    </Form>
                     {busy && <Progress percent={progress} status='active' />}
                     {error && <Alert type='error' message={error} />}
                     {requestID && <Alert type='success' message='登録を受け付けました。'

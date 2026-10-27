@@ -90,11 +90,28 @@ def envelope(entries):
 def test_reference_names():
     ds = dataset()
     assert c.names(ds, "GRD", False) == (
-        "GRD_SYNTHETIC_20260102_1.2.300",
+        "GRD_SYNTHETIC_20260102_12300",
         "GRD_SYNTHETIC_2_20260102_030405.12_0003_45678901.png",
     )
     assert c.names(ds, "GRD", True)[0] == c.names(ds, "GRD", True)[1][:-4]
     assert c.component(" a b:/ ", "test") == "a b__"
+
+
+@pytest.mark.parametrize(
+    "study_uid,suffix",
+    [
+        ("1.2.345.678901", "45678901"),
+        ("1.2345678", "12345678"),
+        ("1.2.300", "12300"),
+    ],
+)
+def test_study_name_uses_last_eight_digits(study_uid, suffix):
+    ds = dataset(StudyInstanceUID=study_uid)
+    assert c.names(ds, "GRD", False)[0] == f"GRD_SYNTHETIC_20260102_{suffix}"
+    assert c.names(ds, "GRD", True) == (
+        "GRD_SYNTHETIC_2_20260102_030405.12_0003_45678901",
+        "GRD_SYNTHETIC_2_20260102_030405.12_0003_45678901.mp4",
+    )
 
 
 @pytest.mark.parametrize(
@@ -220,6 +237,24 @@ def test_prepare_dedup_is_task_scoped_and_no_saved_hash(tmp_path):
     assert all(path.suffix == ".png" for path in (tmp_path / "output").rglob("*") if path.is_file())
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_short_study_name_collision_is_rejected_before_decode(tmp_path, existing):
+    inputs = files(tmp_path, 2)
+    data = {
+        inputs[0]: dataset(StudyInstanceUID="1.2.34567890", fail_decode=True),
+        inputs[1]: dataset(StudyInstanceUID="1.3.34567890", fail_decode=True),
+    }
+    existing_names = [c.names(data[inputs[0]], "GRD", False)[0]] if existing else []
+    with pytest.raises(DicomImportError, match="Different studies produce the same task name"):
+        c.prepare(
+            inputs,
+            tmp_path / "output",
+            "GRD",
+            existing_names,
+            reader=data.__getitem__,
+        )
+
+
 def test_existing_task_is_skipped_before_decode(tmp_path):
     inputs = files(tmp_path, 1)
     ds = dataset(fail_decode=True)
@@ -227,6 +262,7 @@ def test_existing_task_is_skipped_before_decode(tmp_path):
         inputs, tmp_path / "output", "GRD", [c.names(ds, "GRD", False)[0]], reader=lambda _: ds
     )
     assert not plan.tasks and len(plan.skipped_tasks) == 1
+    assert plan.study_uids == {"GRD_SYNTHETIC_20260102_12300": "1.2.300"}
 
 
 def test_converted_datasets_are_released_before_next_decode(tmp_path, monkeypatch):

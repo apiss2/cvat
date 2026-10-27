@@ -46,9 +46,9 @@ PR11のDICOM取り込みで画像や動画を登録した後に使用します�
 
 省略されていないStudyInstanceUIDの完全一致を使います。PatientIDや日付だけの照合、部分一致、SOP UID末尾8文字からの推定は行いません。接頭辞の指定は不要です。
 
-静止画ではPR11の `{prefix}_{PatientID}_{StudyDate}_{StudyInstanceUID}` というタスク名を認識します。PatientIDのファイル名用置換もPR11と合わせています。JSONにPatientIDや日付があれば、タスク名との一致も確認します。
+静止画と動画のどちらも、Tagアノテーション `DicomTag` の完全なUIDを参照します。使用する属性は `0020000D`（StudyInstanceUID）、`00100020`（PatientID）、`00080020`（StudyDate）です。静止画タスク名のStudy UID末尾8桁からは照合しません。JSONにPatientIDや日付があれば、タグとの一致も確認します。
 
-動画のタスク名にはStudyInstanceUIDが含まれないため、PR11のTagアノテーション `DicomTag` を参照します。使用する属性は `0020000D`（StudyInstanceUID）、`00100020`（PatientID）、`00080020`（StudyDate）です。静止画でもこれらのタグがある場合は照合に使い、タスク名との矛盾を拒否します。UIDが保持されていれば、タスク名の変更後も照合できます。
+タスク名に完全なStudyInstanceUIDが含まれる場合は、その値も照合に使い、タグとの矛盾を拒否します。PatientIDのファイル名用置換はDICOM取り込みと合わせています。UIDがタグに保持されていれば、タスク名の変更後も照合できます。
 
 一つのStudyに静止画タスクと複数の動画タスクがある場合、そのStudyのガイドを該当する全タスクへ付与します。複数の接頭辞で登録された同じStudyも同様です。プロジェクト外のタスクは検索しません。
 
