@@ -19,8 +19,8 @@
 | `selective_ai` | タグ条件と画像選択による自動アノテーション | `plugins/selective-ai` を共通UIイメージに含め、推論APIに必要な既存Nuclio構成を有効にします。 |
 | `filtered_export` | アノテーション条件に合う画像のエクスポート | `plugins/filtered-export` を共通UIイメージに含めます。標準のサーバーと出力ワーカーを使用し、推論サービスは不要です。 |
 | `physical_measurements` | DicomTagのPixelSpacingに基づく折れ線の物理長表示 | `plugins/physical-measurements` を共通UIイメージに含めます。標準のTagを参照し、追加サービスとGPUは不要です。 |
-| `task_context` | 標準AnnotationGuideによる背景情報の参照 | `plugins/task-context` を共通UIイメージに含めます。標準のガイドAPIを使い、追加サービスとGPUは不要です。 |
-| `dicom_import` | DICOMから画像と動画のタスクを作成 | `plugins/dicom-import` とサーバーおよび取り込みワーカーの既存サービスを使用します。各フレームの情報を標準の `DicomTag` に保存します。 |
+| `task_context` | 標準AnnotationGuideによる背景情報の参照 | `plugins/task-context` を共通UIイメージに含めます。ガイドのJSON、Markdown Zip、DICOM Report Importは共通バックエンドに登録し、表示を無効にしても利用できます。追加サービスとGPUは不要です。 |
+| `dicom_import` | DICOMから画像と動画のタスクを作成 | `plugins/dicom-import` とサーバーおよび取り込みワーカーの既存サービスを使用します。Keyword属性への保存、タスク単位の部分取り込み、完了時の集計通知も含みます。 |
 
 `selective_ai` は `model_registry` を自動選択しません。登録ONNXモデルを使う場合は両方を選択します。通常のNuclioモデルも使用できますが、画面プラグインの有効化だけでモデルを新しく配備するわけではありません。GPUも自動要求しません。推論の開始と中止は画面で行い、`cvatctl` は配備と停止を管理します。
 
@@ -59,7 +59,11 @@ bash components/extensions/cvatctl check
 
 `task_context` の初回導入時は、Job APIの読み取り専用フィールド `task_guide_id` に対応したサーバーも更新します。導入後の選択変更はUIの再ビルドで反映します。拡張名を外すと、プラグインによる背景情報の表示を無効にします。標準のAnnotationGuideの内容、API、既存のガイド画面は維持され、再び有効にすると同じ内容を参照できます。API経路、独自のDjangoアプリ、DBテーブル、マイグレーションは新設しません。データの保存と復元には、既存の[バックアップ手順](backup-restore.md)を使用します。
 
+ガイドの取り込み形式を更新するときは、サーバーとインポートワーカーにも共通バックエンドの変更を反映します。`Task Guide JSON 1.0`、`Task Guide Markdown Zip 1.0`、`Task Guide DICOM Report Import 1.0` はプロジェクトの標準取り込み画面から使用します。どの形式もZIPを指定し、JSON形式ではJSONファイル1個をZIPに入れます。形式はソースに登録されるため、`task_context` の選択を外しても残ります。入力と再取り込みの動作は[タスク用ガイドの取り込み](task-guide-import.md)を参照してください。
+
 `dicom_import` の初回導入時はサーバーとUIを再ビルドします。選択から外して再配備するとDICOM取り込みを無効化しますが、保存済みの画像、動画、DicomTag、AnnotationGuideは残ります。`physical_measurements` と `task_context` は独立に選択でき、取り込みを無効化した後も保存済みの情報を参照できます。操作は[DICOM取り込み](../annotation/dicom-import.md)を参照してください。
+
+DicomTagのKeyword化は属性とその参照処理の変更です。物理長表示とITGformatも同じ版に更新してください。データベースの移行は追加しません。依存関係を更新した際は、保存したタグ番号とKeywordの対応に変化がないことをDICOMの回帰テストで確認します。
 
 ## 確認コマンドの範囲
 

@@ -6,7 +6,9 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
+import stat
 import sys
 import tempfile
 import unittest
@@ -15,7 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
-from zipfile import ZipFile
+from uuid import UUID
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 ROOT = Path(__file__).resolve().parents[3]
 FORMATS = ROOT / "cvat/apps/dataset_manager/formats"
@@ -24,6 +27,28 @@ spec = importlib.util.spec_from_file_location(CORE_NAME, FORMATS / "task_guide_c
 core = importlib.util.module_from_spec(spec)
 sys.modules[CORE_NAME] = core
 spec.loader.exec_module(core)
+
+
+def native_asset_ids_reader():
+    """Use CVAT's actual asset-reference parser without importing Django models."""
+    source = ROOT / "cvat/apps/engine/models.py"
+    guide = next(
+        node
+        for node in ast.parse(source.read_text()).body
+        if isinstance(node, ast.ClassDef) and node.name == "AnnotationGuide"
+    )
+    method = next(
+        node
+        for node in guide.body
+        if isinstance(node, ast.FunctionDef) and node.name == "get_asset_ids_from_markdown"
+    )
+    method.decorator_list = []
+    namespace = {"re": re}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
+    return namespace["get_asset_ids_from_markdown"]
+
+
+ASSET_IDS_FROM_MARKDOWN = native_asset_ids_reader()
 
 
 def record(uid="1.2.3", patient="P1", date="20250101"):
@@ -58,8 +83,33 @@ def reports(*rows):
     return core.read_reports(stream(list(rows)))[0]
 
 
+def named_stream(mapping):
+    return io.BytesIO(json.dumps(mapping, ensure_ascii=False).encode("utf-8"))
+
+
+def zip_stream(members):
+    source = io.BytesIO()
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        for name, markdown in members:
+            archive.writestr(name, markdown)
+    source.seek(0)
+    return source
+
+
+def named_zip(mapping):
+    return zip_stream([("guides.json", named_stream(mapping).read())])
+
+
+def report_zip(records):
+    return zip_stream([("reports.json", stream(records).read())])
+
+
 def image(task_id=1, uid="1.2.3", patient="P1", date="20250101", prefix="site"):
-    return core.TaskIdentity(task_id, f"{prefix}_{core.component(patient)}_{date}_{uid}")
+    return core.TaskIdentity(
+        task_id,
+        f"{prefix}_{patient.replace('/', '_')}_{date}_{uid.replace('.', '')[-8:]}",
+        {core.STUDY_UID: {uid}, core.PATIENT_ID: {patient}, core.STUDY_DATE: {date}},
+    )
 
 
 def video(task_id=2, uid="1.2.3"):
@@ -240,10 +290,13 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(set(updates), {1})
         self.assertEqual(unmatched, [2])
 
-    def test_name_and_metadata_uid_conflict(self):
+    def test_name_is_not_used_as_a_source_of_study_identity(self):
         task = image()
-        task.tags[core.STUDY_UID] = {"1.2.4"}
-        with self.assertRaisesRegex(core.GuideImportError, "conflicting study identities"):
+        task.name = "site_OTHER_19991231_9.9.9"
+        self.assertEqual(set(core.plan_updates(reports(record()), [task])[0]), {1})
+        task.tags.clear()
+        task.name = "site_P1_20250101_1.2.3"
+        with self.assertRaisesRegex(core.GuideImportError, "No matching tasks"):
             core.plan_updates(reports(record()), [task])
 
     def test_mixed_study_task_rejected(self):
@@ -268,6 +321,181 @@ class MatchingTests(unittest.TestCase):
         r["input"].pop("study_date")
         task = core.TaskIdentity(9, "renamed", {core.STUDY_UID: {"1.2.3"}})
         self.assertEqual(set(core.plan_updates(reports(r), [task])[0]), {9})
+
+    def test_shortened_study_names_use_full_metadata_uid_for_images_and_videos(self):
+        tags = {
+            "StudyInstanceUID": {"1.2.12345678"},
+            "PatientID": {"P1"},
+            "StudyDate": {"20250101"},
+        }
+        tasks = [
+            core.TaskIdentity(1, "site_P1_20250101_12345678", tags),
+            core.TaskIdentity(2, video().name, tags),
+        ]
+        updates, unmatched = core.plan_updates(reports(record(uid="1.2.12345678")), tasks)
+        self.assertEqual(set(updates), {1, 2})
+        self.assertEqual(unmatched, [])
+
+    def test_identical_short_uid_suffix_does_not_match_another_study(self):
+        tasks = [
+            core.TaskIdentity(
+                1, "site_P1_20250101_12345678", {"StudyInstanceUID": {"1.2.12345678"}}
+            ),
+            core.TaskIdentity(
+                2, "site_P1_20250101_12345678", {"StudyInstanceUID": {"1.3.12345678"}}
+            ),
+        ]
+        updates, _ = core.plan_updates(reports(record(uid="1.2.12345678")), tasks)
+        self.assertEqual(set(updates), {1})
+        with self.assertRaisesRegex(core.GuideImportError, "No matching tasks"):
+            core.plan_updates(
+                reports(record(uid="1.2.12345678")), [core.TaskIdentity(3, tasks[0].name)]
+            )
+
+    def test_only_keyword_metadata_is_used_for_identity(self):
+        task = core.TaskIdentity(1, "site_P1_20250101_1.2.3", {"0020000D": {"1.2.3"}})
+        with self.assertRaisesRegex(core.GuideImportError, "No matching tasks"):
+            core.plan_updates(reports(record()), [task])
+
+
+class JsonZipTests(unittest.TestCase):
+    def test_one_json_file_in_a_directory_is_read_without_changing_content(self):
+        raw = named_stream({"task": "# Markdown\n"}).read()
+        source = zip_stream([("guides/", ""), ("guides/data.JSON", raw)])
+        self.assertEqual(core.read_json_zip(source), raw)
+
+    def test_json_archive_requires_exactly_one_json_file(self):
+        for members in (
+            [],
+            [("directory/", "")],
+            [("a.json", "{}"), ("b.json", "{}")],
+            [("one/report.json", "{}"), ("two/report.json", "{}")],
+        ):
+            with (
+                self.subTest(members=members),
+                self.assertRaisesRegex(core.GuideImportError, "exactly one JSON"),
+            ):
+                core.read_json_zip(zip_stream(members))
+
+    def test_json_archive_rejects_extra_files_and_unsafe_paths(self):
+        for members in (
+            [("data.json", "{}"), ("README.txt", "text")],
+            [("data.md", "{}")],
+            [("../data.json", "{}")],
+        ):
+            with self.subTest(members=members), self.assertRaises(core.GuideImportError):
+                core.read_json_zip(zip_stream(members))
+
+    def test_raw_json_is_not_an_accepted_upload(self):
+        with self.assertRaisesRegex(core.GuideImportError, "ZIP"):
+            core.read_json_zip(named_stream({"task": "text"}))
+
+
+class NamedGuideTests(unittest.TestCase):
+    def test_json_preserves_task_name_and_complete_markdown(self):
+        markdown = "# 見出し\r\n\n![image](/api/assets/a)\n  text  \n"
+        guides = core.read_named_json(named_stream({" task 名 ": markdown, "empty": ""}))
+        self.assertEqual(
+            guides, [core.NamedGuide(1, " task 名 ", markdown), core.NamedGuide(2, "empty", "")]
+        )
+
+    def test_json_rejects_bad_structure_names_and_text(self):
+        for raw in (
+            b"[]",
+            b"{}",
+            b'{"task":null}',
+            b'{"task":1}',
+            b'{"task":{}}',
+            b'{"": "text"}',
+            b'{" ": "text"}',
+            b'{"task":"one","task":"two"}',
+            b'{"task":"\\ud800"}',
+            b'{"\\ud800":"text"}',
+            b'{"task":"\\u0000"}',
+            b'{"ta\\u0000sk":"text"}',
+            b"\xff",
+            b'{"task":NaN}',
+        ):
+            with self.subTest(raw=raw), self.assertRaises(core.GuideImportError):
+                core.read_named_json(io.BytesIO(raw))
+
+    def test_json_size_and_entry_limits(self):
+        for constant, limit, mapping in (
+            ("MAX_FILE_BYTES", 5, {"task": "text"}),
+            ("MAX_RECORDS", 1, {"a": "text", "b": "text"}),
+            ("MAX_GUIDE_CHARS", 3, {"task": "text"}),
+        ):
+            with patch.object(core, constant, limit), self.assertRaises(core.GuideImportError):
+                core.read_named_json(named_stream(mapping))
+
+    def test_name_matching_is_exact_and_reports_unmatched_positions(self):
+        guides = core.read_named_json(named_stream({"task A": "a", "task B": "b", "TASK A": "c"}))
+        updates, unmatched = core.plan_named_updates(guides, [core.TaskIdentity(1, "task A")])
+        self.assertEqual(updates, {1: "a"})
+        self.assertEqual(unmatched, [2, 3])
+        with self.assertRaisesRegex(core.GuideImportError, "No matching tasks"):
+            core.plan_named_updates(guides, [core.TaskIdentity(2, "task A ")])
+
+    def test_ambiguous_target_name_rejected(self):
+        guides = core.read_named_json(named_stream({"task": "text"}))
+        with self.assertRaisesRegex(core.GuideImportError, "multiple tasks"):
+            core.plan_named_updates(
+                guides, [core.TaskIdentity(1, "task"), core.TaskIdentity(2, "task")]
+            )
+
+    def test_zip_supports_utf8_bom_nested_files_and_empty_text(self):
+        guides = core.read_markdown_zip(
+            zip_stream(
+                [
+                    ("guides/", ""),
+                    ("guides/日本語.md", "\ufeff# 日本語\r\n"),
+                    ("empty.MD", ""),
+                ]
+            )
+        )
+        self.assertEqual(
+            guides, [core.NamedGuide(1, "日本語", "# 日本語\r\n"), core.NamedGuide(2, "empty", "")]
+        )
+
+    def test_zip_rejects_unsafe_paths_non_markdown_and_duplicate_task_names(self):
+        for members in (
+            [("../task.md", "text")],
+            [("/task.md", "text")],
+            [("a/../task.md", "text")],
+            [("./task.md", "text")],
+            [("C:/task.md", "text")],
+            [("a\\task.md", "text")],
+            [("a//task.md", "text")],
+            [("task.txt", "text")],
+            [(".md", "text")],
+            [("first/task.md", "one"), ("second/task.md", "two")],
+            [("task.md", b"\xff")],
+            [("task.md", "\x00")],
+            [],
+            [("directory/", "")],
+        ):
+            with self.subTest(members=members), self.assertRaises(core.GuideImportError):
+                core.read_markdown_zip(zip_stream(members))
+        info = ZipInfo("task.md")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        with self.assertRaisesRegex(core.GuideImportError, "regular files"):
+            core.read_markdown_zip(zip_stream([(info, "elsewhere")]))
+        with self.assertRaisesRegex(core.GuideImportError, "Invalid"):
+            core.read_markdown_zip(io.BytesIO(b"not a zip"))
+
+    def test_zip_size_entry_and_total_uncompressed_limits(self):
+        with patch.object(core, "MAX_FILE_BYTES", 5), self.assertRaises(core.GuideImportError):
+            core.read_markdown_zip(zip_stream([("task.md", "text")]))
+        with patch.object(core, "MAX_RECORDS", 1), self.assertRaises(core.GuideImportError):
+            core.read_markdown_zip(zip_stream([("a.md", "a"), ("b.md", "b")]))
+        with patch.object(core, "MAX_GUIDE_CHARS", 3), self.assertRaises(core.GuideImportError):
+            core.read_markdown_zip(zip_stream([("task.md", "text")]))
+        with (
+            patch.object(core, "MAX_FILE_BYTES", 1024),
+            self.assertRaisesRegex(core.GuideImportError, "Uncompressed"),
+        ):
+            core.read_markdown_zip(zip_stream([("a.md", "a" * 600), ("b.md", "b" * 600)]))
 
 
 class MergeTests(unittest.TestCase):
@@ -325,8 +553,15 @@ class AdapterTests(unittest.TestCase):
         self.task_manager.select_for_update.return_value.filter.return_value.exclude.return_value.order_by.return_value = (
             self.tasks
         )
+        self.task_manager.select_for_update.return_value.filter.return_value.order_by.return_value = (
+            self.tasks
+        )
         self.values_manager = MagicMock()
-        self.values = [(2, tag, next(iter(value))) for tag, value in video().tags.items()]
+        self.values = [
+            (task.id, tag, next(iter(value)))
+            for task in (image(), video())
+            for tag, value in task.tags.items()
+        ]
         self.values_manager.filter.return_value.order_by.return_value.values_list.return_value.distinct.return_value.iterator.side_effect = lambda: iter(
             self.values
         )
@@ -356,16 +591,20 @@ class AdapterTests(unittest.TestCase):
         self.project_data = type("ProjectData", (), {})
         self.error = type("CvatImportError", (Exception,), {})
         self.registration = {}
+        self.asset_ids_from_markdown = MagicMock(wraps=ASSET_IDS_FROM_MARKDOWN)
 
         def importer(**kwargs):
-            self.registration.update(kwargs)
+            self.registration[kwargs["name"]] = kwargs
             return lambda func: func
 
         models = SimpleNamespace(
             Project=SimpleNamespace(objects=self.project_manager),
             Task=SimpleNamespace(objects=self.task_manager),
             LabeledImageAttributeVal=SimpleNamespace(objects=self.values_manager),
-            AnnotationGuide=SimpleNamespace(objects=self.guide_manager),
+            AnnotationGuide=SimpleNamespace(
+                objects=self.guide_manager,
+                get_asset_ids_from_markdown=self.asset_ids_from_markdown,
+            ),
         )
         dependencies = {
             "cvat.apps.dataset_manager.bindings": module(
@@ -416,14 +655,206 @@ class AdapterTests(unittest.TestCase):
             obj.touch.assert_not_called()
 
     def run_import(self, rows=None):
-        self.adapter.import_project_guides(stream(rows or [record()]), self.project)
+        self.adapter.import_project_guides(report_zip(rows or [record()]), self.project)
 
     def test_registration_and_project_only(self):
         self.assertEqual(
-            self.registration, {"name": "Task guide JSON", "version": "1.0", "ext": "JSON"}
+            self.registration,
+            {
+                name: {"name": name, "version": "1.0", "ext": ext}
+                for name, ext in (
+                    ("Task Guide JSON", "ZIP"),
+                    ("Task Guide Markdown Zip", "ZIP"),
+                    ("Task Guide DICOM Report Import", "ZIP"),
+                )
+            },
         )
-        with self.assertRaisesRegex(self.error, "project imports only"):
-            self.adapter.import_task_guides(stream([record()]), "unused", object())
+        for importer in (
+            self.adapter.import_task_guides,
+            self.adapter.import_task_guides_markdown_zip,
+            self.adapter.import_task_guides_dicom_report,
+        ):
+            with self.assertRaisesRegex(self.error, "project imports only"):
+                importer(io.BytesIO(), "unused", object())
+        self.guide_manager.create.assert_not_called()
+
+    def test_registered_formats_route_their_actual_payloads(self):
+        instance = self.project_data()
+        instance.db_project = self.project
+        for importer, payload in (
+            (self.adapter.import_task_guides, named_zip({self.tasks[0].name: "# Markdown"})),
+            (
+                self.adapter.import_task_guides_markdown_zip,
+                zip_stream([(self.tasks[0].name + ".md", "# Markdown")]),
+            ),
+            (self.adapter.import_task_guides_dicom_report, report_zip([record()])),
+        ):
+            with self.subTest(importer=importer.__name__):
+                self.guide_manager.create.reset_mock()
+                importer(payload, "unused", instance)
+                self.assertTrue(self.guide_manager.create.called)
+        self.assertEqual(self.guide_manager.create.call_count, 2)
+
+    def test_registered_formats_report_invalid_input_without_writes(self):
+        instance = self.project_data()
+        instance.db_project = self.project
+        for importer, raw in (
+            (self.adapter.import_task_guides, b"[]"),
+            (self.adapter.import_task_guides_markdown_zip, b"not a zip"),
+            (self.adapter.import_task_guides_dicom_report, b"{}"),
+        ):
+            with self.subTest(importer=importer.__name__), self.assertRaises(self.error):
+                importer(io.BytesIO(raw), "unused", instance)
+        self.guide_manager.create.assert_not_called()
+        self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    def test_json_formats_validate_the_contents_of_the_uploaded_archive(self):
+        instance = self.project_data()
+        instance.db_project = self.project
+        for importer, raw in (
+            (self.adapter.import_task_guides, b"[]"),
+            (self.adapter.import_task_guides_dicom_report, b"{}"),
+            (self.adapter.import_task_guides, b"\xff"),
+        ):
+            with self.subTest(importer=importer.__name__), self.assertRaises(self.error):
+                importer(zip_stream([("data.json", raw)]), "unused", instance)
+        self.guide_manager.create.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    def test_generic_import_replaces_entire_markdown_and_preserves_exact_text(self):
+        guide = SimpleNamespace(task_id=1, markdown="old manual text", save=MagicMock())
+        self.existing[:] = [guide]
+        text = "# 新しい説明\r\n\n  paragraph  \n"
+        self.adapter.import_project_guides(
+            named_zip({self.tasks[0].name: text}), self.project, input_format="json"
+        )
+        self.assertEqual(guide.markdown, text)
+        guide.save.assert_called_once_with(update_fields=["markdown", "updated_date"])
+        self.guide_manager.create.assert_not_called()
+        self.values_manager.filter.assert_not_called()
+        self.tasks[0].touch.assert_called_once_with()
+        self.tasks[1].touch.assert_not_called()
+        self.project.touch.assert_called_once_with()
+        guide.save.reset_mock()
+        self.tasks[0].touch.reset_mock()
+        self.project.touch.reset_mock()
+        self.adapter.import_project_guides(
+            named_zip({self.tasks[0].name: text}), self.project, input_format="json"
+        )
+        guide.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+        self.assertIn("1 unchanged", self.meta.status)
+
+    def test_generic_import_accepts_empty_markdown_and_tasks_without_media(self):
+        self.adapter.import_project_guides(
+            named_zip({self.tasks[0].name: ""}), self.project, input_format="json"
+        )
+        self.guide_manager.create.assert_called_once_with(task_id=1, markdown="")
+        self.task_manager.select_for_update.return_value.filter.return_value.exclude.assert_not_called()
+
+    def test_generic_new_guide_asset_reference_prevents_all_writes(self):
+        markdown = "![image](/api/assets/12345678-1234-5678-9abc-123456789abc)"
+        for input_format in ("json", "zip"):
+            mapping = {self.tasks[0].name: "valid first guide", self.tasks[1].name: markdown}
+            payload = (
+                named_zip(mapping)
+                if input_format == "json"
+                else zip_stream([(name + ".md", text) for name, text in mapping.items()])
+            )
+            with (
+                self.subTest(input_format=input_format),
+                self.assertRaisesRegex(core.GuideImportError, "Task 2.*assets already owned"),
+            ):
+                self.adapter.import_project_guides(payload, self.project, input_format=input_format)
+        self.guide_manager.create.assert_not_called()
+        self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    def test_generic_guide_preserves_its_own_asset_reference(self):
+        asset_id = UUID("12345678-1234-5678-9abc-123456789abc")
+        assets = MagicMock()
+        assets.filter.return_value.values_list.return_value = [asset_id]
+        guide = SimpleNamespace(task_id=1, markdown="original", assets=assets, save=MagicMock())
+        self.existing[:] = [guide]
+        markdown = f"# Guide\n![image](/api/assets/{str(asset_id).upper()})\n"
+        self.adapter.import_project_guides(
+            named_zip({self.tasks[0].name: markdown}), self.project, input_format="json"
+        )
+        self.assertEqual(guide.markdown, markdown)
+        assets.filter.assert_called_once_with(uuid__in={asset_id})
+        guide.save.assert_called_once_with(update_fields=["markdown", "updated_date"])
+        self.guide_manager.create.assert_not_called()
+
+    def test_generic_guide_rejects_foreign_or_unknown_asset_references(self):
+        own_id = UUID("12345678-1234-5678-9abc-123456789abc")
+        foreign_or_missing_id = UUID("87654321-4321-8765-cba9-cba987654321")
+        for available in ([], [own_id]):
+            assets = MagicMock()
+            assets.filter.return_value.values_list.return_value = available
+            guide = SimpleNamespace(task_id=1, markdown="original", assets=assets, save=MagicMock())
+            self.existing[:] = [guide]
+            markdown = (
+                f"![own](/api/assets/{own_id})\n![other](/api/assets/{foreign_or_missing_id})"
+            )
+            with (
+                self.subTest(available=available),
+                self.assertRaisesRegex(core.GuideImportError, "assets already owned"),
+            ):
+                self.adapter.import_project_guides(
+                    named_zip({self.tasks[0].name: markdown}), self.project, input_format="json"
+                )
+            self.assertEqual(guide.markdown, "original")
+            guide.save.assert_not_called()
+            assets.filter.assert_called_once_with(uuid__in={own_id, foreign_or_missing_id})
+        self.guide_manager.create.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    def test_generic_external_image_urls_are_preserved(self):
+        markdown = "![image](https://example.test/image.png)\n[link](https://example.test/page)\n"
+        self.adapter.import_project_guides(
+            named_zip({self.tasks[0].name: markdown}), self.project, input_format="json"
+        )
+        self.guide_manager.create.assert_called_once_with(task_id=1, markdown=markdown)
+
+    def test_dicom_report_keeps_existing_handwritten_asset_references(self):
+        markdown = "![image](/api/assets/12345678-1234-5678-9abc-123456789abc)\n"
+        guide = SimpleNamespace(task_id=1, markdown=markdown, save=MagicMock())
+        self.existing[:] = [guide]
+        self.run_import()
+        self.assertTrue(guide.markdown.startswith(markdown))
+        self.asset_ids_from_markdown.assert_not_called()
+        guide.save.assert_called_once_with(update_fields=["markdown", "updated_date"])
+
+    def test_generic_permission_denial_before_any_write(self):
+        allowed = SimpleNamespace(check_access=lambda: SimpleNamespace(allow=True))
+        denied = SimpleNamespace(check_access=lambda: SimpleNamespace(allow=False))
+        self.permission.create_base_perm.side_effect = [allowed, denied]
+        with self.assertRaisesRegex(core.GuideImportError, "Task 2.*permission denied"):
+            self.adapter.import_project_guides(
+                named_zip({task.name: "text" for task in self.tasks}),
+                self.project,
+                input_format="json",
+            )
+        self.guide_manager.create.assert_not_called()
+        self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    def test_generic_partial_match_and_ambiguous_names(self):
+        self.adapter.import_project_guides(
+            named_zip({self.tasks[0].name: "text", "SECRET_UNMATCHED": "missing"}),
+            self.project,
+            input_format="json",
+        )
+        self.guide_manager.create.assert_called_once_with(task_id=1, markdown="text")
+        self.assertIn("1 unmatched records", self.meta.status)
+        self.assertNotIn("SECRET_UNMATCHED", self.meta.status)
+        self.guide_manager.create.reset_mock()
+        self.tasks[1].name = self.tasks[0].name
+        with self.assertRaisesRegex(core.GuideImportError, "multiple tasks"):
+            self.adapter.import_project_guides(
+                named_zip({self.tasks[0].name: "text"}), self.project, input_format="json"
+            )
         self.guide_manager.create.assert_not_called()
 
     def test_create_and_scoped_metadata_read(self):

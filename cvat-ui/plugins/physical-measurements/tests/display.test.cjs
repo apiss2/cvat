@@ -27,7 +27,7 @@ const measurement = load('measurement.ts');
 const displayModule = load('display.ts', { './measurement': measurement });
 const { createDisplay, shapeText } = displayModule;
 const tag = (value = '0.4\\0.3', frame = 100) => ({
-    objectType: 'tag', frame, label: { name: 'DicomTag', attributes: [{ id: 17, name: '00280030' }] },
+    objectType: 'tag', frame, label: { name: 'DicomTag', attributes: [{ id: 17, name: 'PixelSpacing' }] },
     attributes: { 17: value },
 });
 const shape = (frame = 100) => ({ frame, shapeType: 'polyline', points: [0, 0, 10, 0, 10, 10] });

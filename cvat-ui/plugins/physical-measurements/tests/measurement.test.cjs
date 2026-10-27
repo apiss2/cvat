@@ -20,7 +20,7 @@ const { parsePixelSpacing, resolveSpacing, polylineLength, formatLength } = load
 
 const mm = (x = 0.3, y = 0.4) => ({ x, y, unit: 'mm' });
 const tag = (value = '0.4\\0.3', frame = 100, extra = {}) => ({
-    objectType: 'tag', frame, label: { name: 'DicomTag', attributes: [{ id: 17, name: '00280030' }] },
+    objectType: 'tag', frame, label: { name: 'DicomTag', attributes: [{ id: 17, name: 'PixelSpacing' }] },
     attributes: { 17: value }, ...extra,
 });
 
@@ -37,16 +37,16 @@ test('spacing rejects non-DS, missing, nonpositive and non-finite values', () =>
     invalid.forEach((value) => assert.equal(parsePixelSpacing(value), null, String(value)));
 });
 
-test('only a current-frame DicomTag tag with the exact numeric tag attribute provides spacing', () => {
+test('only a current-frame DicomTag tag with the PixelSpacing Keyword provides spacing', () => {
     assert.deepEqual(resolveSpacing([tag()], 100), mm());
     assert.equal(resolveSpacing([tag()], 99), null);
     assert.equal(resolveSpacing([tag('0.8\\0.6', 101)], 100), null);
     assert.equal(resolveSpacing([tag(undefined, 100, { objectType: 'shape' })], 100), null);
     assert.equal(resolveSpacing([tag(undefined, 100, {
-        label: { name: 'Other', attributes: [{ id: 17, name: '00280030' }] },
+        label: { name: 'Other', attributes: [{ id: 17, name: 'PixelSpacing' }] },
     })], 100), null);
     assert.equal(resolveSpacing([tag(undefined, 100, {
-        label: { name: 'DicomTag', attributes: [{ id: 17, name: 'PixelSpacing' }] },
+        label: { name: 'DicomTag', attributes: [{ id: 17, name: '00280030' }] },
     })], 100), null);
     assert.deepEqual(resolveSpacing([tag('0.8\\0.6', 101), tag()], 100), mm());
 });
@@ -55,7 +55,7 @@ test('missing metadata never falls back to a label default, another frame or ano
     assert.equal(resolveSpacing([], 100), null);
     assert.equal(resolveSpacing([tag(undefined, 100, { attributes: {} })], 100), null);
     assert.equal(resolveSpacing([tag(undefined, 100, {
-        label: { name: 'DicomTag', attributes: [{ id: 17, name: '00280030', defaultValue: '0.4\\0.3' }] },
+        label: { name: 'DicomTag', attributes: [{ id: 17, name: 'PixelSpacing', defaultValue: '0.4\\0.3' }] },
         attributes: {},
     })], 100), null);
     assert.equal(resolveSpacing([tag(undefined, 100, {
@@ -76,10 +76,10 @@ test('invalid frame numbers and ambiguous PixelSpacing attribute definitions are
         assert.equal(resolveSpacing([tag()], frame), null);
     }
     assert.equal(resolveSpacing([tag(undefined, 100, {
-        label: { name: 'DicomTag', attributes: [{ name: '00280030' }] },
+        label: { name: 'DicomTag', attributes: [{ name: 'PixelSpacing' }] },
     })], 100), null);
     assert.equal(resolveSpacing([tag(undefined, 100, {
-        label: { name: 'DicomTag', attributes: [{ id: 17, name: '00280030' }, { id: 18, name: '00280030' }] },
+        label: { name: 'DicomTag', attributes: [{ id: 17, name: 'PixelSpacing' }, { id: 18, name: 'PixelSpacing' }] },
         attributes: { 17: '0.4\\0.3', 18: '0.4\\0.3' },
     })], 100), null);
 });

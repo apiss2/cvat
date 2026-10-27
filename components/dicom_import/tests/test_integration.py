@@ -22,7 +22,7 @@ from cvat.apps.dataset_manager.formats import task_guide_core as guides
 STUDY_UID = "1.2.826.0.1.3680043.10.543.1"
 PATIENT_ID = "SYNTHETIC/PATIENT"
 STUDY_DATE = "20260102"
-PIXEL_SPACING = "00280030"
+PIXEL_SPACING = "PixelSpacing"
 
 
 def save_dicom(path, instance, pixels, *, spacing=None, study_uid=STUDY_UID):
@@ -113,7 +113,7 @@ def test_real_dicom_images_and_video_receive_the_same_study_report(tmp_path):
     image_task = next(task for task in plan.tasks if not task.video)
     assert image_task.name == "site_with_underscores_SYNTHETIC_PATIENT_20260102_43105431"
     assert all(
-        values[guides.STUDY_UID] == STUDY_UID
+        values["StudyInstanceUID"] == STUDY_UID
         for task in plan.tasks
         for values in task.tags.values()
     )
@@ -147,7 +147,7 @@ def test_missing_frame_spacing_does_not_inherit_existing_label_defaults(tmp_path
     ]
     plan = prepare(inputs, tmp_path / "converted", "site")
     assert len(plan.tasks) == 1 and plan.tasks[0].frames == 2
-    defaults = {PIXEL_SPACING: "99\\88", guides.STUDY_UID: "9.9.9"}
+    defaults = {PIXEL_SPACING: "99\\88", "StudyInstanceUID": "9.9.9"}
     existing = {
         "type": "tag",
         "attributes": [
@@ -171,7 +171,7 @@ def test_missing_frame_spacing_does_not_inherit_existing_label_defaults(tmp_path
     # Explicit blanks prevent CVAT's ordinary default expansion from inventing a measurement.
     expanded = [{**defaults, **value} for value in values]
     assert [value[PIXEL_SPACING] for value in expanded] == ["0.5\\0.25", ""]
-    assert all(value[guides.STUDY_UID] == STUDY_UID for value in expanded)
+    assert all(value["StudyInstanceUID"] == STUDY_UID for value in expanded)
 
 
 def test_missing_study_uid_is_rejected_and_cannot_be_supplied_by_a_label_default(tmp_path):
@@ -184,7 +184,7 @@ def test_missing_study_uid_is_rejected_and_cannot_be_supplied_by_a_label_default
     # Also exercise the registration boundary independently of naming validation.
     # An absent UID must not become an existing project's unrelated default UID.
     values = metadata(pydicom.dcmread(source))
-    assert guides.STUDY_UID not in values
+    assert "StudyInstanceUID" not in values
     attribute_ids = {name: index for index, name in enumerate(guides.IDENTITY_TAGS, 1)}
     tag = next(tag_batches([(0, values)], 7, attribute_ids))["tags"][0]
     registered = attribute_values(tag, attribute_ids)

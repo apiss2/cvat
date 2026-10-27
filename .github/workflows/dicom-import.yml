@@ -18,6 +18,7 @@ on:
       - 'cvat-canvas/src/typescript/canvasView.ts'
       - 'cvat/apps/dataset_manager/formats/task_guide*.py'
       - 'cvat/apps/dataset_manager/formats/itgformat/**'
+      - 'cvat/apps/redis_handler/serializers.py'
       - 'tests/python/unit/test_task_guide_import.py'
       - 'tests/extensions/**'
       - 'tests/itgformat/**'

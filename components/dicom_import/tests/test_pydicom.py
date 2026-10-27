@@ -50,9 +50,9 @@ def test_real_decode_dedup_metadata_and_high_bit(tmp_path):
     assert plan.duplicates == 1 and plan.high_bit_checked == 1
     assert plan.tasks[0].frames == 1
     values = next(iter(plan.tasks[0].tags.values()))
-    assert values["00100020"] == "SYNTHETIC"
-    assert values["00280102"] == "15"
-    assert "7FE00010" not in values and "00081110" not in values
+    assert values["PatientID"] == "SYNTHETIC"
+    assert values["HighBit"] == "15"
+    assert "PixelData" not in values and "ReferencedStudySequence" not in values
 
 
 def test_real_multiframe_is_one_video_task(tmp_path):
