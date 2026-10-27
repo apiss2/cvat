@@ -25,13 +25,13 @@ STUDY_DATE = "20260102"
 PIXEL_SPACING = "PixelSpacing"
 
 
-def save_dicom(path, instance, pixels, *, spacing=None, study_uid=STUDY_UID):
+def save_dicom(path, instance, pixels, *, spacing=None, study_uid=STUDY_UID, patient_id=PATIENT_ID):
     file_meta = FileMetaDataset()
     file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
     file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
     file_meta.MediaStorageSOPInstanceUID = f"1.2.826.0.1.3680043.10.543.2.{instance}"
     dataset = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\0" * 128)
-    dataset.PatientID = PATIENT_ID
+    dataset.PatientID = patient_id
     dataset.StudyDate = STUDY_DATE
     dataset.StudyTime = "030405"
     dataset.SeriesNumber = 2
@@ -57,13 +57,13 @@ def save_dicom(path, instance, pixels, *, spacing=None, study_uid=STUDY_UID):
     return path
 
 
-def read_report():
+def read_report(patient_id=PATIENT_ID):
     data = {
         "records": [
             {
                 "input": {
                     "study_instance_uid": STUDY_UID,
-                    "patient_id": PATIENT_ID,
+                    "patient_id": patient_id,
                     "study_date": STUDY_DATE,
                     "parsed_patient_age": "025Y",
                     "patient_sex": "M",
@@ -100,12 +100,17 @@ def task_identity(task_id, name, tags, attribute_ids):
     return identity
 
 
-def test_real_dicom_images_and_video_receive_the_same_study_report(tmp_path):
+@pytest.mark.parametrize("patient_id", [PATIENT_ID, "site_with_underscores_" + PATIENT_ID])
+def test_real_dicom_images_and_video_receive_the_same_study_report(tmp_path, patient_id):
     image = np.arange(24, dtype=np.uint16).reshape(4, 6) * 10
     video = np.stack([image, image + 20, image + 40])
     inputs = [
-        save_dicom(tmp_path / "image.dcm", 1, image, spacing=["0.30", "0.25"]),
-        save_dicom(tmp_path / "video.dcm", 2, video, spacing=["0.30", "0.25"]),
+        save_dicom(
+            tmp_path / "image.dcm", 1, image, spacing=["0.30", "0.25"], patient_id=patient_id
+        ),
+        save_dicom(
+            tmp_path / "video.dcm", 2, video, spacing=["0.30", "0.25"], patient_id=patient_id
+        ),
     ]
     plan = prepare(inputs, tmp_path / "converted", "site_with_underscores")
     assert len(plan.tasks) == 2
@@ -113,7 +118,7 @@ def test_real_dicom_images_and_video_receive_the_same_study_report(tmp_path):
     image_task = next(task for task in plan.tasks if not task.video)
     assert image_task.name == "site_with_underscores_SYNTHETIC_PATIENT_20260102_43105431"
     assert all(
-        values["StudyInstanceUID"] == STUDY_UID
+        values["StudyInstanceUID"] == STUDY_UID and values["PatientID"] == patient_id
         for task in plan.tasks
         for values in task.tags.values()
     )
@@ -130,11 +135,11 @@ def test_real_dicom_images_and_video_receive_the_same_study_report(tmp_path):
         )
         identities.append(task_identity(task_id, task.name, tags, attribute_ids))
 
-    reports = read_report()
+    reports = read_report(patient_id)
     updates, unmatched = guides.plan_updates(reports, identities)
     assert updates == {1: reports[0].markdown, 2: reports[0].markdown}
     assert unmatched == []
-    assert PATIENT_ID not in reports[0].markdown
+    assert patient_id not in reports[0].markdown
     assert STUDY_UID not in reports[0].markdown
     assert "合成画像の所見です。" in reports[0].markdown
 

@@ -61,6 +61,7 @@ ZIPに入れるJSONは、`records` 配列を持つオブジェクト、または
         "patient_sex": "M",
         "modality": "CT"
       },
+      "input_text": "History: History text\nFindings: English findings\nImpression: English impression",
       "result": {
         "extracted": {
           "part": ["brain"],
@@ -77,7 +78,26 @@ ZIPに入れるJSONは、`records` 配列を持つオブジェクト、または
 }
 ```
 
-識別子は文字列です。`study_uid` は `study_instance_uid`、`uid` は `patient_id`、`date` は `study_date` の別名として受け付けます。同じ項目の別名が併存し、値が異なる場合は拒否します。日付は `YYYYMMDD` または `YYYY-MM-DD` です。
+識別子は文字列で指定します。次の別名を受け付けます。
+
+| 項目 | 受け付けるキー |
+| --- | --- |
+| 患者ID | `patient_id`、`pid` |
+| StudyInstanceUID | `study_instance_uid`、`study_uid`、`uid` |
+| 検査日 | `study_date`、`date`、`dt` |
+
+`uid` はStudyInstanceUIDの別名です。患者IDには使用しません。同じ項目の別名が併存し、値が異なる場合は拒否します。検査日は次の形式を8桁の `YYYYMMDD` に変換してから比較するため、表記だけが異なる同日の別名は受け付けます。
+
+| 入力形式 | 入力例 | 正規化した検査日 |
+| --- | --- | --- |
+| 8桁の数字 | `20250107` | `20250107` |
+| 年から始まる区切り付き日付 | `2025-01-07`、`2025/1/7`、`2025.01.07` | `20250107` |
+| スペースまたは `T` で時刻を続けた日時 | `2025-01-07 00:00:00`、`2025-01-07T00:00:00+09:00` | `20250107` |
+| RFC形式の日時 | `Tue, 07 Jan 2025 00:00:00 GMT` | `20250107` |
+
+区切り付き日付では、年は4桁、月日は1桁または2桁で、2か所の区切りを同じ文字にします。時差付き日時も、書かれた年月日を使用し、UTCなどへ時差変換しません。`01/07/2025` のように月日を推測する必要がある形式や、存在しない日付は拒否します。
+
+2種類の入力例は [structured_report.json](../../tests/python/unit/fixtures/task_guide/structured_report.json) と [ptc_report.json](../../tests/python/unit/fixtures/task_guide/ptc_report.json) にあります。架空データから必要な項目だけを残した回帰テスト用のJSONで、RFC形式の日付、日時、別名の組み合わせ、末尾に先頭ゼロを含むUIDを確認できます。取り込み時はどちらかのJSONを1件だけZIPに入れます。
 
 ## DICOMレポートとタスクの照合
 
@@ -86,6 +106,8 @@ ZIPに入れるJSONは、`records` 配列を持つオブジェクト、または
 静止画と動画のどちらも、Tagアノテーション `DicomTag` の完全なUIDを参照します。使用する属性は `StudyInstanceUID`、`PatientID`、`StudyDate` です。静止画タスク名のStudy UID末尾8桁からは照合しません。JSONにPatientIDや日付があれば、タグとの一致も確認します。
 
 タスク名からUIDや患者ID、日付を推定しません。Keyword名のDicomTagに完全なUIDが保存されていれば、タスク名の変更後も照合できます。
+
+患者IDに接頭辞が含まれる場合も、DICOMとJSONの元のPatientIDを比較します。例えば両方が `ABC_DEFGH` なら、DICOM取り込みで接頭辞 `ABC_` の重複付与を省いても照合できます。タスク名に付けた接頭辞はDicomTagのPatientIDを変更しません。DICOMが `ABC_DEFGH`、JSONが `DEFGH` の場合は不一致として拒否し、接頭辞を推測して取り除きません。
 
 一つのStudyに静止画タスクと複数の動画タスクがある場合、そのStudyのガイドを該当する全タスクへ付与します。複数の接頭辞で登録された同じStudyも同様です。プロジェクト外のタスクは検索しません。
 
@@ -103,7 +125,7 @@ ZIPに入れるJSONは、`records` 配列を持つオブジェクト、または
 
 ## 検査概要
 - 検査部位：brain
-- 検査履歴：History text
+- 既往歴：History text
 - 検査目的：Objective text
 
 ## 所見
@@ -111,13 +133,28 @@ ZIPに入れるJSONは、`records` 配列を持つオブジェクト、または
 
 ## 診断
 診断本文
+
+## 参考生データ
+History: History text
+Findings: English findings
+Impression: English impression
 ```
 
-年齢、性別、検査方法は `input` の値を保持します。月齢を年齢へ換算したり、性別コードや検査方法を独自に翻訳したりしません。検査概要は `result.extracted.part`、`history`、`objective` を使用し、配列は順番を保って改行で連結します。
+概要では次の順に最初の空でない値を使用し、値をそのまま表示します。月齢を年齢へ換算したり、性別コードや検査方法を独自に翻訳したりしません。
+
+| 表示項目 | `input` 内の参照順 |
+| --- | --- |
+| 年齢 | `parsed_patient_age` → `age` |
+| 性別 | `patient_sex` → `sex` |
+| 検査方法 | `modality` → `mod` |
+
+検査概要では `result.extracted.part` を「検査部位」、`history` を「既往歴」、`objective` を「検査目的」として表示します。配列は順番を保って改行で連結します。
 
 所見と診断は独立に、`result.*_ja`、`result.*_jp`、`result.extracted.*`、`result.*_en`、`result.*` の順で最初の空でない値を使います。日本語がない側だけ英語へ切り替えます。
 
-null、空文字列、空配列は省略します。ただし所見と診断の見出しは残し、本文がない場合は「記載なし」とします。選択対象の内容が全て空ならエラーにします。入力の改行は保持し、MarkdownやHTMLの記号は文字として表示するためにエスケープします。患者ID、Study UID、日付、施設情報、APIの解析結果、処理時間などは生成本文に追加しません。
+参考生データには、各レコードの `input_text` を本文の最後に表示します。文字列またはnullを受け付け、項目がない場合、null、空文字列、空白だけの場合は見出しごと省略します。数値や配列など文字列以外の値は拒否します。改行を保持し、他の本文と同じようにMarkdownやHTMLの記号をエスケープして文字として表示します。
+
+その他の項目もnull、空文字列、空配列は省略します。ただし所見と診断の見出しは残し、本文がない場合は「記載なし」とします。参考生データを含め、選択対象の内容が全て空ならエラーにします。入力の改行は保持し、MarkdownやHTMLの記号は文字として表示するためにエスケープします。患者ID、Study UID、日付、施設情報、APIの解析結果、処理時間などを独立した項目として本文に追加しません。ただし `input_text` に含まれる情報は参考生データの一部として表示します。
 
 ## DICOMレポートの再取り込み
 
@@ -152,6 +189,8 @@ python -m unittest discover -s tests/python/unit -p test_task_guide_import.py -v
 ```
 
 回帰テストでは3形式の登録と読み込み、Markdownの維持と置換、完全一致と同名タスクの拒否、JSON1件を入れたZIP、ZIPのサイズ上限と不正なパスの拒否、短縮タスク名と完全なUIDによる照合、Keywordによる識別を確認します。インポート接続のテストはORM、OPA、RQを模擬します。キュー待機中の組織変更とプロジェクト取り込み権限の失効によって書き込みが拒否されることも確認します。
+
+DICOMレポートでは、2種類の入力例、識別子の別名と矛盾の拒否、各日付形式の正規化、接頭辞を含む患者IDの照合、概要の別名、既往歴の見出し、参考生データの表示とエスケープも確認します。
 
 バックアップの回帰テストでは、標準の `create_backup()` をソースからそのまま取り出して実行します。取り込み前のZIPをキャッシュに残した状態でガイドを作成または更新し、タスクとプロジェクトの再バックアップに最新の本文が含まれることと、同じ内容の再取り込みでは既存キャッシュを再利用することを確認します。ZIPの読み書きは実行しますが、DB、Exporter、ロックは代替実装です。
 

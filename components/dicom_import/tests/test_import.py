@@ -83,8 +83,8 @@ def zip_bytes(entries):
     return result
 
 
-def envelope(entries):
-    return zip_bytes([(MANIFEST, json.dumps({"version": 1, "prefix": "GRD"})), *entries])
+def envelope(entries, *, prefix="GRD"):
+    return zip_bytes([(MANIFEST, json.dumps({"version": 1, "prefix": prefix})), *entries])
 
 
 def test_reference_names():
@@ -95,6 +95,33 @@ def test_reference_names():
     )
     assert c.names(ds, "GRD", True)[0] == c.names(ds, "GRD", True)[1][:-4]
     assert c.component(" a b:/ ", "test") == "a b__"
+
+
+@pytest.mark.parametrize(
+    "prefix,patient_id,expected_patient",
+    [
+        ("ABC", "DEFGH", "ABC_DEFGH"),
+        ("ABC", "ABC_DEFGH", "ABC_DEFGH"),
+        ("ABC", "ABCDEFGH", "ABC_ABCDEFGH"),
+        ("ABC", "XABC_DEFGH", "ABC_XABC_DEFGH"),
+        ("ABC", "abc_DEFGH", "ABC_abc_DEFGH"),
+        ("ABC", "ABC", "ABC_ABC"),
+        ("ABC", "ABC/DEFGH", "ABC_ABC_DEFGH"),
+        ("A_B", "A_B_DEFGH", "A_B_DEFGH"),
+        (" ABC ", " ABC_DEFGH ", "ABC_DEFGH"),
+    ],
+)
+def test_prefix_is_added_only_when_patient_id_lacks_the_exact_prefix(
+    prefix, patient_id, expected_patient
+):
+    ds = dataset(PatientID=patient_id)
+    stem = f"{expected_patient}_2_20260102_030405.12_0003_45678901"
+    assert c.names(ds, prefix, False) == (
+        f"{expected_patient}_20260102_12300",
+        stem + ".png",
+    )
+    assert c.names(ds, prefix, True) == (stem, stem + ".mp4")
+    assert ds.PatientID == patient_id
 
 
 @pytest.mark.parametrize(
@@ -258,11 +285,16 @@ def test_short_study_name_collision_is_recorded_before_decode(tmp_path, existing
     }
 
 
-def test_existing_task_is_skipped_before_decode(tmp_path):
+@pytest.mark.parametrize("patient_id", ["SYNTHETIC", "GRD_SYNTHETIC"])
+def test_existing_task_is_skipped_before_decode(tmp_path, patient_id):
     inputs = files(tmp_path, 1)
-    ds = dataset(fail_decode=True)
+    ds = dataset(PatientID=patient_id, fail_decode=True)
     plan = c.prepare(
-        inputs, tmp_path / "output", "GRD", [c.names(ds, "GRD", False)[0]], reader=lambda _: ds
+        inputs,
+        tmp_path / "output",
+        "GRD",
+        ["GRD_SYNTHETIC_20260102_12300"],
+        reader=lambda _: ds,
     )
     assert not plan.tasks and len(plan.skipped_tasks) == 1
     assert plan.study_uids == {"GRD_SYNTHETIC_20260102_12300": "1.2.300"}
@@ -404,6 +436,36 @@ def test_nested_archive_and_prefix(tmp_path):
     nested = zip_bytes([("folder/a.dcm", b"synthetic")]).getvalue()
     prefix, items = read_upload(envelope([("data.zip", nested)]), tmp_path)
     assert prefix == "GRD" and len(items) == 1 and items[0].read_bytes() == b"synthetic"
+
+
+@pytest.mark.parametrize(
+    "upload_prefix,patient_id,expected_patient",
+    [
+        (" AB/C ", "AB/C_DEFGH", "AB_C_DEFGH"),
+        ("AB/C", "AB_C_DEFGH", "AB_C_AB_C_DEFGH"),
+        ("AB/C", "AB/CDEFGH", "AB_C_AB_CDEFGH"),
+        ("AB/C", "DEFGH", "AB_C_DEFGH"),
+    ],
+)
+def test_uploaded_prefix_is_compared_before_filename_conversion(
+    tmp_path, upload_prefix, patient_id, expected_patient
+):
+    prefix, items = read_upload(envelope([("a.dcm", b"synthetic")], prefix=upload_prefix), tmp_path)
+    assert prefix == upload_prefix.strip()
+    assert len(items) == 1
+    ds = dataset(PatientID=patient_id)
+    stem = f"{expected_patient}_2_20260102_030405.12_0003_45678901"
+    assert c.names(ds, prefix, False) == (
+        f"{expected_patient}_20260102_12300",
+        stem + ".png",
+    )
+    assert c.names(ds, prefix, True) == (stem, stem + ".mp4")
+
+
+@pytest.mark.parametrize("prefix", ["", "   ", ".", "... ", None, 123, []])
+def test_upload_rejects_invalid_prefix(tmp_path, prefix):
+    with pytest.raises(DicomImportError, match="Invalid DICOM import manifest"):
+        read_upload(envelope([("a.dcm", b"synthetic")], prefix=prefix), tmp_path)
 
 
 def test_archive_case_duplicates_rejected(tmp_path):

@@ -122,7 +122,9 @@ def read_upload(source, destination: Path) -> tuple[str, list[Path]]:
             raise ValueError
         if not isinstance(options["prefix"], str):
             raise ValueError
-        prefix = component(options["prefix"], "data-source prefix")
+        prefix = options["prefix"].strip()
+        # Keep the original prefix for PatientID comparison; names() makes it filename-safe.
+        component(prefix, "data-source prefix")
     except (ValueError, KeyError, UnicodeError) as exc:
         raise DicomImportError("Invalid DICOM import manifest") from exc
     files, queue, counter = [], deque((path, 0) for path in paths if path != manifest), 0

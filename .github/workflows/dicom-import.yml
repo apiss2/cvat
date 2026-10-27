@@ -20,6 +20,7 @@ on:
       - 'cvat/apps/dataset_manager/formats/itgformat/**'
       - 'cvat/apps/redis_handler/serializers.py'
       - 'tests/python/unit/test_task_guide_import.py'
+      - 'tests/python/unit/fixtures/task_guide/**'
       - 'tests/extensions/**'
       - 'tests/itgformat/**'
       - '.github/workflows/dicom-import.yml'

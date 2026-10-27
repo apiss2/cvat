@@ -1,0 +1,52 @@
+{
+  "records": [
+    {
+      "input": {
+        "pid": "SYN-PAT-0001",
+        "uid": "2.25.324479513911158040129943219792030673432",
+        "dt": "2025-01-01 00:00:00",
+        "age": "21Y",
+        "sex": "M",
+        "mod": "CT"
+      },
+      "input_text": "History: Synthetic test case 0001 for chest imaging.\nObjective: Synthetic CT examination.\nFindings: No focal pulmonary opacity is seen.\nImpression: No acute chest finding.",
+      "result": {
+        "extracted": {
+          "history": [
+            "Synthetic test case 0001 for chest imaging."
+          ],
+          "objective": "Synthetic CT examination of chest.",
+          "part": [
+            "chest"
+          ]
+        },
+        "findings_ja": "肺野に明らかな陰影を認めません。",
+        "impression_ja": "胸部に急性異常所見はありません。"
+      }
+    },
+    {
+      "input": {
+        "pid": "SYN-PAT-0002",
+        "uid": "2.25.148067302679844521089838573495230694803",
+        "dt": "2025-01-02 00:00:00",
+        "age": "22Y",
+        "sex": "F",
+        "mod": "CT"
+      },
+      "input_text": "History: Synthetic test case 0002 for abdomen imaging.\nObjective: Synthetic CT examination.\nFindings: A tiny simple cyst is noted in the liver.\nImpression: Tiny simple hepatic cyst.",
+      "result": {
+        "extracted": {
+          "history": [
+            "Synthetic test case 0002 for abdomen imaging."
+          ],
+          "objective": "Synthetic CT examination of abdomen.",
+          "part": [
+            "abdomen"
+          ]
+        },
+        "findings_ja": "肝臓に小さな単純嚢胞を認めます。",
+        "impression_ja": "小さな肝嚢胞です。"
+      }
+    }
+  ]
+}

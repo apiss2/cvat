@@ -1,0 +1,52 @@
+{
+  "records": [
+    {
+      "input": {
+        "patient_id": "SYN-PAT-0002",
+        "study_instance_uid": "1.2.840.1.1.1234567.1.234.86001294533525690803330601718105522970",
+        "study_date": "2025-01-02",
+        "parsed_patient_age": "32Y",
+        "patient_sex": "F",
+        "modality": "MR"
+      },
+      "input_text": "History: Synthetic evaluation for low back pain.\nFindings: Mild disc desiccation at L4-L5 without significant canal stenosis.\nImpression: Mild degenerative change at L4-L5.",
+      "result": {
+        "extracted": {
+          "history": [
+            "Synthetic evaluation for low back pain."
+          ],
+          "objective": "Mild disc desiccation at L4-L5 without significant canal stenosis.",
+          "part": [
+            "lumbar spine"
+          ]
+        },
+        "findings_ja": "L4-L5椎間板に軽度の変性を認めます。脊柱管狭窄はありません。",
+        "impression_ja": "L4-L5に軽度の変性所見があります。"
+      }
+    },
+    {
+      "input": {
+        "patient_id": "SYN-PAT-0007",
+        "study_instance_uid": "1.2.840.1.1.1234567.1.234.90638772645979703219463677525002065974",
+        "study_date": "Tue, 07 Jan 2025 00:00:00 GMT",
+        "parsed_patient_age": "67Y",
+        "patient_sex": "M",
+        "modality": "CT"
+      },
+      "input_text": "History: Synthetic evaluation for headache.\nFindings: No acute intracranial hemorrhage or mass effect.\nImpression: No acute intracranial abnormality.",
+      "result": {
+        "extracted": {
+          "history": [
+            "Synthetic evaluation for headache."
+          ],
+          "objective": "No acute intracranial hemorrhage or mass effect.",
+          "part": [
+            "brain"
+          ]
+        },
+        "findings_ja": "急性頭蓋内出血や占拠性病変を認めません。",
+        "impression_ja": "急性頭蓋内異常所見はありません。"
+      }
+    }
+  ]
+}
