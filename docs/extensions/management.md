@@ -61,6 +61,8 @@ bash components/extensions/cvatctl check
 
 ガイドの取り込み形式を更新するときは、サーバーとインポートワーカーにも共通バックエンドの変更を反映します。`Task Guide JSON 1.0`、`Task Guide Markdown Zip 1.0`、`Task Guide DICOM Report Import 1.0` はプロジェクトの標準取り込み画面から使用します。どの形式もZIPを指定し、JSON形式ではJSONファイル1個をZIPに入れます。形式はソースに登録されるため、`task_context` の選択を外しても残ります。入力と再取り込みの動作は[タスク用ガイドの取り込み](task-guide-import.md)を参照してください。
 
+DICOMレポートの識別子の別名、日付の正規化、参考生データの表示も同じ共通バックエンドに含まれ、Infoでの表示は既存の `task_context` で管理します。DICOM取り込み時の接頭辞の重複抑制は既存の `dicom_import` に含まれます。これらの内部変更に追加の拡張名、設定項目、サービスは不要です。
+
 `dicom_import` の初回導入時はサーバーとUIを再ビルドします。選択から外して再配備するとDICOM取り込みを無効化しますが、保存済みの画像、動画、DicomTag、AnnotationGuideは残ります。`physical_measurements` と `task_context` は独立に選択でき、取り込みを無効化した後も保存済みの情報を参照できます。操作は[DICOM取り込み](../annotation/dicom-import.md)を参照してください。
 
 DicomTagのKeyword化は属性とその参照処理の変更です。物理長表示とITGformatも同じ版に更新してください。データベースの移行は追加しません。依存関係を更新した際は、保存したタグ番号とKeywordの対応に変化がないことをDICOMの回帰テストで確認します。

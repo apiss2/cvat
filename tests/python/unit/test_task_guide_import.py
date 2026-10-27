@@ -136,7 +136,7 @@ class ReportTests(unittest.TestCase):
             "検査方法：CT",
             "## 検査概要",
             "検査部位：brain",
-            "検査履歴：History one",
+            "既往歴：History one",
             "History two",
             "検査目的：Screening",
             "## 所見",
@@ -196,17 +196,97 @@ class ReportTests(unittest.TestCase):
 
     def test_aliases_and_iso_date(self):
         r = record()
-        r["input"] = {"study_uid": "1.2.3", "uid": "P1", "date": "2025-01-01"}
+        r["input"] = {"study_uid": "1.2.3", "pid": "P1", "date": "2025-01-01"}
+        report = reports(r)[0]
+        self.assertEqual(
+            (report.study_uid, report.patient_id, report.date), ("1.2.3", "P1", "20250101")
+        )
+
+    def test_ptc_aliases_and_overview(self):
+        r = record()
+        r["input"] = {
+            "uid": "2.25.324479513911158040129943219792030673432",
+            "pid": "ABC_DEFGH",
+            "dt": "2025-01-01 00:00:00",
+            "age": "21Y",
+            "sex": "M",
+            "mod": "CT",
+        }
+        report = reports(r)[0]
+        self.assertEqual(report.study_uid, r["input"]["uid"])
+        self.assertEqual((report.patient_id, report.date), ("ABC_DEFGH", "20250101"))
+        for value in ("年齢：21Y", "性別：M", "検査方法：CT"):
+            self.assertIn(value, report.markdown)
+
+    def test_overview_prefers_nonempty_canonical_fields(self):
+        r = record()
+        r["input"].update(age="21Y", sex="F", mod="MR")
+        md = reports(r)[0].markdown
+        for value in ("年齢：25Y", "性別：M", "検査方法：CT"):
+            self.assertIn(value, md)
+        r["input"].update(parsed_patient_age=" ", patient_sex=None, modality="")
+        md = reports(r)[0].markdown
+        for value in ("年齢：21Y", "性別：F", "検査方法：MR"):
+            self.assertIn(value, md)
+
+    def test_uid_is_a_study_alias_only(self):
+        r = record()
+        r["input"] = {"uid": "1.2.3"}
+        report = reports(r)[0]
+        self.assertEqual((report.study_uid, report.patient_id), ("1.2.3", ""))
+
+    def test_equivalent_identifier_aliases_are_accepted(self):
+        r = record()
+        r["input"].update(
+            study_uid="1.2.3",
+            uid="1.2.3",
+            pid=" P1 ",
+            date="2025-01-01",
+            dt="Wed, 01 Jan 2025 00:00:00 GMT",
+        )
         report = reports(r)[0]
         self.assertEqual(
             (report.study_uid, report.patient_id, report.date), ("1.2.3", "P1", "20250101")
         )
 
     def test_conflicting_aliases_rejected(self):
-        r = record()
-        r["input"]["study_uid"] = "1.2.4"
-        with self.assertRaisesRegex(core.GuideImportError, "Conflicting aliases"):
-            reports(r)
+        for alias, value in (
+            ("study_uid", "1.2.4"),
+            ("uid", "1.2.4"),
+            ("uid", "P1"),
+            ("pid", "OTHER"),
+            ("date", "20250102"),
+            ("dt", "2025-01-02 00:00:00"),
+        ):
+            r = record()
+            r["input"][alias] = value
+            with (
+                self.subTest(alias=alias, value=value),
+                self.assertRaisesRegex(core.GuideImportError, "Conflicting aliases"),
+            ):
+                reports(r)
+
+    def test_supported_dates_keep_the_written_calendar_date(self):
+        for value, expected in (
+            ("20250107", "20250107"),
+            ("2025-01-07", "20250107"),
+            ("2025/01/07", "20250107"),
+            ("2025.01.07", "20250107"),
+            ("2025/1/7", "20250107"),
+            ("2025-01-07 00:00:00", "20250107"),
+            ("2025-01-07T23:59:59.123456", "20250107"),
+            ("2025-01-07T00:00:00Z", "20250107"),
+            ("2025-01-07T00:30:00+09:00", "20250107"),
+            ("2025-01-07T23:30:00-05:00", "20250107"),
+            ("Tue, 07 Jan 2025 00:00:00 GMT", "20250107"),
+            ("Tue, 07 Jan 2025 00:30:00 +0900", "20250107"),
+            ("7 Jan 2025 00:00:00 GMT", "20250107"),
+            (" 2024-02-29 ", "20240229"),
+            ("00010101", "00010101"),
+            ("1 Jan 0001 00:00:00 GMT", "00010101"),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(reports(record(date=value))[0].date, expected)
 
     def test_full_uid_required(self):
         for uid in (None, "", "12345678", "1.2.x", "1.2.3x", "1." + "2" * 64):
@@ -214,9 +294,92 @@ class ReportTests(unittest.TestCase):
                 reports(record(uid=uid))
 
     def test_invalid_date(self):
-        for date in ("20250230", "2025/01/01", "yesterday", 20250101):
+        for date in (
+            "20250230",
+            "2025-02-29",
+            "2025/13/01",
+            "2025-01/01",
+            "01/02/2025",
+            "2025-01",
+            "2025-01-01 garbage",
+            "2025-01-01T25:00:00",
+            "Tue, 30 Feb 2025 00:00:00 GMT",
+            "Tue, 07 Jan 2025 00:00:00 GMT garbage",
+            "Tue, 07 Jan 25 00:00:00 GMT",
+            "1 Jan 0000 00:00:00 GMT",
+            "yesterday",
+            20250101,
+        ):
             with self.subTest(date=date), self.assertRaises(core.GuideImportError):
                 reports(record(date=date))
+
+    def test_reference_text_is_the_last_section_and_escaped(self):
+        r = record()
+        r["input_text"] = (
+            "History: original\r\nObjective: unchanged\rFindings: original\n"
+            "![image](https://example.invalid)\n<script>text</script>\n" + core.END
+        )
+        md = reports(r)[0].markdown
+        reference = md.split("## 参考生データ\n", 1)[1]
+        self.assertGreater(md.index("## 参考生データ"), md.index("## 診断"))
+        self.assertIn("History: original  \nObjective: unchanged  \nFindings: original", reference)
+        for raw in ("![image]", "<script>", core.END, "\r"):
+            self.assertNotIn(raw, reference)
+        self.assertIn("&lt;script&gt;text&lt;/script&gt;", reference)
+        self.assertTrue(md.endswith(reference))
+
+    def test_optional_reference_and_reference_only_report(self):
+        for value in (None, "", " \r\n "):
+            r = record()
+            r["input_text"] = value
+            with self.subTest(value=value):
+                self.assertNotIn("参考生データ", reports(r)[0].markdown)
+        r = {"input": {"uid": "1.2.3"}, "result": {}, "input_text": "Original report"}
+        self.assertIn("## 参考生データ\nOriginal report", reports(r)[0].markdown)
+
+    def test_reference_validation_and_guide_size_limit(self):
+        for value in (123, True, ["text"], {"text": "report"}, "bad\x00text"):
+            r = record()
+            r["input_text"] = value
+            with self.subTest(value=value), self.assertRaises(core.GuideImportError):
+                reports(r)
+        r = record()
+        base_size = len(reports(r)[0].markdown)
+        r["input_text"] = "reference"
+        with (
+            patch.object(core, "MAX_GUIDE_CHARS", base_size),
+            self.assertRaisesRegex(core.GuideImportError, "size limit"),
+        ):
+            reports(r)
+
+    def test_two_sample_formats_from_json_zip(self):
+        fixtures = ROOT / "tests/python/unit/fixtures/task_guide"
+        for filename, dates, suffixes in (
+            ("structured_report.json", ["20250102", "20250107"], ["05522970", "02065974"]),
+            ("ptc_report.json", ["20250101", "20250102"], ["30673432", "30694803"]),
+        ):
+            with self.subTest(filename=filename):
+                raw = (fixtures / filename).read_bytes()
+                rows = json.loads(raw)["records"]
+                parsed, duplicates = core.read_reports(
+                    io.BytesIO(core.read_json_zip(zip_stream([(filename, raw)])))
+                )
+                self.assertEqual(duplicates, 0)
+                self.assertEqual([r.date for r in parsed], dates)
+                self.assertEqual([r.study_uid[-8:] for r in parsed], suffixes)
+                tasks = []
+                for task_id, (row, report, date) in enumerate(zip(rows, parsed, dates), 1):
+                    source = row["input"]
+                    uid = source.get("study_instance_uid", source.get("uid"))
+                    patient = source.get("patient_id", source.get("pid"))
+                    self.assertEqual((report.study_uid, report.patient_id), (uid, patient))
+                    for label in ("年齢", "性別", "検査方法", "既往歴", "検査部位", "検査目的"):
+                        self.assertIn(label + "：", report.markdown)
+                    self.assertIn("## 参考生データ\nHistory: Synthetic", report.markdown)
+                    tasks.append(image(task_id, uid=uid, patient=patient, date=date))
+                updates, unmatched = core.plan_updates(parsed, tasks)
+                self.assertEqual(set(updates), {1, 2})
+                self.assertEqual(unmatched, [])
 
     def test_bad_json_and_structure(self):
         for raw in (
@@ -265,6 +428,13 @@ class ReportTests(unittest.TestCase):
         with self.assertRaisesRegex(core.GuideImportError, "Conflicting reports"):
             reports(record(), changed)
 
+    def test_different_reference_text_is_not_deduplicated(self):
+        first, second = record(), record()
+        first["input_text"] = "Original report"
+        second["input_text"] = "Different original report"
+        with self.assertRaisesRegex(core.GuideImportError, "Conflicting reports"):
+            reports(first, second)
+
 
 class MatchingTests(unittest.TestCase):
     def test_all_images_and_videos_with_same_full_uid(self):
@@ -279,6 +449,22 @@ class MatchingTests(unittest.TestCase):
             reports(r), [image(patient="A/B_C", prefix="prefix_with_underlines")]
         )
         self.assertEqual(set(updates), {1})
+
+    def test_prefixed_patient_matches_without_name_inference(self):
+        r = record(patient="ABC_DEFGH", date="Tue, 07 Jan 2025 00:00:00 GMT")
+        task = image(patient="ABC_DEFGH", date="20250107", prefix="ABC")
+        task.name = "ABC_DEFGH_20250107_123"
+        self.assertEqual(set(core.plan_updates(reports(r), [task])[0]), {1})
+        task.name = "renamed task"
+        self.assertEqual(set(core.plan_updates(reports(r), [task])[0]), {1})
+        for different_patient in ("DEFGH", "OTHER_DEFGH", "ABCDEFGH"):
+            with (
+                self.subTest(patient=different_patient),
+                self.assertRaisesRegex(core.GuideImportError, "patient ID mismatch"),
+            ):
+                core.plan_updates(
+                    reports(record(patient=different_patient, date="20250107")), [task]
+                )
 
     def test_uid_not_substring_or_short_sop(self):
         for task in (image(uid="1.2.30"), core.TaskIdentity(1, "video_12345678")):

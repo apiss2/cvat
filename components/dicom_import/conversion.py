@@ -41,6 +41,7 @@ def checked_name(text: str, *, task: bool = False) -> str:
 
 
 def names(ds, prefix: str, video: bool) -> tuple[str, str]:
+    has_prefix = str(getattr(ds, "PatientID", "")).strip().startswith(str(prefix).strip() + "_")
     prefix = component(prefix, "data-source prefix")
     fields = {
         key: component(getattr(ds, key, None), key)
@@ -54,9 +55,10 @@ def names(ds, prefix: str, video: bool) -> tuple[str, str]:
             "StudyInstanceUID",
         )
     }
+    patient_id = fields["PatientID"] if has_prefix else prefix + "_" + fields["PatientID"]
     stem = "_".join(
         (
-            prefix + "_" + fields["PatientID"],
+            patient_id,
             fields["SeriesNumber"],
             fields["StudyDate"],
             fields["StudyTime"],
@@ -66,8 +68,7 @@ def names(ds, prefix: str, video: bool) -> tuple[str, str]:
     )
     study = "_".join(
         (
-            prefix,
-            fields["PatientID"],
+            patient_id,
             fields["StudyDate"],
             fields["StudyInstanceUID"].replace(".", "")[-8:],
         )

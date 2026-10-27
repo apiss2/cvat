@@ -10,6 +10,7 @@ import stat
 import zlib
 from dataclasses import dataclass, field
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import PurePosixPath
 from zipfile import BadZipFile, ZipFile
 
@@ -54,15 +55,28 @@ class TaskIdentity:
 
 def _date(value: str) -> str:
     value = value.strip()
-    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
-        value = value.replace("-", "")
-    if not re.fullmatch(r"[0-9]{8}", value):
-        raise GuideImportError("Invalid study date")
     try:
-        datetime.strptime(value, "%Y%m%d")
-    except ValueError as exc:
+        if re.fullmatch(r"[0-9]{8}", value):
+            parsed = datetime.strptime(value, "%Y%m%d")
+        elif match := re.fullmatch(r"([0-9]{4})([-/.])([0-9]{1,2})\2([0-9]{1,2})([ T].+)?", value):
+            year, _, month, day, time = match.groups()
+            parsed = datetime.fromisoformat(f"{year}-{int(month):02d}-{int(day):02d}{time or ''}")
+        elif match := re.fullmatch(
+            r"(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*)?"
+            r"[0-9]{1,2}\s+[A-Za-z]{3}\s+([0-9]{4})\s+"
+            r"[0-9]{2}:[0-9]{2}(?::[0-9]{2})?\s+"
+            r"(?:UT|UTC|GMT|[ECMP][SD]T|[+-][0-9]{4})",
+            value,
+            flags=re.IGNORECASE,
+        ):
+            # email.utils expands years below 100; keep the explicit four-digit year.
+            parsed = parsedate_to_datetime(value).replace(year=int(match[1]))
+        else:
+            raise ValueError("Unsupported date format")
+    except (ValueError, TypeError, OverflowError) as exc:
         raise GuideImportError("Invalid study date") from exc
-    return value
+    # StudyDate is a calendar date: preserve the written date, without a timezone shift.
+    return f"{parsed.year:04d}{parsed.month:02d}{parsed.day:02d}"
 
 
 def _identifier(data: dict, keys: tuple[str, ...], *, date: bool = False) -> str:
@@ -111,20 +125,20 @@ def _first(*values) -> str:
     return ""
 
 
-def render_markdown(source: dict, result: dict) -> str:
+def render_markdown(source: dict, result: dict, *, input_text=None) -> str:
     extracted = result.get("extracted")
     if extracted is None:
         extracted = {}
     if not isinstance(extracted, dict):
         raise GuideImportError("result.extracted must be an object or null")
     overview = [
-        ("年齢", _text(source.get("parsed_patient_age"))),
-        ("性別", _text(source.get("patient_sex"))),
-        ("検査方法", _text(source.get("modality"))),
+        ("年齢", _first(source.get("parsed_patient_age"), source.get("age"))),
+        ("性別", _first(source.get("patient_sex"), source.get("sex"))),
+        ("検査方法", _first(source.get("modality"), source.get("mod"))),
     ]
     exam = [
         ("検査部位", _text(extracted.get("part"))),
-        ("検査履歴", _text(extracted.get("history"))),
+        ("既往歴", _text(extracted.get("history"))),
         ("検査目的", _text(extracted.get("objective"))),
     ]
     findings = _first(
@@ -141,7 +155,15 @@ def render_markdown(source: dict, result: dict) -> str:
         result.get("impression_en"),
         result.get("impression"),
     )
-    if not any(value for _, value in overview + exam) and not findings and not impression:
+    if input_text is not None and not isinstance(input_text, str):
+        raise GuideImportError("input_text must be a string or null")
+    reference = _text(input_text)
+    if (
+        not any(value for _, value in overview + exam)
+        and not findings
+        and not impression
+        and not reference
+    ):
         raise GuideImportError("No report content to import")
 
     def bullets(items):
@@ -156,6 +178,8 @@ def render_markdown(source: dict, result: dict) -> str:
         sections.append("## 検査概要\n" + "\n".join(bullets(exam)))
     for heading, text in (("所見", findings), ("診断", impression)):
         sections.append(f"## {heading}\n" + _escape(text or "記載なし").replace("\n", "  \n"))
+    if reference:
+        sections.append("## 参考生データ\n" + _escape(reference).replace("\n", "  \n"))
     markdown = "\n\n".join(sections).rstrip() + "\n"
     if len(markdown) > MAX_GUIDE_CHARS:
         raise GuideImportError("Generated guide exceeds the size limit")
@@ -215,15 +239,15 @@ def read_reports(source) -> tuple[list[Report], int]:
             source, result = record.get("input"), record.get("result")
             if not isinstance(source, dict) or not isinstance(result, dict):
                 raise GuideImportError("Record must contain input and result objects")
-            uid = _identifier(source, ("study_instance_uid", "study_uid"))
+            uid = _identifier(source, ("study_instance_uid", "study_uid", "uid"))
             if not _UID.fullmatch(uid) or len(uid) > 64:
                 raise GuideImportError("A full numeric StudyInstanceUID is required")
             report = Report(
                 row,
                 uid,
-                _identifier(source, ("patient_id", "uid")),
-                _identifier(source, ("study_date", "date"), date=True),
-                render_markdown(source, result),
+                _identifier(source, ("patient_id", "pid")),
+                _identifier(source, ("study_date", "date", "dt"), date=True),
+                render_markdown(source, result, input_text=record.get("input_text")),
             )
             previous = reports.get(uid)
             if previous:
