@@ -9,7 +9,8 @@ import { pack } from './archive';
 import type { API } from './api';
 import { collectDroppedFiles, collectFiles } from './selection';
 
-export function openDialog(api: API, projectName: string, closed: () => void): {
+export function openDialog(api: API, projectName: string, closed: () => void,
+    accepted: (requestID: string) => void): {
     dispose: () => void; focus: () => void;
 } {
     const host = document.createElement('div');
@@ -61,6 +62,9 @@ export function openDialog(api: API, projectName: string, closed: () => void): {
                 setSubmitted(true);
                 const id = await api.start(archive);
                 if (!disposed) setRequestID(id);
+                void Promise.resolve().then(() => accepted(id)).catch(() => {
+                    if (!disposed) setError('登録は受け付けましたが、結果を確認できませんでした。Requestsで確認してください。');
+                });
             } catch (reason) {
                 if (!disposed) setError(reason instanceof Error ? reason.message : String(reason));
             } finally {
@@ -136,7 +140,7 @@ export function openDialog(api: API, projectName: string, closed: () => void): {
                     {busy && <Progress percent={progress} status='active' />}
                     {error && <Alert type='error' message={error} />}
                     {requestID && <Alert type='success' message='登録を受け付けました。'
-                        description={<a href='/requests'>Requestsで進捗を確認</a>} />}
+                        description='ダイアログを閉じた後、画面上部のRequestsから進捗を確認できます。' />}
                 </Space>
             </Modal>
         );

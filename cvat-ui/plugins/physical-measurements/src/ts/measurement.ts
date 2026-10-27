@@ -35,7 +35,7 @@ export function resolveSpacing(states: readonly DicomTagState[], frame: number):
     let spacing: PixelSpacing | null = null;
     for (const state of states) {
         if (state.objectType !== 'tag' || state.frame !== frame || state.label.name !== 'DicomTag') continue;
-        const specs = state.label.attributes.filter((attribute) => attribute.name === '00280030');
+        const specs = state.label.attributes.filter((attribute) => attribute.name === 'PixelSpacing');
         if (specs.length !== 1 || typeof specs[0].id !== 'number') return null;
         const { id } = specs[0];
         if (!Object.prototype.hasOwnProperty.call(state.attributes, id)) return null;

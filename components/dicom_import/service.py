@@ -13,9 +13,11 @@ from pathlib import Path
 import rq
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import connection
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, connection, transaction
 from django.db.models.signals import post_save
 from django.http import HttpRequest
+from rest_framework.exceptions import ValidationError
 
 from cvat.apps.dataset_manager.task import patch_task_data
 from cvat.apps.engine import models
@@ -159,8 +161,9 @@ def import_user(meta, project):
 
 
 def check_existing_studies(project, incoming):
+    """Return conflicting names without aborting unrelated incoming tasks."""
     if not incoming:
-        return
+        return set()
     tasks = dict(project.tasks.filter(name__in=incoming).values_list("id", "name"))
     studies = {task_id: set() for task_id in tasks}
     values = (
@@ -170,7 +173,7 @@ def check_existing_studies(project, incoming):
             image__label__name=LABEL_NAME,
             spec__label__project_id=project.id,
             spec__label__name=LABEL_NAME,
-            spec__name="0020000D",
+            spec__name="StudyInstanceUID",
         )
         .order_by()
         .values_list("image__job__segment__task_id", "value")
@@ -178,11 +181,22 @@ def check_existing_studies(project, incoming):
     )
     for task_id, value in values.iterator():
         studies[task_id].add(value.strip())
-    for task_id, name in tasks.items():
-        if studies[task_id] != {incoming[name]}:
-            raise DicomImportError(
-                "An existing task has the same name but a different or missing StudyInstanceUID"
-            )
+    return {name for task_id, name in tasks.items() if studies[task_id] != {incoming[name]}}
+
+
+def result_message(plan, created, duplicates, failed, conflicts):
+    """Counts only: task names and decoder exceptions may contain patient identifiers."""
+    severity = "WARNING: " if created and failed else ""
+    message = (
+        f"{severity}DICOM: {created} tasks created; {len(failed)} tasks failed "
+        f"({len(duplicates)} duplicate task names, {len(failed - duplicates)} other task errors); "
+        f"{plan.duplicates} duplicate images skipped; {plan.high_bit_checked} HighBit checks passed"
+    )
+    if conflicts:
+        message += (
+            f"; {len(conflicts)} duplicate names have a different or missing StudyInstanceUID"
+        )
+    return message
 
 
 def import_project(source, temporary_directory, project):
@@ -213,7 +227,7 @@ def import_project(source, temporary_directory, project):
     project = models.Project.objects.select_for_update().get(pk=project.id)
     user = import_user(meta, project)
     existing = set(project.tasks.values_list("name", flat=True))
-    check_existing_studies(
+    conflicts = check_existing_studies(
         project, {name: uid for name, uid in plan.study_uids.items() if name in existing}
     )
     tasks = []
@@ -222,35 +236,46 @@ def import_project(source, temporary_directory, project):
             plan.skipped_tasks.add(task.name)
         else:
             tasks.append(task)
+    duplicates = plan.skipped_tasks
+    failed = set(plan.failed_tasks) | duplicates
+    created = 0
+    if not tasks:
+        raise DicomImportError(result_message(plan, created, duplicates, failed, conflicts))
     with created_directories():
-        if tasks:
-            names = {name for task in tasks for values in task.tags.values() for name in values}
-            label = ensure_label(project, names)
-            ids = dict(label.attributespec_set.values_list("name", "id"))
-            for index, prepared in enumerate(tasks):
-                task = create_task(prepared, project, user)
-                if prepared.video:
-                    values = next(iter(prepared.tags.values()))
-                    frames = ((frame, values) for frame in range(prepared.frames))
-                else:
-                    frames = image_frames(
-                        prepared.tags, task.data.images.values_list("path", "frame")
-                    )
-                for batch in tag_batches(frames, label.id, ids):
-                    serializer = LabeledDataSerializer(data=batch)
-                    serializer.is_valid(raise_exception=True)
-                    data = serializer.validated_data
-                    # DRF trims CharField whitespace; preserve the extracted DICOM text exactly.
-                    for original, validated in zip(batch["tags"], data["tags"]):
-                        for old, new in zip(original["attributes"], validated["attributes"]):
-                            new["value"] = old["value"]
-                    patch_task_data(task.id, data, "create")
-                meta.status = f"Registering DICOM tasks: {index + 1}/{len(tasks)}"
-                meta.progress = float(0.7 + 0.3 * (index + 1) / len(tasks))
-                meta.save()
-        meta.status = (
-            f"DICOM: {len(tasks)} tasks created; {len(plan.skipped_tasks)} existing tasks skipped; "
-            f"{plan.duplicates} duplicate images skipped; {plan.high_bit_checked} HighBit checks passed"
-        )
+        names = {name for task in tasks for values in task.tags.values() for name in values}
+        label = ensure_label(project, names)
+        ids = dict(label.attributespec_set.values_list("name", "id"))
+        for index, prepared in enumerate(tasks):
+            try:
+                # A failed task rolls back its rows and newly allocated media together.
+                # The outer native transaction still handles shared/system failures.
+                with created_directories(), transaction.atomic():
+                    task = create_task(prepared, project, user)
+                    if prepared.video:
+                        values = next(iter(prepared.tags.values()))
+                        frames = ((frame, values) for frame in range(prepared.frames))
+                    else:
+                        frames = image_frames(
+                            prepared.tags, task.data.images.values_list("path", "frame")
+                        )
+                    for batch in tag_batches(frames, label.id, ids):
+                        serializer = LabeledDataSerializer(data=batch)
+                        serializer.is_valid(raise_exception=True)
+                        data = serializer.validated_data
+                        # DRF trims CharField whitespace; retain the exact DICOM text.
+                        for original, validated in zip(batch["tags"], data["tags"]):
+                            for old, new in zip(original["attributes"], validated["attributes"]):
+                                new["value"] = old["value"]
+                        patch_task_data(task.id, data, "create")
+            except (DicomImportError, DjangoValidationError, ValidationError, IntegrityError):
+                failed.add(prepared.name)
+            else:
+                created += 1
+            meta.status = f"Registering DICOM tasks: {index + 1}/{len(tasks)}"
+            meta.progress = float(0.7 + 0.3 * (index + 1) / len(tasks))
+            meta.save()
+        meta.status = result_message(plan, created, duplicates, failed, conflicts)
+        if not created:
+            raise DicomImportError(meta.status)
         meta.progress = 1.0
         meta.save()

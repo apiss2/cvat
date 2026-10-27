@@ -7,6 +7,7 @@ import copy
 import hashlib
 import math
 import re
+import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,7 @@ import cv2
 import numpy as np
 
 from . import DicomImportError
+from .tag_names import attribute_name
 
 BINARY_VRS = {"SQ", "OB", "OD", "OF", "OL", "OV", "OW", "UN"}
 MAX_VALUE_LENGTH = 4096
@@ -114,7 +116,7 @@ def metadata(ds) -> dict[str, str]:
                 text.encode("utf-8")
             except UnicodeError as exc:
                 raise DicomImportError(f"Invalid Unicode in attribute {int(key):08X}") from exc
-            result[f"{int(key):08X}"] = text
+            result[attribute_name(int(key))] = text
     return result
 
 
@@ -284,6 +286,7 @@ class Plan:
     tasks: list[PreparedTask] = field(default_factory=list)
     duplicates: int = 0
     skipped_tasks: set[str] = field(default_factory=set)
+    failed_tasks: dict[str, str] = field(default_factory=dict)
     high_bit_checked: int = 0
     ignored_files: int = 0
     study_uids: dict[str, str] = field(default_factory=dict)
@@ -321,7 +324,7 @@ def prepare(
         task_name, filename = names(ds, prefix, frames > 1)
         study_uid = str(ds.StudyInstanceUID).strip()
         if plan.study_uids.setdefault(task_name, study_uid) != study_uid:
-            raise DicomImportError("Different studies produce the same task name")
+            plan.failed_tasks[task_name] = "Different studies produce the same task name"
         if task_name in existing:
             plan.skipped_tasks.add(task_name)
             continue
@@ -331,38 +334,51 @@ def prepare(
     for index, (task_name, filename, frames, path) in enumerate(
         sorted(candidates, key=lambda x: x[:2])
     ):
-        ds = reader(path)
-        task = tasks.setdefault(task_name, PreparedTask(task_name, frames > 1))
-        if task.video != (frames > 1) or task.video and task.media:
-            raise DicomImportError("Image/video task name collision")
-        # Group directories are numbered; output basenames retain the reference naming.
-        folder = folders.setdefault(task_name, output / str(len(folders)))
-        folder.mkdir(exist_ok=True)
-        pixels, checked = decode_pixels(ds)
-        plan.high_bit_checked += int(checked)
-        tags = metadata(ds)
-        target = folder / filename
-        if frames == 1:
-            encoded = encode_png(pixels)
-            key = (task_name, hashlib.sha256(encoded).digest())
-            bucket = hashes.setdefault(key, [])
-            if any(previous.read_bytes() == encoded for previous in bucket):
-                plan.duplicates += 1
-                if progress:
-                    progress(index + 1, len(candidates))
-                continue
-            if target.exists():
-                raise DicomImportError("Different images produce the same output name")
-            target.write_bytes(encoded)
-            bucket.append(target)
-        else:
-            write_mp4(target, pixels, ds)
-        task.media.append(target)
-        task.tags[filename] = tags
-        task.frames += frames
+        # One bad image invalidates its complete task, never just a subset of its frames.
+        if task_name not in plan.failed_tasks:
+            try:
+                ds = reader(path)
+                task = tasks.setdefault(task_name, PreparedTask(task_name, frames > 1))
+                if task.video != (frames > 1) or task.video and task.media:
+                    raise DicomImportError("Image/video task name collision")
+                # Group directories are numbered; basenames retain the reference naming.
+                folder = folders.setdefault(task_name, output / str(len(folders)))
+                folder.mkdir(exist_ok=True)
+                pixels, checked = decode_pixels(ds)
+                plan.high_bit_checked += int(checked)
+                tags = metadata(ds)
+                target = folder / filename
+                duplicate = False
+                if frames == 1:
+                    encoded = encode_png(pixels)
+                    key = (task_name, hashlib.sha256(encoded).digest())
+                    bucket = hashes.setdefault(key, [])
+                    duplicate = any(previous.read_bytes() == encoded for previous in bucket)
+                    if duplicate:
+                        plan.duplicates += 1
+                    else:
+                        if target.exists():
+                            raise DicomImportError("Different images produce the same output name")
+                        target.write_bytes(encoded)
+                        bucket.append(target)
+                else:
+                    write_mp4(target, pixels, ds)
+                if not duplicate:
+                    task.media.append(target)
+                    task.tags[filename] = tags
+                    task.frames += frames
+            except DicomImportError as exc:
+                plan.failed_tasks[task_name] = str(exc)
+            except (ValueError, TypeError, AttributeError, RuntimeError, cv2.error) as exc:
+                # Decoder exceptions can contain filenames or patient values. Keep only the type.
+                plan.failed_tasks[task_name] = f"DICOM conversion failed ({type(exc).__name__})"
+            if task_name in plan.failed_tasks:
+                tasks.pop(task_name, None)
+                if task_name in folders:
+                    shutil.rmtree(folders[task_name])
         if progress:
             progress(index + 1, len(candidates))
     plan.tasks = [task for task in tasks.values() if task.media]
-    if not plan.tasks and not plan.skipped_tasks:
+    if not plan.tasks and not plan.skipped_tasks and not plan.failed_tasks:
         raise DicomImportError("No supported DICOM images were found")
     return plan

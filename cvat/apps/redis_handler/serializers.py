@@ -153,6 +153,15 @@ class RequestSerializer(serializers.Serializer):
 
         if RQJobStatus.STARTED == rq_job_status:
             message = self._base_rq_job_meta.status or message
+        elif (
+            RQJobStatus.FINISHED == rq_job_status
+            and rq_job.parsed_id.action == models.RequestAction.IMPORT
+            and rq_job.parsed_id.target == "project"
+            and (self._base_rq_job_meta.status or "").startswith(("DICOM:", "WARNING: DICOM:"))
+        ):
+            # The DICOM plugin needs final counts for its completion notification.
+            # Import request IDs have no format field; other finished messages stay unchanged.
+            message = self._base_rq_job_meta.status or message
         elif RQJobStatus.FAILED == rq_job_status:
 
             message = self._base_rq_job_meta.formatted_exception or parse_exception_message(

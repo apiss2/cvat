@@ -211,10 +211,10 @@ def test_metadata_top_level_text_and_multivalue():
         }
     )
     assert c.metadata(ds) == {
-        "00100020": " SYNTHETIC ",
-        "00280030": "0.5000\\0.75",
-        "00280008": "3",
-        "00080008": "ORIGINAL\\PRIMARY",
+        "PatientID": " SYNTHETIC ",
+        "PixelSpacing": "0.5000\\0.75",
+        "NumberOfFrames": "3",
+        "ImageType": "ORIGINAL\\PRIMARY",
     }
 
 
@@ -238,21 +238,24 @@ def test_prepare_dedup_is_task_scoped_and_no_saved_hash(tmp_path):
 
 
 @pytest.mark.parametrize("existing", [False, True])
-def test_short_study_name_collision_is_rejected_before_decode(tmp_path, existing):
+def test_short_study_name_collision_is_recorded_before_decode(tmp_path, existing):
     inputs = files(tmp_path, 2)
     data = {
         inputs[0]: dataset(StudyInstanceUID="1.2.34567890", fail_decode=True),
         inputs[1]: dataset(StudyInstanceUID="1.3.34567890", fail_decode=True),
     }
     existing_names = [c.names(data[inputs[0]], "GRD", False)[0]] if existing else []
-    with pytest.raises(DicomImportError, match="Different studies produce the same task name"):
-        c.prepare(
-            inputs,
-            tmp_path / "output",
-            "GRD",
-            existing_names,
-            reader=data.__getitem__,
-        )
+    plan = c.prepare(
+        inputs,
+        tmp_path / "output",
+        "GRD",
+        existing_names,
+        reader=data.__getitem__,
+    )
+    assert not plan.tasks
+    assert plan.failed_tasks == {
+        "GRD_SYNTHETIC_20260102_34567890": "Different studies produce the same task name"
+    }
 
 
 def test_existing_task_is_skipped_before_decode(tmp_path):
@@ -290,8 +293,81 @@ def test_converted_datasets_are_released_before_next_decode(tmp_path, monkeypatc
 def test_output_name_collision_is_not_suffixed(tmp_path):
     inputs = files(tmp_path, 2)
     data = {inputs[0]: dataset(), inputs[1]: dataset(pixels=np.ones((4, 6), dtype="uint16"))}
-    with pytest.raises(DicomImportError, match="same output name"):
-        c.prepare(inputs, tmp_path / "output", "GRD", reader=data.__getitem__)
+    plan = c.prepare(inputs, tmp_path / "output", "GRD", reader=data.__getitem__)
+    assert not plan.tasks
+    assert plan.failed_tasks == {
+        "GRD_SYNTHETIC_20260102_12300": "Different images produce the same output name"
+    }
+    assert not list((tmp_path / "output").rglob("*.png"))
+
+
+def test_colliding_studies_do_not_block_an_unrelated_study(tmp_path):
+    inputs = files(tmp_path, 3)
+    data = {
+        inputs[0]: dataset(StudyInstanceUID="1.2.34567890", fail_decode=True),
+        inputs[1]: dataset(StudyInstanceUID="1.3.34567890", fail_decode=True),
+        inputs[2]: dataset(StudyInstanceUID="1.2.999"),
+    }
+    plan = c.prepare(inputs, tmp_path / "output", "GRD", reader=data.__getitem__)
+    assert [task.name for task in plan.tasks] == ["GRD_SYNTHETIC_20260102_12999"]
+    assert len(plan.failed_tasks) == 1
+
+
+def test_one_bad_image_discards_its_whole_task_but_keeps_other_tasks(tmp_path):
+    inputs = files(tmp_path, 4)
+    data = {
+        inputs[0]: dataset(InstanceNumber="1"),
+        inputs[1]: dataset(InstanceNumber="2", PhotometricInterpretation="PALETTE COLOR"),
+        inputs[2]: dataset(InstanceNumber="3", fail_decode=True),
+        inputs[3]: dataset(StudyInstanceUID="1.2.999"),
+    }
+    progress = []
+    plan = c.prepare(
+        inputs,
+        tmp_path / "output",
+        "GRD",
+        reader=data.__getitem__,
+        progress=lambda done, total: progress.append((done, total)),
+    )
+    assert [task.name for task in plan.tasks] == ["GRD_SYNTHETIC_20260102_12999"]
+    assert plan.failed_tasks == {
+        "GRD_SYNTHETIC_20260102_12300": "PALETTE COLOR images require a color LUT and are unsupported"
+    }
+    assert len(list((tmp_path / "output").rglob("*.png"))) == 1
+    assert progress[-1] == (4, 4)
+
+
+@pytest.mark.parametrize("exception", [RuntimeError, AttributeError, cv2.error])
+def test_decoder_exception_is_task_scoped_and_does_not_leak_its_message(
+    tmp_path, monkeypatch, exception
+):
+    inputs = files(tmp_path, 2)
+    data = {
+        inputs[0]: dataset(),
+        inputs[1]: dataset(StudyInstanceUID="1.2.999"),
+    }
+    decode = c.decode_pixels
+
+    def decode_with_failure(ds):
+        if ds.StudyInstanceUID == "1.2.300":
+            raise exception("private filename and patient identifiers")
+        return decode(ds)
+
+    monkeypatch.setattr(c, "decode_pixels", decode_with_failure)
+    plan = c.prepare(inputs, tmp_path / "output", "GRD", reader=data.__getitem__)
+    assert len(plan.tasks) == 1 and len(plan.failed_tasks) == 1
+    assert list(plan.failed_tasks.values()) == [f"DICOM conversion failed ({exception.__name__})"]
+
+
+def test_missing_pixel_fields_fail_the_identified_task_only(tmp_path):
+    inputs = files(tmp_path, 2)
+    missing_pixels = dataset()
+    del missing_pixels.BitsAllocated
+    data = {inputs[0]: missing_pixels, inputs[1]: dataset(StudyInstanceUID="1.2.999")}
+    plan = c.prepare(inputs, tmp_path / "output", "GRD", reader=data.__getitem__)
+    assert len(plan.tasks) == 1
+    assert [task.name for task in plan.tasks] == ["GRD_SYNTHETIC_20260102_12999"]
+    assert list(plan.failed_tasks.values()) == ["DICOM conversion failed (AttributeError)"]
 
 
 def test_identical_input_with_same_name_is_deduplicated(tmp_path):
@@ -375,16 +451,16 @@ def test_archive_nesting_limited(tmp_path):
 
 
 def test_attributes_are_added_without_overwriting_existing():
-    original = {"type": "tag", "attributes": [{"name": "00100020", "input_type": "text", "id": 5}]}
-    additions = missing_attributes(original, {"00100020", "00280030"})
-    assert [x["name"] for x in additions] == ["00280030"]
+    original = {"type": "tag", "attributes": [{"name": "PatientID", "input_type": "text", "id": 5}]}
+    additions = missing_attributes(original, {"PatientID", "PixelSpacing"})
+    assert [x["name"] for x in additions] == ["PixelSpacing"]
     assert original["attributes"][0]["id"] == 5 and additions[0]["mutable"] is False
     for conflict in [
         {"type": "rectangle"},
-        {"type": "tag", "attributes": [{"name": "00100020", "input_type": "number"}]},
+        {"type": "tag", "attributes": [{"name": "PatientID", "input_type": "number"}]},
     ]:
         with pytest.raises(DicomImportError):
-            missing_attributes(conflict, {"00100020"})
+            missing_attributes(conflict, {"PatientID"})
 
 
 @pytest.mark.parametrize("input_type", ["number", "select"])
@@ -392,12 +468,12 @@ def test_existing_nontext_attributes_are_rejected_even_when_absent_from_input(in
     existing = {
         "type": "tag",
         "attributes": [
-            {"name": "00100020", "input_type": "text"},
-            {"name": "00280030", "input_type": input_type},
+            {"name": "PatientID", "input_type": "text"},
+            {"name": "PixelSpacing", "input_type": input_type},
         ],
     }
-    with pytest.raises(DicomImportError, match="00280030 is not text"):
-        missing_attributes(existing, {"00100020"})
+    with pytest.raises(DicomImportError, match="PixelSpacing is not text"):
+        missing_attributes(existing, {"PatientID"})
 
 
 def test_frame_mapping_uses_actual_cvat_paths():
@@ -418,8 +494,8 @@ def test_tag_batches_are_append_only_and_bounded():
 
 
 def test_missing_elements_do_not_inherit_project_attribute_defaults():
-    ids = {"00100020": 7, "0020000D": 8, "00280030": 9}
-    (batch,) = tag_batches([(0, {"00100020": "SYNTHETIC"})], 3, ids)
+    ids = {"PatientID": 7, "StudyInstanceUID": 8, "PixelSpacing": 9}
+    (batch,) = tag_batches([(0, {"PatientID": "SYNTHETIC"})], 3, ids)
     assert batch["tags"][0]["attributes"] == [
         {"spec_id": 7, "value": "SYNTHETIC"},
         {"spec_id": 8, "value": ""},
@@ -453,4 +529,4 @@ def test_tar_style_dot_prefix_is_normalized_safely():
 
 def test_ambiguous_numeric_vr_is_not_discarded():
     ds = dataset(elements={0x280120: SimpleNamespace(VR="US or SS", value=-1)})
-    assert c.metadata(ds) == {"00280120": "-1"}
+    assert c.metadata(ds) == {"PixelPaddingValue": "-1"}

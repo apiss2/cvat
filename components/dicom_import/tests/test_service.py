@@ -8,6 +8,7 @@ accidentally supply a method that Data/Task/Job do not implement.
 import ast
 import importlib.util
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
@@ -83,6 +84,28 @@ def service(monkeypatch, tmp_path):
     users = MagicMock()
     users.objects.filter.return_value.first.return_value = user
     meta = SimpleNamespace(user=user, org_id=None, save=MagicMock())
+    saved_rows = []
+    savepoints = []
+
+    @contextmanager
+    def atomic():
+        previous = list(saved_rows)
+        savepoints.append("begin")
+        try:
+            yield
+        except BaseException:
+            saved_rows[:] = previous
+            savepoints.append("rollback")
+            raise
+        else:
+            savepoints.append("commit")
+
+    class ValidationError(Exception):
+        pass
+
+    class IntegrityError(Exception):
+        pass
+
     serializers = {
         name: MagicMock()
         for name in (
@@ -97,9 +120,15 @@ def service(monkeypatch, tmp_path):
         "rq": {"get_current_job": lambda: object()},
         "django.conf": {"settings": settings},
         "django.contrib.auth": {"get_user_model": lambda: users},
-        "django.db": {"connection": SimpleNamespace(in_atomic_block=True)},
+        "django.core.exceptions": {"ValidationError": ValidationError},
+        "django.db": {
+            "connection": SimpleNamespace(in_atomic_block=True),
+            "transaction": SimpleNamespace(atomic=atomic),
+            "IntegrityError": IntegrityError,
+        },
         "django.db.models.signals": {"post_save": signal},
         "django.http": {"HttpRequest": SimpleNamespace},
+        "rest_framework.exceptions": {"ValidationError": ValidationError},
         "cvat.apps.dataset_manager.task": {"patch_task_data": MagicMock()},
         "cvat.apps.engine": {"models": models},
         "cvat.apps.engine.permissions": {"ProjectPermission": permission},
@@ -121,6 +150,8 @@ def service(monkeypatch, tmp_path):
     spec.loader.exec_module(loaded)
     loaded.test_meta = meta
     loaded.test_users = users
+    loaded.test_rows = saved_rows
+    loaded.test_savepoints = savepoints
     monkeypatch.setenv("CVAT_DICOM_IMPORT_ENABLED", "1")
     return loaded
 
@@ -212,19 +243,20 @@ def test_permissions_are_rechecked_after_conversion_and_lock(service, monkeypatc
     "values",
     [[], [""], ["1.3.34567890"], ["1.2.34567890", "1.3.34567890"]],
 )
-def test_existing_study_must_have_one_matching_full_uid(service, values):
+def test_existing_study_conflicts_are_reported_without_aborting(service, values):
     current_project = project(service)
     current_project.tasks.filter.return_value.values_list.return_value = [(9, "study")]
     attributes = service.models.LabeledImageAttributeVal.objects.filter.return_value
     rows = attributes.order_by.return_value.values_list.return_value.distinct.return_value
     rows.iterator.return_value = ((9, value) for value in values)
-    with pytest.raises(DicomImportError, match="different or missing StudyInstanceUID"):
-        service.check_existing_studies(current_project, {"study": "1.2.34567890"})
+    assert service.check_existing_studies(current_project, {"study": "1.2.34567890"}) == {"study"}
+    query = service.models.LabeledImageAttributeVal.objects.filter.call_args.kwargs
+    assert query["spec__name"] == "StudyInstanceUID"
 
 
 @pytest.mark.parametrize("preexisting", [False, True])
 @pytest.mark.parametrize("same_study", [False, True])
-def test_existing_study_is_checked_after_lock_before_skipping(
+def test_all_duplicate_tasks_fail_after_rechecking_under_lock(
     service, monkeypatch, tmp_path, preexisting, same_study
 ):
     current_project = project(service)
@@ -245,12 +277,11 @@ def test_existing_study_is_checked_after_lock_before_skipping(
     monkeypatch.setattr(service, "prepare", lambda *_args, **_kwargs: plan)
     ensure = MagicMock()
     monkeypatch.setattr(service, "ensure_label", ensure)
-    if same_study:
+    with pytest.raises(DicomImportError) as exc:
         service.import_project(None, tmp_path, current_project)
-        assert "0 tasks created; 1 existing tasks skipped" in service.test_meta.status
-    else:
-        with pytest.raises(DicomImportError, match="different or missing StudyInstanceUID"):
-            service.import_project(None, tmp_path, current_project)
+    assert "0 tasks created; 1 tasks failed (1 duplicate task names" in str(exc.value)
+    assert ("different or missing StudyInstanceUID" in str(exc.value)) is not same_study
+    assert "WARNING" not in str(exc.value)
     service.models.Project.objects.select_for_update.assert_called_once()
     ensure.assert_not_called()
     service.patch_task_data.assert_not_called()
@@ -297,3 +328,132 @@ def test_final_status_failure_cleans_new_media(service, monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="Redis"):
         service.import_project(None, tmp_path, project(service))
     assert paths and not any(path.exists() for path in paths)
+
+
+def prepare_import(service, monkeypatch, tmp_path, plan):
+    monkeypatch.setattr(service, "read_upload", lambda *_: ("SYNTHETIC", []))
+    monkeypatch.setattr(service, "prepare", lambda *_args, **_kwargs: plan)
+    label = SimpleNamespace(id=2, attributespec_set=MagicMock())
+    label.attributespec_set.values_list.return_value = []
+    monkeypatch.setattr(service, "ensure_label", lambda *_: label)
+    monkeypatch.setattr(service, "tag_batches", lambda *_: [])
+    return project(service)
+
+
+def movie(name, tmp_path):
+    return PreparedTask(name, True, [tmp_path / "movie.mp4"], {"movie.mp4": {}}, 1)
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+@pytest.mark.parametrize("same_study", [False, True])
+def test_duplicate_task_does_not_block_a_new_task(
+    service, monkeypatch, tmp_path, preexisting, same_study
+):
+    plan = Plan(
+        tasks=[movie("new", tmp_path)] + ([] if preexisting else [movie("existing", tmp_path)]),
+        skipped_tasks={"existing"} if preexisting else set(),
+        study_uids={"existing": "1.2.34567890", "new": "1.2.100"},
+    )
+    current_project = prepare_import(service, monkeypatch, tmp_path, plan)
+    current_project.tasks.values_list.side_effect = [
+        ["existing"] if preexisting else [],
+        ["existing"],
+    ]
+    current_project.tasks.filter.return_value.values_list.return_value = [(9, "existing")]
+    attributes = service.models.LabeledImageAttributeVal.objects.filter.return_value
+    rows = attributes.order_by.return_value.values_list.return_value.distinct.return_value
+    rows.iterator.return_value = iter([(9, "1.2.34567890" if same_study else "1.3.34567890")])
+    created = []
+
+    def create_task(prepared, *_):
+        created.append(prepared.name)
+        return SimpleNamespace(id=10)
+
+    monkeypatch.setattr(service, "create_task", create_task)
+    service.import_project(None, tmp_path, current_project)
+    assert created == ["new"]
+    assert service.test_meta.status.startswith("WARNING: DICOM: 1 tasks created; 1 tasks failed")
+    assert "1 duplicate task names" in service.test_meta.status
+    assert ("different or missing StudyInstanceUID" in service.test_meta.status) is not same_study
+    assert "existing" not in service.test_meta.status and "new" not in service.test_meta.status
+    assert service.test_meta.progress == 1.0
+
+
+@pytest.mark.parametrize("all_fail", [False, True])
+@pytest.mark.parametrize("error_kind", ["conversion", "validation", "database"])
+def test_task_failures_rollback_only_their_rows_and_media(
+    service, monkeypatch, tmp_path, all_fail, error_kind
+):
+    plan = Plan(tasks=[movie("sensitive-first", tmp_path), movie("sensitive-second", tmp_path)])
+    current_project = prepare_import(service, monkeypatch, tmp_path, plan)
+    errors = {
+        "conversion": DicomImportError,
+        "validation": service.ValidationError,
+        "database": service.IntegrityError,
+    }
+    paths = []
+
+    def create_task(prepared, *_):
+        identifier = len(paths) + 1
+        task, path = allocate(service, "Task", identifier)
+        paths.append(path)
+        service.test_rows.append(task.id)
+        if identifier == 1 or all_fail:
+            raise errors[error_kind]("sensitive patient details")
+        return task
+
+    monkeypatch.setattr(service, "create_task", create_task)
+    if all_fail:
+        with pytest.raises(DicomImportError, match="0 tasks created; 2 tasks failed") as exc:
+            service.import_project(None, tmp_path, current_project)
+        assert "sensitive" not in str(exc.value)
+        assert not service.test_rows
+        assert not any(path.exists() for path in paths)
+        assert service.test_savepoints == ["begin", "rollback", "begin", "rollback"]
+    else:
+        service.import_project(None, tmp_path, current_project)
+        assert service.test_rows == [2]
+        assert not paths[0].exists() and paths[1].exists()
+        assert service.test_savepoints == ["begin", "rollback", "begin", "commit"]
+        assert service.test_meta.status.startswith(
+            "WARNING: DICOM: 1 tasks created; 1 tasks failed"
+        )
+        assert "sensitive" not in service.test_meta.status
+    assert not service.post_save.receivers
+
+
+def test_conversion_failures_are_reported_alongside_successful_tasks(
+    service, monkeypatch, tmp_path
+):
+    plan = Plan(
+        tasks=[movie("good", tmp_path)],
+        failed_tasks={"private-name": "Private decoder output must stay out of the request log"},
+    )
+    current_project = prepare_import(service, monkeypatch, tmp_path, plan)
+    monkeypatch.setattr(service, "create_task", lambda *_: SimpleNamespace(id=10))
+    service.import_project(None, tmp_path, current_project)
+    assert service.test_meta.status.startswith("WARNING: DICOM: 1 tasks created; 1 tasks failed")
+    assert "0 duplicate task names, 1 other task errors" in service.test_meta.status
+    assert (
+        "Private" not in service.test_meta.status and "private-name" not in service.test_meta.status
+    )
+
+
+def test_all_failed_conversions_do_not_attempt_registration(service, monkeypatch, tmp_path):
+    plan = Plan(failed_tasks={"bad": "conversion failed"})
+    current_project = prepare_import(service, monkeypatch, tmp_path, plan)
+    create = MagicMock()
+    monkeypatch.setattr(service, "create_task", create)
+    with pytest.raises(DicomImportError, match="0 tasks created; 1 tasks failed"):
+        service.import_project(None, tmp_path, current_project)
+    create.assert_not_called()
+    assert not service.test_savepoints
+
+
+def test_successful_import_has_no_warning(service, monkeypatch, tmp_path):
+    current_project = prepare_import(
+        service, monkeypatch, tmp_path, Plan(tasks=[movie("good", tmp_path)])
+    )
+    monkeypatch.setattr(service, "create_task", lambda *_: SimpleNamespace(id=10))
+    service.import_project(None, tmp_path, current_project)
+    assert service.test_meta.status.startswith("DICOM: 1 tasks created; 0 tasks failed")

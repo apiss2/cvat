@@ -180,10 +180,10 @@ def test_dicom_spacing_is_image_specific_and_does_not_consume_mask_bits(
             "frame100",
             [
                 Ann(AnnType.mask, image=np.ones((5, 7), bool)),
-                Ann(AnnType.label, 1, attributes={"00280030": "0.30\\0.25"}),
+                Ann(AnnType.label, 1, attributes={"PixelSpacing": "0.30\\0.25"}),
             ],
         ),
-        Item("frame101", [Ann(AnnType.label, 1, attributes={"00280030": "0.6\\0.5"})]),
+        Item("frame101", [Ann(AnnType.label, 1, attributes={"PixelSpacing": "0.6\\0.5"})]),
         Item("frame102"),
     ]
     adapter.export_items(items, ["organ", "DicomTag"], tmp_path)
@@ -198,30 +198,30 @@ def test_dicom_spacing_is_image_specific_and_does_not_consume_mask_bits(
 @pytest.mark.parametrize(
     "attributes,expected",
     [
-        ({"00280030": " +3e-1 \\ .25 "}, (0.25, 0.3, 1)),
+        ({"PixelSpacing": " +3e-1 \\ .25 "}, (0.25, 0.3, 1)),
         (
-            {"00280030": "0.12345678901234\\0.23456789012345"},
+            {"PixelSpacing": "0.12345678901234\\0.23456789012345"},
             (0.23456789012345, 0.12345678901234, 1),
         ),
         ({}, (1, 1, 1)),
-        ({"PixelSpacing": "0.3\\0.25"}, (1, 1, 1)),
-        ({"00280030": ""}, (1, 1, 1)),
-        ({"00280030": "0.3"}, (1, 1, 1)),
-        ({"00280030": "0.3,0.25"}, (1, 1, 1)),
-        ({"00280030": "0.3\\0.25\\1"}, (1, 1, 1)),
-        ({"00280030": "\\0.25"}, (1, 1, 1)),
-        ({"00280030": "0\\0.25"}, (1, 1, 1)),
-        ({"00280030": "-0.3\\0.25"}, (1, 1, 1)),
-        ({"00280030": "NaN\\0.25"}, (1, 1, 1)),
-        ({"00280030": "Infinity\\0.25"}, (1, 1, 1)),
-        ({"00280030": "1e999\\0.25"}, (1, 1, 1)),
-        ({"00280030": "1e-999\\0.25"}, (1, 1, 1)),
-        ({"00280030": "0x2\\0.25"}, (1, 1, 1)),
-        ({"00280030": [0.3, 0.25]}, (1, 1, 1)),
-        ({"00280030": True}, (1, 1, 1)),
+        ({"00280030": "0.3\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": ""}, (1, 1, 1)),
+        ({"PixelSpacing": "0.3"}, (1, 1, 1)),
+        ({"PixelSpacing": "0.3,0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": "0.3\\0.25\\1"}, (1, 1, 1)),
+        ({"PixelSpacing": "\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": "0\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": "-0.3\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": "NaN\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": "Infinity\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": "1e999\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": "1e-999\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": "0x2\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": [0.3, 0.25]}, (1, 1, 1)),
+        ({"PixelSpacing": True}, (1, 1, 1)),
     ],
 )
-def test_dicom_spacing_validation_uses_only_00280030(
+def test_dicom_spacing_validation_uses_only_pixel_spacing_keyword(
     adapter, tmp_path, attributes, expected
 ):
     adapter.export_items(
@@ -245,17 +245,17 @@ def test_dicom_spacing_validation_uses_only_00280030(
 @pytest.mark.parametrize(
     "second,expected",
     [
-        ({"00280030": ".30\\2.5e-1"}, (0.25, 0.3, 1)),
-        ({"00280030": "0.4\\0.25"}, (1, 1, 1)),
-        ({"00280030": "bad"}, (1, 1, 1)),
-        ({"00280030": ""}, (1, 1, 1)),
+        ({"PixelSpacing": ".30\\2.5e-1"}, (0.25, 0.3, 1)),
+        ({"PixelSpacing": "0.4\\0.25"}, (1, 1, 1)),
+        ({"PixelSpacing": "bad"}, (1, 1, 1)),
+        ({"PixelSpacing": ""}, (1, 1, 1)),
         ({}, (1, 1, 1)),
     ],
 )
 @pytest.mark.parametrize("reverse", [False, True])
 def test_duplicate_dicom_tags_must_agree(adapter, tmp_path, second, expected, reverse):
     tags = [
-        Ann(AnnType.label, 1, attributes={"00280030": "0.3\\0.25"}),
+        Ann(AnnType.label, 1, attributes={"PixelSpacing": "0.3\\0.25"}),
         Ann(AnnType.label, 1, attributes=second),
     ]
     if reverse:
@@ -275,7 +275,7 @@ def test_dicom_metadata_does_not_create_masks_for_bbox_only_export(adapter, tmp_
                 "a",
                 [
                     Ann(AnnType.bbox, points=[0, 0, 2, 2]),
-                    Ann(AnnType.label, 1, attributes={"00280030": "0.3\\0.25"}),
+                    Ann(AnnType.label, 1, attributes={"PixelSpacing": "0.3\\0.25"}),
                 ],
             )
         ],
@@ -297,7 +297,7 @@ def test_shapes_named_dicom_tag_are_not_spacing_metadata(adapter, tmp_path):
                         AnnType.bbox,
                         1,
                         points=[0, 0, 2, 2],
-                        attributes={"00280030": "0.3\\0.25"},
+                        attributes={"PixelSpacing": "0.3\\0.25"},
                     ),
                 ],
             )
@@ -313,7 +313,7 @@ def test_shapes_named_dicom_tag_are_not_spacing_metadata(adapter, tmp_path):
 def test_other_tags_are_still_rejected_with_pixel_spacing(adapter, tmp_path, name):
     with pytest.raises(FormatError, match="unsupported annotation label"):
         adapter.export_items(
-            [Item("a", [Ann(AnnType.label, attributes={"00280030": "0.3\\0.25"})])],
+            [Item("a", [Ann(AnnType.label, attributes={"PixelSpacing": "0.3\\0.25"})])],
             [name],
             tmp_path,
         )

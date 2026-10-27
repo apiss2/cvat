@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""Import study reports through the standard project dataset import queue."""
+"""Import task Markdown and study reports through the standard project import queue."""
+
+import io
+from uuid import UUID
 
 from cvat.apps.dataset_manager.bindings import CvatImportError, ProjectData
 from cvat.apps.dataset_manager.formats.registry import importer
@@ -9,7 +12,11 @@ from .task_guide_core import (
     GuideImportError,
     TaskIdentity,
     merge_markdown,
+    plan_named_updates,
     plan_updates,
+    read_json_zip,
+    read_markdown_zip,
+    read_named_json,
     read_reports,
 )
 
@@ -38,13 +45,20 @@ def _import_context(project):
     return request, get_iam_context(request, project), meta
 
 
-def import_project_guides(source, project):
+def import_project_guides(source, project, *, input_format="dicom"):
     from django.db import transaction
 
     from cvat.apps.engine import models
     from cvat.apps.engine.permissions import AnnotationGuidePermission, ProjectPermission
 
-    reports, duplicates = read_reports(source)
+    if input_format == "dicom":
+        entries, duplicates = read_reports(io.BytesIO(read_json_zip(source)))
+    elif input_format == "json":
+        entries, duplicates = read_named_json(io.BytesIO(read_json_zip(source))), 0
+    elif input_format == "zip":
+        entries, duplicates = read_markdown_zip(source), 0
+    else:
+        raise GuideImportError("Unsupported task guide format")
     with transaction.atomic():
         # Serialize these imports and PR11's importer, without modifying standard models.
         project = models.Project.objects.select_for_update().get(pk=project.pk)
@@ -56,31 +70,32 @@ def import_project_guides(source, project):
         )
         if not permission.check_access().allow:
             raise GuideImportError("Project dataset import permission denied")
-        tasks = list(
-            models.Task.objects.select_for_update()
-            .filter(project_id=project.pk)
-            .exclude(data=None)
-            .order_by("id")
-        )
+        task_query = models.Task.objects.select_for_update().filter(project_id=project.pk)
+        if input_format == "dicom":
+            task_query = task_query.exclude(data=None)
+        tasks = list(task_query.order_by("id"))
         identities = {task.id: TaskIdentity(task.id, task.name) for task in tasks}
-        # Only three scalar DicomTag attributes are read; frame/overlap duplicates collapse in SQL.
-        values = (
-            models.LabeledImageAttributeVal.objects.filter(
-                image__job__segment__task__project_id=project.pk,
-                image__label__project_id=project.pk,
-                image__label__name="DicomTag",
-                spec__label__project_id=project.pk,
-                spec__label__name="DicomTag",
-                spec__name__in=IDENTITY_TAGS,
+        if input_format == "dicom":
+            # Read only the three scalar identity attributes needed for report matching.
+            values = (
+                models.LabeledImageAttributeVal.objects.filter(
+                    image__job__segment__task__project_id=project.pk,
+                    image__label__project_id=project.pk,
+                    image__label__name="DicomTag",
+                    spec__label__project_id=project.pk,
+                    spec__label__name="DicomTag",
+                    spec__name__in=IDENTITY_TAGS,
+                )
+                .order_by()
+                .values_list("image__job__segment__task_id", "spec__name", "value")
+                .distinct()
             )
-            .order_by()
-            .values_list("image__job__segment__task_id", "spec__name", "value")
-            .distinct()
-        )
-        for task_id, tag, value in values.iterator():
-            if task_id in identities:
-                identities[task_id].tags.setdefault(tag, set()).add(value)
-        updates, unmatched = plan_updates(reports, list(identities.values()))
+            for task_id, tag, value in values.iterator():
+                if task_id in identities:
+                    identities[task_id].tags.setdefault(tag, set()).add(value)
+            updates, unmatched = plan_updates(entries, list(identities.values()))
+        else:
+            updates, unmatched = plan_named_updates(entries, list(identities.values()))
         guides = {
             guide.task_id: guide
             for guide in models.AnnotationGuide.objects.select_for_update()
@@ -112,9 +127,28 @@ def import_project_guides(source, project):
             if not permission.check_access().allow:
                 raise GuideImportError(f"Task {task.id}: annotation guide write permission denied")
             try:
-                markdown = merge_markdown(guide.markdown if guide else "", updates[task.id])
+                markdown = (
+                    merge_markdown(guide.markdown if guide else "", updates[task.id])
+                    if input_format == "dicom"
+                    else updates[task.id]
+                )
             except GuideImportError as exc:
                 raise GuideImportError(f"Task {task.id}: {exc}") from exc
+            if input_format != "dicom":
+                asset_ids = {
+                    UUID(value)
+                    for value in models.AnnotationGuide.get_asset_ids_from_markdown(markdown)
+                }
+                if asset_ids:
+                    owned_assets = (
+                        set(guide.assets.filter(uuid__in=asset_ids).values_list("uuid", flat=True))
+                        if guide
+                        else set()
+                    )
+                    if asset_ids != owned_assets:
+                        raise GuideImportError(
+                            f"Task {task.id}: Markdown may reference only assets already owned by its guide"
+                        )
             prepared.append((task, guide, markdown))
 
         created = updated = unchanged = 0
@@ -146,16 +180,34 @@ def import_project_guides(source, project):
         meta.save()
 
 
-@importer(name="Task guide JSON", version="1.0", ext="JSON")
-def import_task_guides(source, temp_dir, instance_data, load_data_callback=None, **options):
+def _import_guides(source, instance_data, input_format):
     # Reject task/job import before touching any guide or annotation.
     if not isinstance(instance_data, ProjectData):
-        raise CvatImportError("Task guide JSON is available for project imports only")
+        raise CvatImportError("Task Guide formats are available for project imports only")
     from django.db import IntegrityError
 
     try:
-        import_project_guides(source, instance_data.db_project)
+        import_project_guides(source, instance_data.db_project, input_format=input_format)
     except GuideImportError as exc:
         raise CvatImportError(str(exc)) from exc
     except IntegrityError as exc:
         raise CvatImportError("Concurrent guide changes detected; retry the import") from exc
+
+
+@importer(name="Task Guide JSON", version="1.0", ext="ZIP")
+def import_task_guides(source, temp_dir, instance_data, load_data_callback=None, **options):
+    _import_guides(source, instance_data, "json")
+
+
+@importer(name="Task Guide Markdown Zip", version="1.0", ext="ZIP")
+def import_task_guides_markdown_zip(
+    source, temp_dir, instance_data, load_data_callback=None, **options
+):
+    _import_guides(source, instance_data, "zip")
+
+
+@importer(name="Task Guide DICOM Report Import", version="1.0", ext="ZIP")
+def import_task_guides_dicom_report(
+    source, temp_dir, instance_data, load_data_callback=None, **options
+):
+    _import_guides(source, instance_data, "dicom")

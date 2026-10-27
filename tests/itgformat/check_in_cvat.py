@@ -99,13 +99,13 @@ class NativeChecks(unittest.TestCase):
                 media=self.make_image(),
                 annotations=[
                     dm.Polygon([1, 1, 4, 1, 4, 4, 1, 4], label=0),
-                    dm.Label(label=1, attributes={"00280030": "0.30\\0.25"}),
+                    dm.Label(label=1, attributes={"PixelSpacing": "0.30\\0.25"}),
                 ],
             ),
             dm.DatasetItem(
                 id="frame101",
                 media=self.make_image(),
-                annotations=[dm.Label(label=1, attributes={"00280030": "0.6\\0.5"})],
+                annotations=[dm.Label(label=1, attributes={"PixelSpacing": "0.6\\0.5"})],
             ),
             dm.DatasetItem(id="frame102", media=self.make_image()),
         ]

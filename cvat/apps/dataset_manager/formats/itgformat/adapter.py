@@ -82,7 +82,7 @@ def _pixel_spacing(item, labels: list[str]) -> tuple[float, float, float]:
     for ann in item.annotations:
         if not _is_dicom_tag(ann, labels):
             continue
-        value = ann.attributes.get("00280030")
+        value = ann.attributes.get("PixelSpacing")
         if not isinstance(value, str):
             return DEFAULT_SPACING
         parts = [part.strip() for part in value.split("\\")]
