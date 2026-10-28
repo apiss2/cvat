@@ -362,6 +362,32 @@ def sources(
                 if Path(source).is_socket():
                     continue
             actual[destination(runtime_mount.get("Destination", ""))] = (kind, source)
+        # ClickHouse declares a disposable log volume in its image. Docker
+        # creates an anonymous volume even when Compose does not specify one.
+        # Verify the declaration and the runtime mount before ignoring it.
+        extras = set(actual) - set(expected_mounts[service_name])
+        if extras and service_name == "cvat_clickhouse":
+            log_target = "/var/log/clickhouse-server"
+            if log_target in extras:
+                image = container.get("Image")
+                if image:
+                    image_info = json.loads(
+                        manager.run(["docker", "image", "inspect", image])
+                    )[0]
+                    declared = (image_info.get("Config") or {}).get("Volumes") or {}
+                    if log_target in declared:
+                        runtime = next(
+                            (
+                                item for item in container.get("Mounts", [])
+                                if destination(item.get("Destination", "")) == log_target
+                            ),
+                            None,
+                        )
+                        if runtime and runtime.get("Type") == "volume" and runtime.get("Name"):
+                            actual.pop(log_target)
+                            skipped.append(
+                                f"{service_name}:{log_target} (image-declared diagnostic volume)"
+                            )
         if actual != expected_mounts[service_name]:
             raise BackupError(
                 f"Runtime mounts differ from the recorded Compose configuration: {service_name}"
