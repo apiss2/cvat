@@ -77,14 +77,16 @@ DicomTagのKeyword化は属性とその参照処理の変更です。物理長�
 
 ## 機能を追加するときの手順
 
-### 開発時の注意
-
-GitHub Actions の workflow（`.github/workflows/`）は新設しないでください。拡張機能の追加・変更に専用の workflow を設けず、必要な検証はこの文書に記載した手順で実行します。
-
 1. [manage.py](../../components/extensions/manage.py)の `EXTENSION_COMPOSE` に拡張名を登録します。専用Composeファイルが不要な画面機能は空のタプル `()` を使用し、ダミーのサービスを作りません。
 2. 画面プラグインを `EXTENSION_PLUGINS` に登録します。推論APIが必要なら `SERVERLESS_EXTENSIONS` も確認します。GPU関数は既存の `functions.py` と各機能の `build.json` へ組み込み、独立した配備経路を増やしません。
-3. 既存の設定読み取り、選択に応じたビルド、起動記録、停止、確認処理を再利用します。必要な秘密情報、保存先、重み、追加サービスは事前検証し、不要な構成を自動追加しません。
-4. [設定例](../../components/extensions/config.example.env)、この管理対象一覧、機能のREADMEと回帰テストを同じ変更で更新します。新しい独自プラグインを、パスの手動追記だけで管理対象外のまま提出しません。
+
+## 開発時の注意
+
+- 既存の設定読み取り、選択に応じたビルド、起動記録、停止、確認処理を再利用します。必要な秘密情報、保存先、重み、追加サービスは事前検証し、不要な構成を自動追加しません。
+- [設定例](../../components/extensions/config.example.env)、この管理対象一覧、機能のREADMEと回帰テストを機能追加と同じ変更で更新します。独自プラグインをパスの手動追記だけで管理対象外にしません。
+- GitHub Actions の workflow（`.github/workflows/`）は新設しないでください。拡張機能の追加・変更に専用の workflow を設けず、必要な検証は既存のローカル手順で実行します。
+
+## 回帰テスト
 
 拡張管理と画面プラグインの回帰テストは次で実行できます。PytestとPyYAMLが必要です。
 
@@ -98,7 +100,7 @@ python3 -m pytest -q tests/extensions/test_operations.py \
 構成生成、有効化と無効化、既存拡張との併用、ビルド対象、保存された起動構成による停止を確認します。
 停止順序、再起動方針の復元、既存Redisボリュームとモデル保存先の維持、同じRedisボリュームへの二重書き込みの拒否も検証します。
 関数の定義と配備は `components/extensions/functions.py` の公開関数を通して確認します。
-このテスト群はGitHub Actionsの `DICOM metadata extensions` でも実行します。
+このフォークではGitHub Actionsを無効にしているため、このテスト群は上記のコマンドでローカル実行してください。
 物理長表示では、選択解除後の `status` が稼働記録を使うことと、`check` がUIのイメージ不一致を検出し、アノテーションを変更しないことも確認します。
 Dockerの応答と無関係なモデル管理の初期化は代替実装を使用します。
 実配備と画面の確認は、それぞれのREADMEに記載した受入確認を別途実施してください。

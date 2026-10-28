@@ -4,7 +4,7 @@
 [![Release][release-img]][release-url]
 [![GitHub stars][stars-img]][stars-url]
 [![License][license-img]][license-url]
-[![CI][ci-img]][ci-url]
+[![Upstream CI][ci-img]][ci-url]
 [![server pulls][docker-server-pulls-img]][docker-server-image-url]
 [![ui pulls][docker-ui-pulls-img]][docker-ui-image-url]
 [![CVAT Online][online-img]][online-url]
@@ -22,6 +22,7 @@
 
 このフォークの追加機能は[独自拡張の日本語ドキュメント](docs/README.md)を参照してください。
 導入、cvatctlによる機能選択、モデル管理、追跡、条件付きエクスポートを説明しています。
+冒頭のCIバッジは上流CVATの結果です。このフォークではGitHub Actionsを無効にしているため、試験とビルドは独自拡張のドキュメントに従ってローカルで実行してください。
 
 ## What is CVAT Community?
 
