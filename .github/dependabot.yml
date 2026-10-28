@@ -14,7 +14,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
 
   # Python dependencies in cvat/requirements are managed by pip-compile-multi.
   # Dependabot should update source *.in files; generated *.txt files are

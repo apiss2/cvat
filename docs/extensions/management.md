@@ -77,6 +77,10 @@ DicomTagのKeyword化は属性とその参照処理の変更です。物理長�
 
 ## 機能を追加するときの手順
 
+### 開発時の注意
+
+GitHub Actions の workflow（`.github/workflows/`）は新設しないでください。拡張機能の追加・変更に専用の workflow を設けず、必要な検証はこの文書に記載した手順で実行します。
+
 1. [manage.py](../../components/extensions/manage.py)の `EXTENSION_COMPOSE` に拡張名を登録します。専用Composeファイルが不要な画面機能は空のタプル `()` を使用し、ダミーのサービスを作りません。
 2. 画面プラグインを `EXTENSION_PLUGINS` に登録します。推論APIが必要なら `SERVERLESS_EXTENSIONS` も確認します。GPU関数は既存の `functions.py` と各機能の `build.json` へ組み込み、独立した配備経路を増やしません。
 3. 既存の設定読み取り、選択に応じたビルド、起動記録、停止、確認処理を再利用します。必要な秘密情報、保存先、重み、追加サービスは事前検証し、不要な構成を自動追加しません。
