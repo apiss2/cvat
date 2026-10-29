@@ -21,6 +21,7 @@
 | `physical_measurements` | DicomTagのPixelSpacingに基づく折れ線の物理長表示 | `plugins/physical-measurements` を共通UIイメージに含めます。標準のTagを参照し、追加サービスとGPUは不要です。 |
 | `task_context` | 標準AnnotationGuideによる背景情報の参照 | `plugins/task-context` を共通UIイメージに含めます。ガイドのJSON、Markdown Zip、DICOM Report Importは共通バックエンドに登録し、表示を無効にしても利用できます。追加サービスとGPUは不要です。 |
 | `dicom_import` | DICOMから画像と動画のタスクを作成 | `plugins/dicom-import` とサーバーおよび取り込みワーカーの既存サービスを使用します。Keyword属性への保存、タスク単位の部分取り込み、完了時の集計通知も含みます。 |
+| `project_annotations` | Projectの既存タスクへアノテーションを取り込む | `plugins/project-annotations` と既存サーバーおよび取り込みワーカーを使用します。Task名での通常形式取り込みと、DicomTagの完全なUIDで照合するTag取り込みを含みます。追加サービスとGPUは不要です。 |
 
 `selective_ai` は `model_registry` を自動選択しません。登録ONNXモデルを使う場合は両方を選択します。通常のNuclioモデルも使用できますが、画面プラグインの有効化だけでモデルを新しく配備するわけではありません。GPUも自動要求しません。推論の開始と中止は画面で行い、`cvatctl` は配備と停止を管理します。
 
@@ -31,7 +32,7 @@
 既存の選択を保持し、必要な拡張名を追加します。例えば、既存構成に新しい画面機能を追加する場合は次のように指定します。SAM3.1を使用している場合は `sam31` も保持してください。
 
 ```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,frame_navigation_filter,selective_ai,filtered_export,physical_measurements,task_context,dicom_import
+CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,frame_navigation_filter,selective_ai,filtered_export,physical_measurements,task_context,dicom_import,project_annotations
 ```
 
 管理対象のプラグインパスを `CVAT_CLIENT_PLUGINS` に重ねて指定する必要はありません。`cvatctl` はこの変数から管理対象のパスをいったん除き、`CVAT_EXTENSIONS` の選択に応じて再構成します。旧手順でプラグインパスだけを記載していた場合も、新しい拡張名へ変更してください。一覧にない独自のプラグインパスは保持されます。
@@ -67,6 +68,8 @@ DICOMレポートの識別子の別名、日付の正規化、参考生データ
 
 DicomTagのKeyword化は属性とその参照処理の変更です。物理長表示とITGformatも同じ版に更新してください。データベースの移行は追加しません。依存関係を更新した際は、保存したタグ番号とKeywordの対応に変化がないことをDICOMの回帰テストで確認します。
 
+`project_annotations` は `dicom_import` と独立した拡張です。既存のDicomTagがある場合、DICOM取り込みを無効にした構成でも画像を照合できます。有効化するとサーバーと取り込みワーカーの `CVAT_PROJECT_ANNOTATIONS_ENABLED` が設定され、UIに `Import annotations` を追加します。無効化には選択解除後の再配備が必要です。無効化しても保存済みの画像、アノテーション、DicomTag、AnnotationGuideを変更しません。通常のProject Import dataset、Task Import annotations、Task Guideの取り込みは同じ動作を維持します。入力と置換範囲は[Projectへのアノテーション取り込み](project-annotation-import.md)を参照してください。
+
 ## 確認コマンドの範囲
 
 `config` と `doctor` は、選択された拡張名と、解決済みの `client_plugins`、UIイメージを表示します。選択した画面プラグインの入口ファイルがない場合や、Composeでそのビルド引数が失われた場合は失敗します。選択が変わるとUIイメージの識別子も変わります。
@@ -75,14 +78,17 @@ DicomTagのKeyword化は属性とその参照処理の変更です。物理長�
 
 `task_context` もこの画面プラグイン共通の確認を使用します。配備や確認コマンドからAnnotationGuideの内容を読み出したり変更したりしません。
 
+`project_annotations` も既存の共通イメージを使用します。`build` と `up` は通常のサーバーとUIを対象とし、専用サービス、モデル配備、GPUを要求しません。`config` と `doctor` は選択されたComposeとプラグインを解決し、`status`、`down`、`check` は記録された構成とイメージを確認します。これらのコマンドはアノテーション取り込みを開始しません。
+
 ## 機能を追加するときの手順
 
-1. [manage.py](../../components/extensions/manage.py)の `EXTENSION_COMPOSE` に拡張名を登録します。専用Composeファイルが不要な画面機能は空のタプル `()` を使用し、ダミーのサービスを作りません。
-2. 画面プラグインを `EXTENSION_PLUGINS` に登録します。推論APIが必要なら `SERVERLESS_EXTENSIONS` も確認します。GPU関数は既存の `functions.py` と各機能の `build.json` へ組み込み、独立した配備経路を増やしません。
+1. 既存サービスの設定と画面プラグインで完結する機能は、`components/<機能名>/extension.json` に `name`、`client_plugin`、`compose_files` を登録します。既存の `catalog.py` が管理対象へ追加するため、`manage.py` の分岐を増やす必要はありません。`dicom_import` と `project_annotations` がこの方式を使用します。専用Composeファイルが不要なら `compose_files` は空の配列にし、ダミーのサービスを作りません。
+2. 管理処理への追加が必要な機能は、[manage.py](../../components/extensions/manage.py)の `EXTENSION_COMPOSE` と `EXTENSION_PLUGINS` を更新します。推論APIが必要なら `SERVERLESS_EXTENSIONS` も確認します。GPU関数は既存の `functions.py` と各機能の `build.json` へ組み込み、独立した配備経路を増やしません。
 
 ## 開発時の注意
 
 - 既存の設定読み取り、選択に応じたビルド、起動記録、停止、確認処理を再利用します。必要な秘密情報、保存先、重み、追加サービスは事前検証し、不要な構成を自動追加しません。
+- 独自拡張のためのDBスキーマ変更、マイグレーションの追加、既存モデルの構造変更は禁止します。既存モデルを利用した通常のアノテーションの作成、更新、削除を使用してください。Task単位で変更する処理は同じTask内の変更をDBトランザクションで保護し、途中の失敗で一部だけが保存される実装にしません。
 - [設定例](../../components/extensions/config.example.env)、この管理対象一覧、機能のREADMEと回帰テストを機能追加と同じ変更で更新します。独自プラグインをパスの手動追記だけで管理対象外にしません。
 - GitHub Actions の workflow（`.github/workflows/`）は新設しないでください。拡張機能の追加・変更に専用の workflow を設けず、必要な検証は既存のローカル手順で実行します。
 
@@ -94,7 +100,8 @@ DicomTagのKeyword化は属性とその参照処理の変更です。物理長�
 python3 -m pytest -q tests/extensions/test_operations.py \
   components/extensions/tests/test_cvatctl.py \
   components/extensions/tests/test_functions.py \
-  components/extensions/tests/test_client_plugins.py
+  components/extensions/tests/test_client_plugins.py \
+  components/project_annotations/tests/test_project_annotations_management.py
 ```
 
 構成生成、有効化と無効化、既存拡張との併用、ビルド対象、保存された起動構成による停止を確認します。

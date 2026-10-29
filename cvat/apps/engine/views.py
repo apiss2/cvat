@@ -510,7 +510,7 @@ class ProjectViewSet(
         return self.append_tus_chunk(request, file_id)
 
     def get_upload_dir(self):
-        if "dataset" in self.action:
+        if "dataset" in self.action or "annotations" in self.action:
             return self._object.get_tmp_dirname()
         elif "backup" in self.action:
             return backup.get_backup_dirname()
@@ -521,16 +521,64 @@ class ProjectViewSet(
             importer = DatasetImporter(request=request, db_instance=self._object)
             return importer.enqueue_job()
 
+        elif self.action == "annotations":
+            from components.project_annotations.background import ProjectAnnotationImporter
+
+            return ProjectAnnotationImporter(
+                request=request, db_instance=self._object
+            ).enqueue_job()
+
         elif self.action == "import_backup":
             importer = BackupImporter(request=request, target=RequestTarget.PROJECT)
             return importer.enqueue_job()
 
         return Response(data="Unknown upload was finished", status=status.HTTP_400_BAD_REQUEST)
 
-    @extend_schema(exclude=True)
-    @action(detail=True, methods=["GET"])
+    @extend_schema(methods=["GET"], exclude=True)
+    @extend_schema(
+        methods=["POST"],
+        summary="Import annotations into existing project tasks",
+        description="Import a ZIP of task folders, preserving existing DicomTag annotations. "
+        "Replace deletes all other annotations in each targeted task, including images absent "
+        "from the input. Task Guide formats remain available through Import dataset only.",
+        parameters=[
+            OpenApiParameter("format", type=OpenApiTypes.STR, required=True),
+            OpenApiParameter(
+                "import_mode", type=OpenApiTypes.STR, enum=["replace", "append"], default="replace"
+            ),
+            OpenApiParameter("location", type=OpenApiTypes.STR, enum=Location.list()),
+            OpenApiParameter("cloud_storage_id", type=OpenApiTypes.INT),
+            OpenApiParameter("filename", type=OpenApiTypes.STR),
+        ],
+        request=AnnotationFileSerializer(required=False),
+        responses={202: OpenApiResponse(RqIdSerializer, description="Importing has been started")},
+    )
+    @action(
+        detail=True,
+        methods=["GET", "POST", "OPTIONS"],
+        url_path=r"annotations/?$",
+        parser_classes=_UPLOAD_PARSER_CLASSES,
+    )
     def annotations(self, request: ExtendedRequest, pk: int):
-        return get_410_response_for_export_api("/api/projects/id/dataset/export?save_images=False")
+        if request.method == "GET":
+            return get_410_response_for_export_api(
+                "/api/projects/id/dataset/export?save_images=False"
+            )
+        from components.project_annotations import enabled
+
+        self._object = self.get_object()
+        if not enabled():
+            raise NotFound("Project annotation import is disabled")
+        return self.upload_data(request, append_url_name="append-annotations-chunk")
+
+    @tus_chunk_action(detail=True, suffix_base="annotations")
+    def append_annotations_chunk(self, request: ExtendedRequest, pk: int, file_id: str):
+        from components.project_annotations import enabled
+
+        self._object = self.get_object()
+        if not enabled():
+            raise NotFound("Project annotation import is disabled")
+        return self.append_tus_chunk(request, file_id)
 
     @extend_schema(exclude=True)
     @action(methods=["GET"], detail=True, url_path="backup")

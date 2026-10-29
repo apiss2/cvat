@@ -430,6 +430,9 @@ class ProjectPermission(
             ("partial_update", "PATCH"): Scopes.UPDATE,
             ("retrieve", "GET"): Scopes.VIEW,
             ("dataset", "POST"): Scopes.IMPORT_DATASET,
+            ("annotations", "POST"): Scopes.IMPORT_DATASET,
+            ("append_annotations_chunk", "HEAD"): Scopes.IMPORT_DATASET,
+            ("append_annotations_chunk", "PATCH"): Scopes.IMPORT_DATASET,
             ("append_dataset_chunk", "HEAD"): Scopes.IMPORT_DATASET,
             ("append_dataset_chunk", "PATCH"): Scopes.IMPORT_DATASET,
             ("initiate_dataset_export", "POST"): (
