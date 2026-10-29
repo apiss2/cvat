@@ -6,8 +6,6 @@ from conftest import ROOT
 
 repo=ROOT.parents[1]
 path=repo/'components/extensions/manage.py'
-if not path.exists():path=repo.parent/'patches/replacements/components/extensions/manage.py'
-if not path.exists():pytest.skip("CVAT custom-component source is not present in this standalone copy",allow_module_level=True)
 spec=importlib.util.spec_from_file_location('registry_extension_contract',path);ops=importlib.util.module_from_spec(spec);spec.loader.exec_module(ops)
 
 def config(enabled=True):

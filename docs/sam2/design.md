@@ -25,7 +25,7 @@ CVATの標準認証、画像取得、追跡状態の署名、アノテーショ�
 | components/sam2/build.json | モデル用の依存関係とビルド設定 |
 | components/extensions/functions.py | 関数定義の生成、重みの準備、配備 |
 
-表の短いファイル名は上段のnuclio/内です。関数IDを変更する場合は共通生成処理、アクション定義とテストを合わせます。削除済みの関数用YAMLを追加し直しません。SAM3.1と共有するUI、画像デコード、形状変換、Redisの補助コードは、モデル本体と状態の保存形式から分離しています。
+表の短いファイル名は上段のnuclio/内です。関数IDを変更する場合は共通生成処理、アクション定義とテストを合わせます。関数定義は共通生成処理から生成し、個別の関数YAMLを併設しません。SAM3.1と共有するUI、画像デコード、形状変換、Redisの補助コードは、モデル本体と状態の保存形式から分離しています。
 
 ## 画像用関数
 
@@ -68,11 +68,11 @@ BaseCollectionActionは開始図形を複製して処理し、全範囲の成功
 ```bash
 python3.11 -m venv /srv/cvat-test-envs/sam2
 /srv/cvat-test-envs/sam2/bin/python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
-/srv/cvat-test-envs/sam2/bin/python -m pip install -r serverless/pytorch/facebookresearch/sam2/tests/requirements.txt
-/srv/cvat-test-envs/sam2/bin/python -m pytest serverless/pytorch/facebookresearch/sam2/tests -q
+/srv/cvat-test-envs/sam2/bin/python -m pip install -r components/sam2/tests/requirements.txt
+/srv/cvat-test-envs/sam2/bin/python -m pytest components/sam2/tests -q
 node cvat-ui/plugins/sam2/tests/run-tests.cjs
 ```
 
 Nodeの試験にはリポジトリのTypeScript依存関係が必要です。小さいCVAT契約用の定義で型と制御を確認し、CVAT全体のビルドやブラウザーの描画は行いません。CPU試験も公式重みのGPU推論を保証しません。
 
-[GPU確認](../../serverless/pytorch/facebookresearch/sam2/tests/gpu_smoke.py)と[Redis確認](../../serverless/pytorch/facebookresearch/sam2/tests/redis_integration.py)は実際の対応環境で別に実施します。状態復元、応答消失時の再送、競合、マスク入力、逆方向、削除フレーム、中止、Undo、Save後の再読込を確認します。モデルや状態形式の変更時は、実画像と長い動画の結果も記録してください。
+[GPU確認](../../components/sam2/tests/gpu_smoke.py)と[Redis確認](../../components/sam2/tests/redis_integration.py)は実際の対応環境で別に実施します。状態復元、応答消失時の再送、競合、マスク入力、逆方向、削除フレーム、中止、Undo、Save後の再読込を確認します。モデルや状態形式の変更時は、実画像と長い動画の結果も記録してください。

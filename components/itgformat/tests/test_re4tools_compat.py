@@ -1,6 +1,7 @@
 """Compatibility with the unmodified reference C++ codec and HDR functions.
 
-Install reference/re4tools-main.zip or put its built src directory on PYTHONPATH.
+Build and install the external re4tools reference package, or put its built src
+directory on PYTHONPATH.
 The reference save_re4 wrapper accepts uint8/uint16 masks; for uint32, use the
 reference save_hdr and encode_run_length functions to create the reference file.
 """

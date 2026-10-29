@@ -80,7 +80,7 @@ CVAT_EXTENSIONS=itgformat,physical_measurements
 
 `cvatctl` が `plugins/physical-measurements` をUIのビルドへ追加します。
 ITGformatの出力変更はサーバーと出力ワーカーへ反映します。
-この変更によるDB移行、追加サービス、GPU、Nuclioは不要です。
+この機能のためのDB移行、追加サービス、GPU、Nuclioは不要です。
 
 ```sh
 bash components/extensions/cvatctl config
@@ -98,7 +98,7 @@ bash components/extensions/cvatctl check
 
 対象は2D画像と動画のpolylineです。画像全体で一定のX方向とY方向の間隔を前提とします。
 描画途中の長さ表示、3D、音声、超音波の領域ごとの校正は対象外です。
-PR11が抽出しないSequence内の値や、別のDICOM属性から間隔を推測しません。
+DICOM取り込みの対象外であるSequence内の値や、別のDICOM属性から間隔を推測しません。
 画像自体を事前に拡大縮小した場合は、Tagの値も変換後の画素に対応している必要があります。
 
 計算と表示の接続は `cvat-ui/plugins/physical-measurements/` に置いています。
@@ -109,7 +109,7 @@ Canvasへの変更は、既存の図形ラベルへ文字列を追加する任�
 
 ```sh
 node --test cvat-ui/plugins/physical-measurements/tests/*.test.cjs
-python3 -m pytest -q tests/itgformat components/extensions/tests/test_client_plugins.py
+python3 -m pytest -q components/itgformat/tests components/extensions/tests/test_client_plugins.py
 ```
 
 実環境では、異なるXとYの値、Tagがない画像、フレームごとの値の変更、Tag編集とUndo、

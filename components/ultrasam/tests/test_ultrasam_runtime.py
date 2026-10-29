@@ -186,7 +186,7 @@ def test_warmup_rejects_invalid_prediction_and_clears_cache(
 
 @pytest.mark.parametrize("fail_at", [None, "probe", "warmup"])
 def test_init_publishes_operation_only_after_probe_and_warmup(monkeypatch, fail_at):
-    source = Path(__file__).resolve().parents[1] / "nuclio/main.py"
+    source = Path(__file__).resolve().parents[3] / "serverless/pytorch/camma/ultrasam/nuclio/main.py"
     spec = importlib.util.spec_from_file_location("ultrasam_startup_test", source)
     main = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(main)

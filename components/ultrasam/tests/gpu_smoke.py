@@ -18,7 +18,9 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw
 
-for candidate in (Path(__file__).resolve().parents[1] / "nuclio", Path("/opt/nuclio")):
+# Also support copying this standalone diagnostic into the function container.
+runtime = (Path(__file__).resolve().parent / "../../../serverless/pytorch/camma/ultrasam/nuclio").resolve()
+for candidate in (runtime, Path("/opt/nuclio")):
     if candidate.is_dir():
         sys.path.insert(0, str(candidate))
 

@@ -19,12 +19,12 @@ zは1です。
 
 ## ファイルの配置
 
-```text
-cvat/apps/dataset_manager/formats/itgformat/  HDR、RE4、BBとCVATの変換
-components/itgformat/                       バックエンド用Compose
-cvat/apps/dataset_manager/formats/registry.py  登録のimport 1行
-tests/itgformat/                            単体試験と実依存確認
-```
+| 配置 | 役割 |
+| --- | --- |
+| `cvat/apps/dataset_manager/formats/itgformat/` | HDR、RE4、BBとCVATの変換 |
+| `cvat/apps/dataset_manager/formats/registry.py` | 形式の登録 |
+| `components/itgformat/` | バックエンド用Compose |
+| `components/itgformat/tests/` | 単体試験と実依存確認 |
 
 各モジュールの責務と変換順序は[設計](design.md)に記載しています。Dockerfileはルートの公式ファイルを使用し、専用Dockerfileは複製しません。
 
@@ -41,7 +41,7 @@ tests/itgformat/                            単体試験と実依存確認
 
 ## 確認方法
 
-単体試験は`tests/itgformat`、実際のCVATとDatumaroを使う確認は`tests/itgformat/check_in_cvat.py`です。`cvatctl check`は登録とイメージの一致を全バックエンドで調べ、実依存関係の確認をAPI、import worker、export workerで実行します。
+単体試験は`components/itgformat/tests`、実際のCVATとDatumaroを使う確認は`components/itgformat/tests/check_in_cvat.py`です。`cvatctl check`は登録とイメージの一致を全バックエンドで調べ、実依存関係の確認をAPI、import worker、export workerで実行します。
 
 これらは、実データを使ったHTTP経由の入出力や画面操作の代わりにはなりません。実ファイルを別の試験タスクへ取り込み、出力して比較してください。
 

@@ -7,7 +7,7 @@ import sys
 import types
 import unittest
 
-DIRECTORY = Path(__file__).resolve().parents[2] / "cvat/apps/dataset_manager/filtered_export"
+DIRECTORY = Path(__file__).resolve().parents[3] / "cvat/apps/dataset_manager/filtered_export"
 PACKAGE = "filtered_export_tested"
 package = types.ModuleType(PACKAGE)
 package.__path__ = [str(DIRECTORY)]

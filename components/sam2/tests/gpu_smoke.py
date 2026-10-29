@@ -4,7 +4,7 @@
 
 This is NOT a comparison against the full-video predictor (which has different
 initial-mask consolidation and early object-pointer normalization semantics).
-Run only in the Nuclio GPU environment. No checkpoints are bundled in this ZIP.
+Run only in the built Nuclio GPU environment, which contains the model checkpoint.
 """
 import argparse
 import json
@@ -12,7 +12,11 @@ from pathlib import Path
 import sys
 import numpy as np
 from PIL import Image, ImageDraw
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "nuclio"))
+# Also support copying this standalone diagnostic into the function container.
+runtime = (Path(__file__).resolve().parent / "../../../serverless/pytorch/facebookresearch/sam2/nuclio").resolve()
+for candidate in (runtime, Path("/opt/nuclio")):
+    if candidate.is_dir():
+        sys.path.insert(0, str(candidate))
 from model_common import CHECKPOINT, MODEL_CONFIG, require_gpu
 from temporal_video import TemporalVideo, model_identity
 from state_codec import StateCodec

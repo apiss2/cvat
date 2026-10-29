@@ -1,7 +1,7 @@
 """Control-flow tests with explicit substitutes for unavailable CVAT/Datumaro.
 
 These test our adapter's file policy, not the real CVAT bridge or rasterizer.
-Run scripts/check_in_cvat.py in the deployed image to test those real modules.
+Run the adjacent check_in_cvat.py through manage.py shell to test those real modules.
 """
 
 import importlib.util

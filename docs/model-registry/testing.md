@@ -6,7 +6,7 @@
 
 ## 自動試験
 
-リポジトリのJavaScript依存関係と、[Python試験用の依存関係](../../components/model_registry/requirements-test.txt)を準備します。実行場所はチェックアウトのルートです。
+リポジトリのJavaScript依存関係と、[Python試験用の依存関係](../../components/model_registry/tests/requirements.txt)を準備します。実行場所はチェックアウトのルートです。
 
 ```bash
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_api.py components/model_registry/tests/test_deletion.py components/model_registry/tests/test_runtime.py components/model_registry/tests/test_cli.py -q
@@ -45,7 +45,7 @@ Classificationの試験は出力と独立した応答検査、旧出力形式、
 専用の試験用CVATアカウントで次を実行します。パスワードは実行時に入力し、引数に書きません。
 
 ```bash
-python3 components/model_registry/tools/smoke_registry.py \
+python3 components/model_registry/tests/smoke_registry.py \
   --url https://cvat.example.internal/model-registry/ \
   --username ACTUAL_CVAT_TEST_USERNAME --run
 ```
@@ -54,4 +54,4 @@ python3 components/model_registry/tools/smoke_registry.py \
 
 CVATの標準ログインAPIで取得したCookieを使用し、パスワードやトークンを管理サーバーへ渡さず、Cookieをファイルへ保存しません。終了時の標準ログアウトは同じアカウントの既存RESTトークンも無効にする場合があります。日常業務や連携に使うアカウントで実行しないでください。
 
-[CVAT側の確認スクリプト](../../components/model_registry/tools/verify_in_cvat.py)は、CVATサーバーと自動アノテーション用ワーカーのPythonで実行します。必要に応じて--require-sam2と--require-registry-modelを指定します。これは設定と関数一覧の確認であり、実推論やブラウザー操作の代わりにはなりません。
+[CVAT側の確認スクリプト](../../components/model_registry/tests/verify_in_cvat.py)は、CVATサーバーと自動アノテーション用ワーカーのPythonで実行します。必要に応じて--require-sam2と--require-registry-modelを指定します。これは設定と関数一覧の確認であり、実推論やブラウザー操作の代わりにはなりません。

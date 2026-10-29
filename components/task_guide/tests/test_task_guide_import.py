@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Run without CVAT services: python -m unittest discover -s tests/python/unit -p test_task_guide_import.py"""
+"""Run without CVAT services: python -m unittest discover -s components/task_guide/tests -p test_task_guide_import.py"""
 
 import ast
 import importlib.util
@@ -353,7 +353,7 @@ class ReportTests(unittest.TestCase):
             reports(r)
 
     def test_two_sample_formats_from_json_zip(self):
-        fixtures = ROOT / "tests/python/unit/fixtures/task_guide"
+        fixtures = Path(__file__).resolve().parent / "fixtures"
         for filename, dates, suffixes in (
             ("structured_report.json", ["20250102", "20250107"], ["05522970", "02065974"]),
             ("ptc_report.json", ["20250101", "20250102"], ["30673432", "30694803"]),

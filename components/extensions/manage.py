@@ -1194,7 +1194,7 @@ class Manager:
                     environments=saved.get("function_environment", {}),
                 )
         if "itgformat" in selected:
-            script = (self.root / "tests/itgformat/check_in_cvat.py").read_text()
+            script = (self.root / "components/itgformat/tests/check_in_cvat.py").read_text()
             for name in ("cvat_server", "cvat_worker_import", "cvat_worker_export"):
                 print(
                     self.run(

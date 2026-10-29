@@ -118,7 +118,7 @@ DICOMの属性名の変更は、長さの表示とITGformatの参照処理にも
 拡張管理と画面プラグインの回帰テストにはPytestとPyYAMLが必要です。
 
 ```bash
-python3 -m pytest -q tests/extensions/test_operations.py \
+python3 -m pytest -q components/extensions/tests/test_operations.py \
   components/extensions/tests/test_cvatctl.py \
   components/extensions/tests/test_functions.py \
   components/extensions/tests/test_client_plugins.py \

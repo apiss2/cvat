@@ -4,7 +4,8 @@
 
 SAM2_TEST_REDIS_URL must refer to a disposable test Redis. Only random-prefix
 keys created here are removed; this script never calls FLUSHDB or shuts Redis down.
-Run `python tests/redis_integration.py`. Missing Redis/redis-py is an error, not a pass.
+Run `python components/sam2/tests/redis_integration.py` from the repository root.
+Missing Redis/redis-py is an error, not a pass.
 """
 import base64
 import copy
@@ -17,7 +18,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 import unittest
 import uuid
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "nuclio"))
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "serverless/pytorch/facebookresearch/sam2/nuclio"))
 from PIL import Image
 from fakes import FakePredictor
 from redis_store import RedisStore

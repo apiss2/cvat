@@ -2,7 +2,7 @@
 
 [追加機能の一覧](../docs/README.md)
 
-このディレクトリには、CVAT本体と分けて管理するサービスや配備設定を配置しています。利用者向けの操作説明は `docs/`、画面の実装は[画面プラグインの案内](../cvat-ui/plugins/README.md)を参照してください。
+このディレクトリには、CVAT本体と分けて管理するサービス、配備設定、機能ごとのPythonテストを配置しています。利用者向けの操作説明は `docs/`、画面の実装は[画面プラグインの案内](../cvat-ui/plugins/README.md)を参照してください。
 
 ## 設定と運用
 
@@ -17,6 +17,8 @@
 | DICOMからタスクを作成する | `dicom_import/` | [DICOM取り込み](../docs/annotation/dicom-import.md) |
 | 既存タスクのアノテーションを一括更新する | `project_annotations/` | [アノテーション取り込み](../docs/extensions/project-annotation-import.md) |
 | 独自形式の変換を含むサーバーを構成する | `itgformat/` | [専用形式の入出力](../docs/itgformat/README.md) |
+| 条件付きエクスポートのサーバー処理を検証する | `filtered_export/` | [条件付きエクスポート](../docs/annotation/filtered-export.md) |
+| タスク説明の取り込み処理を検証する | `task_guide/` | [タスク説明の一括登録](../docs/extensions/task-guide-import.md) |
 
 形式変換の実装は `cvat/apps/dataset_manager/formats/` にあります。タスク説明の一括登録もこの標準の形式登録を使い、仕様は[タスク説明の一括登録](../docs/extensions/task-guide-import.md)で説明しています。
 
@@ -30,3 +32,7 @@
 | UltraSAMのビルドと配備 | `ultrasam/` | [UltraSAM](../docs/ultrasam/README.md) |
 
 SAM2とUltraSAMの推論実装は `serverless/` にあります。追加機能を変更するときは、[開発方針](../AGENTS.md)と[機能の管理手順](../docs/extensions/management.md)を確認してください。`analytics/` などの上流CVAT由来の構成は、この案内の対象外です。
+
+## テストと文書を編集する
+
+独自のPythonテストは `components/<機能>/tests/` に置き、入力例と補助コードも同じ機能で管理します。本体内に実装する形式処理と `serverless/` の推論も、この配置で試験を管理します。各機能の実行コマンドは上表の文書から確認できます。新規追加、移動、削除の基準は[文書とテストの保守ルール](../docs/development.md)を参照してください。

@@ -92,7 +92,7 @@ python3 components/model_registry/registryctl.py init \
   --cvat-url https://cvat.example.internal
 ```
 
-次に、作成された `registry.env` の `MR_MANAGER_IMAGE` と `MR_WORKER_IMAGE` を、今回配備する版を識別できるタグへ設定してからビルドします。`MR_INSTANCE` は初期化時の `--instance` で選べ、未指定時は `team-models` です。同じホストの構成で使う空欄時の規則とは異なります。
+次に、作成された `registry.env` の `MR_MANAGER_IMAGE` と `MR_WORKER_IMAGE` を、配備する版を識別できるタグへ設定してからビルドします。`MR_INSTANCE` は初期化時の `--instance` で選べ、未指定時は `team-models` です。同じホストの構成で使う空欄時の規則とは異なります。
 
 ```bash
 python3 components/model_registry/registryctl.py build --home "$REGISTRY_HOME" --target manager

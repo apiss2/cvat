@@ -43,7 +43,7 @@ bash components/extensions/cvatctl up
 bash components/extensions/cvatctl check
 ```
 
-詳しくは[共通管理の手順](../extensions/management.md)を参照してください。推論サービスやGPUは不要です。UIの直接開発では`CLIENT_PLUGINS`を指定します。マージだけでは実行環境に反映されません。`filtered_export`を外してUIを再ビルドするとメニューは消えますが、新APIはサーバーに残ります。APIも除去する場合はこの変更を含まないサーバーとワーカーに戻します。
+詳しくは[共通管理の手順](../extensions/management.md)を参照してください。推論サービスやGPUは不要です。UIの直接開発では`CLIENT_PLUGINS`を指定します。マージだけでは実行環境に反映されません。`filtered_export`を外してUIを再ビルドするとメニューは消えますが、条件付き出力APIはサーバーに残ります。APIも除去する場合はこの機能を含まないサーバーとワーカーに戻します。
 
 ## 開発者向けの実装
 
@@ -98,7 +98,7 @@ GET  /api/filtered-export/tasks/{id}/download?rq_id=...
 ## 検証
 
 ```sh
-python -m unittest discover -s tests/filtered_export -v
+python -m unittest discover -s components/filtered_export/tests -v
 node --test cvat-ui/plugins/filtered-export/tests/*.test.cjs
 npx tsc --noEmit --skipLibCheck --strict --target es2022 --lib es2022,dom \
   cvat-ui/plugins/filtered-export/src/ts/api.ts

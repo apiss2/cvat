@@ -3,14 +3,17 @@ import importlib.util
 import re
 from pathlib import Path
 
-import yaml
+from components.extensions.functions import render_function
 from ultrasam_constants import MAX_BODY_BYTES, UPSTREAM_COMMIT
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
+RUNTIME = ROOT / "serverless/pytorch/camma/ultrasam/nuclio"
 
 
 def definition():
-    return yaml.safe_load((ROOT / "nuclio/function-gpu.yaml").read_text())
+    return render_function(
+        "pth-ultrasam-interactor", {"NUCLIO_NAMESPACE": "test"}, "ultrasam:test", ROOT
+    )
 
 
 def test_cvat_discovery_advertises_a_point_interactor():
@@ -21,7 +24,7 @@ def test_cvat_discovery_advertises_a_point_interactor():
     assert int(annotations["version"]) == 2
     assert int(annotations["min_pos_points"]) == 1
     assert int(annotations["min_neg_points"]) == 0
-    # CVAT v2.75 uses bool(value), so the string "false" would ENABLE box prompts.
+    # CVAT uses bool(value), so the string "false" would ENABLE box prompts.
     assert "startswith_box" not in annotations
     assert "startswith_box_optional" not in annotations
 
@@ -36,7 +39,7 @@ def test_model_build_uses_the_pinned_source_and_strict_postcopy_check():
     assert "python -m pip freeze" in checks
     assert config["runtime"] == "python:3.10"
     assert config["readinessTimeoutSeconds"] >= 120
-    for line in (ROOT / "nuclio/requirements.txt").read_text().splitlines():
+    for line in (RUNTIME / "requirements.txt").read_text().splitlines():
         if line and not line.startswith("#"):
             assert re.fullmatch(r"[A-Za-z0-9_.-]+==[0-9][A-Za-z0-9.+-]*", line), line
 
@@ -51,7 +54,7 @@ def test_private_single_worker_trigger_and_handler_are_deployable():
     assert config["minReplicas"] == config["maxReplicas"] == 1
     filename, function = config["handler"].split(":")
     spec = importlib.util.spec_from_file_location(
-        "ultrasam_nuclio_main", ROOT / f"nuclio/{filename}.py"
+        "ultrasam_nuclio_main", RUNTIME / f"{filename}.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

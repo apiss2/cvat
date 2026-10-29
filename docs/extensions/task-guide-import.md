@@ -99,7 +99,7 @@ ZIPに入れるJSONは、`records` 配列を持つオブジェクト、または
 
 区切り付き日付では、年は4桁、月日は1桁または2桁で、2か所の区切りを同じ文字にします。時差付き日時も、書かれた年月日を使用し、UTCなどへ時差変換しません。`01/07/2025` のように月日を推測する必要がある形式や、存在しない日付は拒否します。
 
-2種類の入力例は [structured_report.json](../../tests/python/unit/fixtures/task_guide/structured_report.json) と [ptc_report.json](../../tests/python/unit/fixtures/task_guide/ptc_report.json) にあります。架空データから必要な項目だけを残した回帰テスト用のJSONで、RFC形式の日付、日時、別名の組み合わせ、末尾に先頭ゼロを含むUIDを確認できます。取り込み時はどちらかのJSONを1件だけZIPに入れます。
+2種類の入力例は [structured_report.json](../../components/task_guide/tests/fixtures/structured_report.json) と [ptc_report.json](../../components/task_guide/tests/fixtures/ptc_report.json) にあります。架空データから必要な項目だけを残した回帰テスト用のJSONで、RFC形式の日付、日時、別名の組み合わせ、末尾に先頭ゼロを含むUIDを確認できます。取り込み時はどちらかのJSONを1件だけZIPに入れます。
 
 ## DICOMレポートとタスクの照合
 
@@ -188,10 +188,10 @@ Impression: English impression
 
 ZIPと展開後のJSONは32 MiBまでです。ZIPは展開後の合計も32 MiBまでで、フォルダを含めて50,000エントリーまでです。JSONは50,000タスクまたはレコードまでです。保存するガイド本文は1,000,000文字までで、DICOM形式では既存本文も含めた上限です。重複JSONキー、不正Unicode、NUL、非有限数、対応外の値の型は拒否します。
 
-次のコマンドで追加テストを実行します。
+次のコマンドで単体試験を実行します。
 
 ```sh
-python -m unittest discover -s tests/python/unit -p test_task_guide_import.py -v
+python -m unittest discover -s components/task_guide/tests -p test_task_guide_import.py -v
 ```
 
 回帰テストでは3形式の登録と読み込み、Markdownの維持と置換、完全一致と同名タスクの拒否、JSON1件を入れたZIP、ZIPのサイズ上限と不正なパスの拒否、短縮タスク名と完全なUIDによる照合、Keywordによる識別を確認します。インポート接続のテストはORM、OPA、RQを模擬します。キュー待機中の組織変更とプロジェクト取り込み権限の失効によって書き込みが拒否されることも確認します。

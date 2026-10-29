@@ -1,4 +1,4 @@
--r requirements-control.txt
+-r ../requirements-control.txt
 pytest==9.0.2
 PyYAML==6.0.3
 opencv-python-headless==4.11.0.86

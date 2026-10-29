@@ -12,7 +12,7 @@ import subprocess
 import pytest
 import yaml
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location(
     "extension_manage", ROOT / "components/extensions/manage.py"
 )
@@ -306,7 +306,7 @@ def mgr(tmp_path, monkeypatch):
         target.write_bytes(b"test checkpoint")
 
     monkeypatch.setattr(functions, "download_checkpoint", download_checkpoint)
-    path = root / "tests/itgformat/check_in_cvat.py"
+    path = root / "components/itgformat/tests/check_in_cvat.py"
     path.parent.mkdir(parents=True)
     path.write_text('print("test placeholder")')
     return Fake(root, write_env(root / ".env"), state)
