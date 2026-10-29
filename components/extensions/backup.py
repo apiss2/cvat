@@ -264,12 +264,54 @@ class Repository:
         print(f"Extracted to {target}. Production data was not changed.")
 
 
-def sources(
-    manager: Any, saved: dict[str, Any], containers: list[dict[str, Any]] | None = None
-) -> tuple[list[dict[str, str]], list[str]]:
-    """Resolve the recorded deployment, not potentially edited Compose/.env files."""
-    model = saved["model"]
-    services = model["services"]
+class _BackupSources:
+    """Collect persistent sources and resolve each local volume exactly once."""
+
+    def __init__(self) -> None:
+        self.entries: dict[tuple[str, str], dict[str, str]] = {}
+        self.skipped: list[str] = []
+
+    def add(self, kind: str, source: str) -> tuple[str, str] | None:
+        if kind == "tmpfs":
+            return None
+        if not source or kind not in ("volume", "bind"):
+            raise BackupError("Anonymous volumes and unsupported mount types cannot be backed up")
+        if kind == "bind":
+            path = safe_path(source)
+            mode = path.stat().st_mode
+            if stat.S_ISSOCK(mode):
+                self.skipped.append(str(path) + " (socket)")
+                return None
+            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                raise BackupError(f"Unsupported bind source: {path}")
+            source = str(path)
+        key = (kind, source)
+        destination = f"/source/{kind}/{hashlib.sha256(source.encode()).hexdigest()[:24]}"
+        self.entries[key] = {"type": kind, "source": source, "path": destination}
+        return key
+
+    def resolve(self, manager: Any) -> list[dict[str, str]]:
+        for entry in self.entries.values():
+            if entry["type"] == "volume":
+                value = json.loads(manager.run(["docker", "volume", "inspect", entry["source"]]))[0]
+                if value["Driver"] != "local" or value.get("Options"):
+                    raise BackupError("Remote/plugin/bind-backed Docker volumes are unsupported")
+                entry["host_path"] = value["Mountpoint"]
+        if not any(x["type"] == "volume" for x in self.entries.values()):
+            raise BackupError("No persistent named volumes found")
+        # Avoid copying nested bind directories twice (also covers registry/data).
+        entries = sorted(self.entries.values(), key=lambda x: (x["type"], x["source"]))
+        return [
+            x for x in entries
+            if x["type"] != "bind" or not any(
+                y["type"] == "bind" and Path(y["source"]) in Path(x["source"]).parents
+                for y in entries
+            )
+        ]
+
+
+def _validate_source_services(saved: dict[str, Any]) -> None:
+    services = saved["model"]["services"]
     backend = services["cvat_server"].get("environment", {})
     for key, service in (
         ("CVAT_POSTGRES_HOST", "cvat_db"),
@@ -280,50 +322,33 @@ def sources(
             raise BackupError(f"External or nonstandard database unsupported: {key}")
     if "model_registry" in saved.get("extensions", []) and "model-registry" not in services:
         raise BackupError("A remote model registry must be backed up on its own host")
-    result: dict[tuple[str, str], dict[str, str]] = {}
-    skipped: list[str] = []
 
-    def add(kind: str, source: str) -> tuple[str, str] | None:
-        if kind == "tmpfs":
-            return
-        if not source or kind not in ("volume", "bind"):
-            raise BackupError("Anonymous volumes and unsupported mount types cannot be backed up")
-        if kind == "bind":
-            path = safe_path(source)
-            mode = path.stat().st_mode
-            if stat.S_ISSOCK(mode):
-                skipped.append(str(path) + " (socket)")
-                return
-            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
-                raise BackupError(f"Unsupported bind source: {path}")
-            source = str(path)
-        key = (kind, source)
-        destination = f"/source/{kind}/{hashlib.sha256(source.encode()).hexdigest()[:24]}"
-        result[key] = {"type": kind, "source": source, "path": destination}
-        return key
 
-    def destination(value: str) -> str:
-        if not value or not Path(value).is_absolute():
-            raise BackupError("A recorded/runtime mount is missing its absolute container target")
-        # Normalize container paths lexically, never against the host filesystem.
-        return os.path.normpath(value)
+def _mount_destination(value: str) -> str:
+    if not value or not Path(value).is_absolute():
+        raise BackupError("A recorded/runtime mount is missing its absolute container target")
+    # Normalize container paths lexically, never against the host filesystem.
+    return os.path.normpath(value)
 
+
+def _recorded_mounts(model: dict[str, Any], inventory: _BackupSources) -> dict:
+    """Resolve Compose names and file resources into per-service mount mappings."""
     file_sources = {}
     for section in ("configs", "secrets"):
         file_sources[section] = {}
         for name, value in model.get(section, {}).items():
             if not value.get("file"):
                 raise BackupError(f"External {section} require a separate backup")
-            file_sources[section][name] = add("bind", value["file"])
+            file_sources[section][name] = inventory.add("bind", value["file"])
 
     expected_mounts = {}
-    for service_name, service in services.items():
+    for service_name, service in model["services"].items():
         expected = expected_mounts[service_name] = {}
 
         def expect(target: str, key: tuple[str, str] | None) -> None:
             if key is None:
                 return
-            target = destination(target)
+            target = _mount_destination(target)
             if target in expected and expected[target] != key:
                 raise BackupError(f"Conflicting recorded mounts for service: {service_name}")
             expected[target] = key
@@ -335,7 +360,7 @@ def sources(
                 if not definition or not definition.get("name"):
                     raise BackupError(f"Missing recorded volume name: {source}")
                 source = definition["name"]
-            expect(item.get("target", ""), add(kind, source))
+            expect(item.get("target", ""), inventory.add(kind, source))
         for section, prefix in (("configs", "/"), ("secrets", "/run/secrets")):
             for item in service.get(section, []):
                 item = {"source": item} if isinstance(item, str) else item
@@ -344,88 +369,86 @@ def sources(
                     raise BackupError(f"Missing recorded {section} source: {name}")
                 target = os.path.join(prefix, item.get("target") or name)
                 expect(target, file_sources[section][name])
-    # A manually modified container must not silently redirect us to old data.
-    for container in containers or []:
-        service_name = (container.get("Config", {}).get("Labels") or {}).get(
-            "com.docker.compose.service"
-        )
-        if service_name not in services:
-            raise BackupError("Unrecorded Compose service found; reconcile the deployment first")
-        actual = {}
-        for runtime_mount in container.get("Mounts", []):
-            kind = runtime_mount["Type"]
-            if kind == "tmpfs":
+    return expected_mounts
+
+
+def _runtime_mounts(container: dict[str, Any]) -> dict:
+    """Read persistent mount identities without copying tmpfs or Docker sockets."""
+    actual = {}
+    for item in container.get("Mounts", []):
+        kind = item["Type"]
+        if kind == "tmpfs":
+            continue
+        source = item.get("Name" if kind == "volume" else "Source", "")
+        if kind == "bind":
+            source = str(safe_path(source))
+            if Path(source).is_socket():
                 continue
-            source = runtime_mount.get("Name" if kind == "volume" else "Source", "")
-            if kind == "bind":
-                source = str(safe_path(source))
-                if Path(source).is_socket():
-                    continue
-            actual[destination(runtime_mount.get("Destination", ""))] = (kind, source)
-        # ClickHouse declares a disposable log volume in its image. Docker
-        # creates an anonymous volume even when Compose does not specify one.
-        # Verify the declaration and the runtime mount before ignoring it.
-        extras = set(actual) - set(expected_mounts[service_name])
-        if extras and service_name == "cvat_clickhouse":
-            log_target = "/var/log/clickhouse-server"
-            if log_target in extras:
-                image = container.get("Image")
-                if image:
-                    image_info = json.loads(
-                        manager.run(["docker", "image", "inspect", image])
-                    )[0]
-                    declared = (image_info.get("Config") or {}).get("Volumes") or {}
-                    if log_target in declared:
-                        runtime = next(
-                            (
-                                item for item in container.get("Mounts", [])
-                                if destination(item.get("Destination", "")) == log_target
-                            ),
-                            None,
-                        )
-                        if runtime and runtime.get("Type") == "volume" and runtime.get("Name"):
-                            actual.pop(log_target)
-                            skipped.append(
-                                f"{service_name}:{log_target} (image-declared diagnostic volume)"
-                            )
-        if actual != expected_mounts[service_name]:
-            raise BackupError(
-                f"Runtime mounts differ from the recorded Compose configuration: {service_name}"
-            )
+        actual[_mount_destination(item.get("Destination", ""))] = (kind, source)
+    return actual
+
+
+def _disposable_clickhouse_log(
+    manager: Any, container: dict[str, Any], expected: dict, actual: dict
+) -> str | None:
+    """Allow only the image-declared diagnostic volume added by Docker itself."""
+    target = "/var/log/clickhouse-server"
+    if target in expected or target not in actual:
+        return None
+    kind, name = actual[target]
+    image = container.get("Image")
+    if kind != "volume" or not name or not image:
+        return None
+    image_info = json.loads(manager.run(["docker", "image", "inspect", image]))[0]
+    declared = (image_info.get("Config") or {}).get("Volumes") or {}
+    return target if target in declared else None
+
+
+def _collect_extension_sources(manager: Any, saved: dict[str, Any], inventory: _BackupSources) -> None:
+    model = saved["model"]
     # The Nuclio functions and model workers live outside Compose.
-    for item in [*manager.functions(), *manager.registry_workers(model)]:
-        for item_mount in item.get("Mounts", []):
-            kind = item_mount["Type"]
-            add(kind, item_mount.get("Name" if kind == "volume" else "Source", ""))
+    for container in [*manager.functions(), *manager.registry_workers(model)]:
+        for item in container.get("Mounts", []):
+            kind = item["Type"]
+            inventory.add(kind, item.get("Name" if kind == "volume" else "Source", ""))
     for source in saved.get("model_sources", {}).values():
         if source:
-            add("bind", str((manager.root / Path(source).expanduser()).resolve()))
-    if registry := services.get("model-registry"):
+            inventory.add("bind", str((manager.root / Path(source).expanduser()).resolve()))
+    if registry := model["services"].get("model-registry"):
         data = Path(registry["environment"]["MR_HOST_DATA_DIR"])
         # The standard registry home also contains its credentials and config.
         if data.name != "data":
             raise BackupError("Nonstandard registry storage layout needs explicit backup support")
-        add("bind", str(data.parent))
-    for entry in result.values():
-        if entry["type"] == "volume":
-            value = json.loads(manager.run(["docker", "volume", "inspect", entry["source"]]))[0]
-            if value["Driver"] != "local" or value.get("Options"):
-                raise BackupError("Remote/plugin/bind-backed Docker volumes are unsupported")
-            entry["host_path"] = value["Mountpoint"]
-    if not any(x["type"] == "volume" for x in result.values()):
-        raise BackupError("No persistent named volumes found")
-    # Avoid copying nested bind directories twice (also covers registry/data).
-    entries = sorted(result.values(), key=lambda x: (x["type"], x["source"]))
-    entries = [
-        x
-        for x in entries
-        if x["type"] != "bind"
-        or not any(
-            y["type"] == "bind" and Path(y["source"]) in Path(x["source"]).parents for y in entries
-        )
-    ]
-    return entries, sorted(set(skipped))
+        inventory.add("bind", str(data.parent))
 
+
+def sources(
+    manager: Any, saved: dict[str, Any], containers: list[dict[str, Any]] | None = None
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Resolve and verify the recorded deployment before selecting physical data."""
+    _validate_source_services(saved)
+    inventory = _BackupSources()
+    expected = _recorded_mounts(saved["model"], inventory)
+    # A manually modified container must not silently redirect us to old data.
+    for container in containers or []:
+        service = (container.get("Config", {}).get("Labels") or {}).get(
+            "com.docker.compose.service"
+        )
+        if service not in expected:
+            raise BackupError("Unrecorded Compose service found; reconcile the deployment first")
+        actual = _runtime_mounts(container)
+        if service == "cvat_clickhouse":
+            if target := _disposable_clickhouse_log(manager, container, expected[service], actual):
+                actual.pop(target)
+                inventory.skipped.append(
+                    f"{service}:{target} (image-declared diagnostic volume)"
+                )
+        if actual != expected[service]:
+            raise BackupError(
+                f"Runtime mounts differ from the recorded Compose configuration: {service}"
+            )
+    _collect_extension_sources(manager, saved, inventory)
+    return inventory.resolve(manager), sorted(set(inventory.skipped))
 
 def validate_destinations(repo: Repository, entries: list[dict[str, str]]) -> None:
     for entry in entries:

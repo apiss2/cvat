@@ -127,7 +127,7 @@ def purge_deleted(data_dir: Path, model_id: str) -> None:
         purge_deleted_files(data_dir, model_id, actor="registryctl")
 
 
-def main():
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
@@ -182,82 +182,87 @@ def main():
         action="store_true",
         help="With up: recreate the manager container using the currently built image",
     )
-    args = parser.parse_args()
-    if args.force_recreate and args.command != "up":
-        parser.error("--force-recreate is only supported with up")
-    repo = HERE.parents[1] if HERE.parent.name == "components" else HERE
-    requested_home = (args.home or default_home(repo)).expanduser()
+    return parser
+
+
+def initialize(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, repo: Path, requested_home: Path,
+) -> None:
+    """Validate a new deployment before creating storage or writing configuration."""
     home = requested_home.resolve()
-    if args.command == "init":
-        if not args.public_url:
-            parser.error(
-                "init requires --public-url, for example https://cvat.example.internal/model-registry/"
-            )
-        connection = {
-            "MR_AUTH_MODE": args.auth_mode,
-            "MR_CVAT_URL": args.cvat_url.rstrip("/"),
-            "MR_PUBLIC_URL": args.public_url,
-            "MR_CVAT_SESSION_COOKIE": args.cvat_session_cookie,
-            "MR_CVAT_NETWORK": args.cvat_network,
-            "MR_TRAEFIK_ENTRYPOINTS": "web",
-            "MR_TRAEFIK_TLS": "false",
-        }
-        connection_values(connection)
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,30}", args.instance):
-            parser.error("Invalid instance name")
-        if args.gpu_device and not re.fullmatch(
-            r"[0-9]+|GPU-[A-Za-z0-9-]+", args.gpu_device
-        ):
-            parser.error("GPU device must be one numeric ID or GPU UUID")
-        if (home / "registry.env").exists():
-            parser.error(
-                "Already initialized; existing secrets will not be overwritten"
-            )
-        home, config, data = prepare_storage(repo, requested_home)
-        values = {
-            "MR_INSTANCE": args.instance,
-            "MR_HOST_DATA_DIR": str(data),
-            "MR_CONFIG_DIR": str(config),
-            "MR_MANAGER_IMAGE": "cvat-local/model-registry:1.0.0",
-            "MR_GATEWAY_IMAGE": "cvat-local/model-gateway:1.0.0",
-            "MR_WORKER_IMAGE": "cvat-local/onnx-worker:1.0.0-"
-            + ("gpu" if args.gpu_device else "cpu"),
-            "MR_GPU_DEVICE": args.gpu_device,
-            "MR_NAMESPACE": "nuclio",
-            "MR_ATTACH_CVAT": "0" if args.standalone else "1",
-            **connection,
-        }
-        atomic(
-            home / "registry.env",
-            "\n".join(f"{k}={shlex.quote(v)}" for k, v in values.items()) + "\n",
+    if not args.public_url:
+        parser.error(
+            "init requires --public-url, for example https://cvat.example.internal/model-registry/"
         )
+    connection = {
+        "MR_AUTH_MODE": args.auth_mode,
+        "MR_CVAT_URL": args.cvat_url.rstrip("/"),
+        "MR_PUBLIC_URL": args.public_url,
+        "MR_CVAT_SESSION_COOKIE": args.cvat_session_cookie,
+        "MR_CVAT_NETWORK": args.cvat_network,
+        "MR_TRAEFIK_ENTRYPOINTS": "web",
+        "MR_TRAEFIK_TLS": "false",
+    }
+    connection_values(connection)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,30}", args.instance):
+        parser.error("Invalid instance name")
+    if args.gpu_device and not re.fullmatch(
+        r"[0-9]+|GPU-[A-Za-z0-9-]+", args.gpu_device
+    ):
+        parser.error("GPU device must be one numeric ID or GPU UUID")
+    if (home / "registry.env").exists():
+        parser.error(
+            "Already initialized; existing secrets will not be overwritten"
+        )
+    home, config, data = prepare_storage(repo, requested_home)
+    values = {
+        "MR_INSTANCE": args.instance,
+        "MR_HOST_DATA_DIR": str(data),
+        "MR_CONFIG_DIR": str(config),
+        "MR_MANAGER_IMAGE": "cvat-local/model-registry:1.0.0",
+        "MR_GATEWAY_IMAGE": "cvat-local/model-gateway:1.0.0",
+        "MR_WORKER_IMAGE": "cvat-local/onnx-worker:1.0.0-"
+        + ("gpu" if args.gpu_device else "cpu"),
+        "MR_GPU_DEVICE": args.gpu_device,
+        "MR_NAMESPACE": "nuclio",
+        "MR_ATTACH_CVAT": "0" if args.standalone else "1",
+        **connection,
+    }
+    atomic(
+        home / "registry.env",
+        "\n".join(f"{k}={shlex.quote(v)}" for k, v in values.items()) + "\n",
+    )
+    print(
+        f"Configuration: {home / 'registry.env'}\nBrowser URL: {connection['MR_PUBLIC_URL']}"
+    )
+    print(
+        "Open the browser URL while signed in to CVAT. No separate registry login is required. "
+        "Registry administrator rights follow CVAT."
+    )
+    print(
+        "\nCVAT configuration values (merge with the existing .env; do not overwrite it):"
+    )
+    print("CVAT_EXTENSIONS=itgformat,sam2,model_registry")
+    print("MR_HOME=" + shlex.quote(str(home)))
+    print("MR_INSTANCE=" + args.instance)
+    if args.standalone:
         print(
-            f"Configuration: {home / 'registry.env'}\nBrowser URL: {connection['MR_PUBLIC_URL']}"
+            "Set CVAT_MODEL_REGISTRY_URL to the protected HTTPS registry root reachable from the CVAT gateway."
         )
-        print(
-            "Open the browser URL while signed in to CVAT. No separate registry login is required. "
-            "Registry administrator rights follow CVAT."
-        )
-        print(
-            "\nCVAT configuration values (merge with the existing .env; do not overwrite it):"
-        )
-        print("CVAT_EXTENSIONS=itgformat,sam2,model_registry")
-        print("MR_HOME=" + shlex.quote(str(home)))
-        print("MR_INSTANCE=" + args.instance)
-        if args.standalone:
-            print(
-                "Set CVAT_MODEL_REGISTRY_URL to the protected HTTPS registry root reachable from the CVAT gateway."
-            )
-        else:
-            print("CVAT_MODEL_REGISTRY_URL=http://model-registry:8091")
-        print("CVAT_MODEL_GATEWAY_SECRETS_DIR=" + str(config / "secrets"))
-        print(
-            "For a local deployment, set MR_HOME to this directory and use cvatctl "
-            "to build and manage CVAT together with all enabled extensions. "
-            "registryctl is retained for standalone deployments and existing installations."
-        )
-        return
-    file = (args.env_file or home / "registry.env").resolve()
+    else:
+        print("CVAT_MODEL_REGISTRY_URL=http://model-registry:8091")
+    print("CVAT_MODEL_GATEWAY_SECRETS_DIR=" + str(config / "secrets"))
+    print(
+        "For a local deployment, set MR_HOME to this directory and use cvatctl "
+        "to build and manage CVAT together with all enabled extensions. "
+        "registryctl is retained for standalone deployments and existing installations."
+    )
+
+
+def load_deployment(
+    parser: argparse.ArgumentParser, file: Path,
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    """Use recorded settings without inheriting another Compose deployment."""
     values = read_env(file)
     connection_values(values)
     environment = {
@@ -281,98 +286,116 @@ def main():
     ]
     if values.get("MR_ATTACH_CVAT") == "1":
         compose += ["-f", str(HERE / "docker-compose.local.yml")]
-    if args.command == "build":
-        for target in ("gateway", "manager", "worker"):
-            if args.target not in ("all", target):
-                continue
-            image = values[f"MR_{target.upper()}_IMAGE"]
-            if target == "worker":
-                filename = (
-                    "Dockerfile.worker.gpu"
-                    if values.get("MR_GPU_DEVICE")
-                    else "Dockerfile.worker"
-                )
-                command = [
-                    "docker",
-                    "build",
-                    "-f",
-                    str(HERE / filename),
-                    "-t",
-                    image,
-                    str(HERE),
-                ]
-            else:
-                command = [
-                    "docker",
-                    "build",
-                    "-f",
-                    str(HERE / "Dockerfile"),
-                    "--target",
-                    target,
-                    "-t",
-                    image,
-                    str(HERE),
-                ]
-            run(*command, env=environment)
-        return
-    if args.command == "up":
-        run(
-            *compose,
-            "up",
-            "-d",
-            "--no-build",
-            "--wait",
-            "--wait-timeout",
-            "120",
-            *(["--force-recreate"] if args.force_recreate else []),
-            env=environment,
-        )
-    elif args.command == "down":
-        run(*compose, "down", "--timeout", "120", env=environment)
-        # Remove only this registry instance's managed workers, never CVAT/SAM2 containers.
-        ids = subprocess.check_output(
-            [
+    return values, environment, compose
+
+
+def build_images(values: dict[str, str], selected: str, environment: dict[str, str]) -> None:
+    for target in ("gateway", "manager", "worker"):
+        if selected not in ("all", target):
+            continue
+        image = values[f"MR_{target.upper()}_IMAGE"]
+        if target == "worker":
+            filename = (
+                "Dockerfile.worker.gpu"
+                if values.get("MR_GPU_DEVICE")
+                else "Dockerfile.worker"
+            )
+            command = [
                 "docker",
-                "ps",
-                "-aq",
-                "--filter",
-                "label=org.cvat-model-registry.instance=" + values["MR_INSTANCE"],
-            ],
-            env=environment,
-            text=True,
-        ).split()
-        if ids:
-            run("docker", "rm", "-f", *ids, env=environment)
-    elif args.command == "status":
-        run(*compose, "ps", env=environment)
-    elif args.command == "logs":
-        run(*compose, "logs", "--tail", "200", env=environment)
-    elif args.command == "config":
-        run(*compose, "config", env=environment)
-    elif args.command == "purge-deleted":
-        if (
-            not args.confirm
-            or not args.model_id
-            or not re.fullmatch(r"[0-9a-f]{20}", args.model_id)
-        ):
-            parser.error("Purge requires --model-id and --confirm")
+                "build",
+                "-f",
+                str(HERE / filename),
+                "-t",
+                image,
+                str(HERE),
+            ]
+        else:
+            command = [
+                "docker",
+                "build",
+                "-f",
+                str(HERE / "Dockerfile"),
+                "--target",
+                target,
+                "-t",
+                image,
+                str(HERE),
+            ]
+        run(*command, env=environment)
+
+
+def stop_registry(compose: list[str], instance: str, environment: dict[str, str]) -> None:
+    run(*compose, "down", "--timeout", "120", env=environment)
+    # Remove only this registry instance's managed workers, never CVAT/SAM2 containers.
+    ids = subprocess.check_output(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            "label=org.cvat-model-registry.instance=" + instance,
+        ],
+        env=environment,
+        text=True,
+    ).split()
+    if ids:
+        run("docker", "rm", "-f", *ids, env=environment)
+
+
+def purge_stopped_registry(
+    parser: argparse.ArgumentParser, args: argparse.Namespace,
+    values: dict[str, str], environment: dict[str, str],
+) -> None:
+    if (
+        not args.confirm
+        or not args.model_id
+        or not re.fullmatch(r"[0-9a-f]{20}", args.model_id)
+    ):
+        parser.error("Purge requires --model-id and --confirm")
+    # Runtime workers are created through Docker's API and have no Compose label.
+    # Check both owners before removing files that an orphaned worker may still use.
+    for label in (
+        "com.docker.compose.project=mr-" + values["MR_INSTANCE"],
+        "org.cvat-model-registry.instance=" + values["MR_INSTANCE"],
+    ):
         running = subprocess.check_output(
-            [
-                "docker",
-                "ps",
-                "-q",
-                "--filter",
-                "label=com.docker.compose.project=" + project,
-            ],
+            ["docker", "ps", "-q", "--filter", "label=" + label],
             text=True,
             env=environment,
         ).strip()
         if running:
-            parser.error("Stop the registry with registryctl.py down before purging")
-        purge_deleted(Path(values["MR_HOST_DATA_DIR"]), args.model_id)
-        print(
-            "Stored model files removed. The deletion audit and ownership record remain."
+            parser.error("Stop the registry and its workers with registryctl.py down before purging")
+    purge_deleted(Path(values["MR_HOST_DATA_DIR"]), args.model_id)
+    print("Stored model files removed. The deletion audit and ownership record remain.")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argument_parser()
+    args = parser.parse_args(argv)
+    if args.force_recreate and args.command != "up":
+        parser.error("--force-recreate is only supported with up")
+    repo = HERE.parents[1] if HERE.parent.name == "components" else HERE
+    requested_home = (args.home or default_home(repo)).expanduser()
+    if args.command == "init":
+        initialize(parser, args, repo, requested_home)
+        return
+    file = (args.env_file or requested_home / "registry.env").resolve()
+    values, environment, compose = load_deployment(parser, file)
+    if args.command == "build":
+        build_images(values, args.target, environment)
+    elif args.command == "up":
+        run(
+            *compose, "up", "-d", "--no-build", "--wait", "--wait-timeout", "120",
+            *(["--force-recreate"] if args.force_recreate else []),
+            env=environment,
         )
+    elif args.command == "down":
+        stop_registry(compose, values["MR_INSTANCE"], environment)
+    elif args.command == "purge-deleted":
+        purge_stopped_registry(parser, args, values, environment)
+    else:
+        commands = {"status": ("ps",), "logs": ("logs", "--tail", "200"), "config": ("config",)}
+        run(*compose, *commands[args.command], env=environment)
 
 
 if __name__ == "__main__":

@@ -164,7 +164,7 @@ python3 -m pytest -q components/project_annotations/tests
 
 拡張管理のテストは実際のManagerを使用し、Dockerの応答を代替実装に置き換えています。選択の有効化と解除、DICOM取り込みとの独立性、Composeの選択、`config` と `doctor` の表示、共通イメージの `build` と `up --no-build`、記録された構成による `down` と `status`、`check` のイメージ照合を検証します。データ削除、モデル配備、アノテーション処理を配備コマンドから開始しないことも確認します。
 
-通常のCVAT用Python依存、pytest 9以降と `fakeredis` がある環境では、実際のモデルとインポータを使う次の検証も別プロセスで実行できます。DBと作業ファイルは一時領域に作成し、リポジトリのモデルやマイグレーションを変更しません。
+通常のCVAT用Python依存へ[本体接続の試験用依存](../../components/extensions/tests/requirements-backend.txt)を追加した環境では、実際のモデルとインポータを使う次の検証も別プロセスで実行できます。DBと作業ファイルは一時領域に作成し、リポジトリのモデルやマイグレーションを変更しません。
 
 ```sh
 python3 -m pytest -q components/project_annotations/tests/run_orm_tests.py
@@ -177,5 +177,7 @@ GT poolについては複製先の重複検出、複製数の上限、繰り返�
 リクエスト管理は実際のProjectとアップロード用ファイルオブジェクトを使い、`annotation_file` の受け取りと一時保存、モードの解析、コールバック引数、キュー投入前の無効なモード、対象外形式、無効化設定の拒否、自動リトライの無効化、RQ IDの生成と解析を確認します。既存のProject Import datasetが引き続き `dataset_file` と `import_dataset_as_project` を使うことも確認します。これらはHTTPサーバーを経由せず、リクエスト管理クラスを直接実行する検証です。
 
 この検証のOPAの判断と実行中ワーカーの取得は代替実装で、RQメタデータのRedis保存先には `fakeredis` を使用します。配備時の起動シグナル、HTTPアップロード、実Redisワーカー、PostgreSQLの行ロックによる同時更新制御は対象外です。
+
+URLの解決、実際のHTTPリクエストの振り分け、取り込み権限、分割アップロード、キュー投入と既存APIの応答は、別プロセスの[本体接続の試験](../development.md#本体との接続を確認する)で確認します。こちらも実サーバーへのネットワーク接続や実ワーカーの起動は行いません。
 
 実環境ではDockerビルドと再配備後に、通常形式とDICOM形式それぞれで `replace`、`append`、DicomTagとAttributeの維持、同名Task、Tag重複、別Taskの部分成功、同一Taskのロールバック、再取り込みを確認してください。実際のPostgreSQL、OPA、RQ、ブラウザーを接続した検証は、代替実装を使用するテストと区別して記録してください。

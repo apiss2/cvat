@@ -48,6 +48,8 @@
 
 補助コードは各機能の `tests/` 配下に置きます。専用の依存一覧を持つ場合は、各機能の `tests/requirements.txt` に置き、同じ機能の実行時依存を参照できます。共通管理の試験は `components/extensions/tests/` に集め、特定機能の試験用データを共通領域へ混在させません。
 
+同じ機能でも、依存するライブラリの固定版が異なる実行環境は分けます。この場合に限り、同じ `tests/` に `requirements-<環境>.txt` を置き、実行入口と対応付けます。本体接続の `requirements-backend.txt` はCVATサーバーの依存へ追加する一覧です。モデル管理APIとはNumPyの固定版が異なるため、通常の共通管理試験の依存一覧を本体環境へ重ねません。両環境で共通のpytestと計測ツールは `requirements-quality.txt` を参照し、版を一か所で管理します。
+
 実GPU、Redis、モデル管理の実サービスを対象に、明示的に起動する確認スクリプトも各機能の `tests/` に置きます。単体試験と同じ機能を担当し、実行条件だけが異なるためです。通常のテスト収集では実サービスへ接続せず、実行方法と必要条件は各機能の検証手順へ記載します。
 
 テストは実在するソースと設定を参照します。関数の配備設定を生成する機能では、[共通の生成処理](../components/extensions/functions.py)と各機能の `build.json` を使います。使われていない旧YAMLや旧配布物を試験用に再作成しません。
@@ -83,14 +85,29 @@ yarn run type-check
 
 実GPU、実Redis、ブラウザー、バックアップ復元を使う試験は、必要な環境を用意したうえで明示的に起動します。通常の単体試験の成功と実環境での受入確認を区別し、実行結果には対象、条件、実行したコマンド、スキップと未実施事項を記載します。結果をこのページや機能の文書へ累積しません。
 
+## 本体との接続を確認する
+
+APIの入口、権限、形式の登録、応答項目など本体への接続を変更した場合は、[本体接続の試験](../components/extensions/tests/run_core_tests.py)も実行します。実際のCVATモジュールを読み込み、URLの解決からリクエストの振り分け、ファイルの受け取り、バックグラウンド処理への投入までを確認します。
+
+[上流の開発環境](../site/content/en/docs/contributing/development-environment.md)で案内するCVATサーバーのPython依存を準備し、その仮想環境へ[本体接続の試験用依存](../components/extensions/tests/requirements-backend.txt)を追加します。軽量な単体試験と混ぜず、専用のPythonプロセスで実行してください。
+
+```bash
+python -m pip install -r components/extensions/tests/requirements-backend.txt
+python -m pytest -q components/extensions/tests/run_core_tests.py
+```
+
+この試験は一時領域とSQLiteを使用し、リポジトリのモデルやマイグレーションを変更しません。認可サービス（OPA）の判断、Redisとワーカー間のロックは代替実装を使います。認可へ渡す操作範囲と対象、拒否時にファイルやキューを変更しないことを検証しますが、本番の認可ルールや並行処理を保証する試験ではありません。実際のPostgreSQL、Redis、OPAと配備後の確認は、各機能の受入確認として実施します。
+
+隔離したCVAT環境の準備は、[共通の補助コード](../components/extensions/tests/cvat_backend.py)へまとめています。アノテーション保存の[モデルを使う試験](../components/project_annotations/tests/run_orm_tests.py)もこれを再利用し、実行はそれぞれ別プロセスにします。
+
 ## 独自コードの品質を計測する
 
 Pythonの計測は `cvatctl quality` で行います。カバレッジはテストが実行した行と分岐の割合、循環的複雑度は関数内の独立した処理経路の数を表します。CRAPスコアは複雑度と未実行の割合を組み合わせ、変更前に詳しく確認する関数を探すために使用します。
 
-計測には [Coverage.py](https://coverage.readthedocs.io/en/7.13.5/) と [Radon](https://radon.readthedocs.io/en/latest/) を使用します。集計に使う環境は[共通管理の試験用依存](../components/extensions/tests/requirements.txt)から準備します。別のPython環境で試験を動かす場合は、その環境にも同じ版のCoverage.pyを導入します。推論用のPythonやPyTorchを、集計用の環境へ揃える必要はありません。
+計測には [Coverage.py](https://coverage.readthedocs.io/en/7.13.5/) と [Radon](https://radon.readthedocs.io/en/latest/) を使用します。集計に使う環境は[計測用の共通依存](../components/extensions/tests/requirements-quality.txt)から準備します。各機能の試験用依存は別途必要です。`extensions` を動かす環境へは[通常の共通管理試験用依存](../components/extensions/tests/requirements.txt)を入れ、本体用の環境と分けます。別のPython環境で試験を動かす場合は、その環境にも同じ版のCoverage.pyを導入します。推論用のPythonやPyTorchを、集計用の環境へ揃える必要はありません。
 
 ```bash
-python -m pip install -r components/extensions/tests/requirements.txt
+python -m pip install -r components/extensions/tests/requirements-quality.txt
 # 別の試験環境では、その環境のPythonで計測用ライブラリを追加します。
 /srv/cvat-test-envs/sam2/bin/python -m pip install coverage==7.13.5
 ```
@@ -122,11 +139,11 @@ bash components/extensions/cvatctl quality run --suite sam2 \
 bash components/extensions/cvatctl quality report --output "$CVAT_QUALITY_DIR"
 ```
 
-試験名は `extensions`、`itgformat`、`filtered_export`、`task_guide`、`dicom_import`、`project_annotations`、`model_registry`、`sam2`、`sam31`、`ultrasam` です。実際のCVATモデルを使う `project_orm` は、必要なサーバー依存を持つ別環境で追加実行します。GPU、実Redis、Dockerの確認は、各機能の手順で明示的に実行します。
+試験名は `extensions`、`itgformat`、`filtered_export`、`task_guide`、`dicom_import`、`project_annotations`、`model_registry`、`sam2`、`sam31`、`ultrasam`、`core_integration` です。本体との接続を確認する `core_integration` も、全体の品質判定に必要な標準の試験に含めます。CVATサーバーのPython依存を持つ別環境で、`--python` を指定して実行します。アノテーション保存をさらに確認する `project_orm` は、同じ依存環境で追加実行できます。GPU、実Redis、Dockerの確認は、各機能の手順で明示的に実行します。
 
 集計結果には、使用したソース、試験、Pythonとライブラリの版、失敗と未実施を残します。異なるソースの計測結果は混合しません。未実施の機能がある集計は部分的な結果として扱い、全機能を確認した値とは比較しません。出力するJSON、CSV、HTMLと実行ログを、恒久文書としてコミットしません。
 
-計測は元ソースの実行位置を使います。SAM3.1などの試験が配備用に一時ディレクトリへコピーして実行したコードは、元ソースへ自動的に合算しません。同じ名前のファイルという理由だけで対応付けると別実装を混同するためです。この場合、元ソースの未実行行は、機能自体が未検証という意味とは限りません。
+通常の動作試験は元ソースを読み込み、配備用コピーの構成確認とは分けます。例えばSAM3.1は元ソースに対して動作を検証し、別の試験で配備コピーの内容と読み込みを確認します。一時ディレクトリにある同名ファイルの実行結果を元ソースへ自動的に合算しません。別実装を混同せず、どのソースを実行した数値か確認できるようにするためです。
 
 ### 変更時の判断に使う
 

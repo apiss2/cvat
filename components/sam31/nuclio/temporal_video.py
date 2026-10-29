@@ -173,13 +173,14 @@ class TemporalVideo:
             num_frames=index + 1, track_in_reverse=False, run_mem_encoder=True,
             prev_sam_mask_logits=None, multiplex_state=multiplex, objects_to_interact=None,
         )
-        logits = current["pred_masks"]
-        if (logits.ndim != 4 or tuple(logits.shape[:2]) != (count, 1)
+        logits = current.get("pred_masks")
+        if (not isinstance(logits, torch.Tensor) or logits.ndim != 4
+                or tuple(logits.shape[:2]) != (count, 1) or min(logits.shape[2:]) < 1
                 or not torch.isfinite(logits).all().item()):
             raise RuntimeError("SAM3.1 returned invalid mask logits")
         video_logits = F.interpolate(logits.float(), (image.height, image.width), mode="bilinear", align_corners=False)
         result = (video_logits[:, 0] > 0).detach().cpu().numpy()
-        memory = {field: current[field] for field in MEMORY_FIELDS}
+        memory = {field: current.get(field) for field in MEMORY_FIELDS}
         if any(value is None for value in memory.values()) or not memory["maskmem_pos_enc"]:
             raise RuntimeError("SAM3.1 did not produce temporal memory")
         # Only the final position encoding is read by the pinned forward contract.

@@ -21,17 +21,26 @@ from components.extensions import functions
 
 
 @pytest.fixture
-def runtime(tmp_path, monkeypatch):
+def runtime(sam31_runtime):
+    return sam31_runtime
+
+
+def test_staged_runtime_preserves_source_and_imports(tmp_path, monkeypatch):
     functions.stage_sources(tmp_path, "sam31", ROOT)
     names = ("protocol", "geometry", "temporal_video", "state_codec", "redis_store", "tracker")
     monkeypatch.syspath_prepend(str(tmp_path))
-    modules = {}
     for name in names:
+        directory = "serverless/pytorch/facebookresearch/sam2/nuclio" if name in (
+            "protocol", "geometry", "redis_store"
+        ) else "components/sam31/nuclio"
+        assert (tmp_path / f"{name}.py").read_bytes() == (ROOT / directory / f"{name}.py").read_bytes()
         monkeypatch.delitem(sys.modules, name, raising=False)
-        modules[name] = importlib.import_module(name)
-    yield SimpleNamespace(**modules)
-    for name in names:
-        sys.modules.pop(name, None)
+    try:
+        for name in names:
+            assert Path(importlib.import_module(name).__file__).parent == tmp_path
+    finally:
+        for name in names:
+            sys.modules.pop(name, None)
 
 
 class FakeMultiplex:
@@ -93,6 +102,44 @@ def test_one_multiplex_step_per_frame(video, count):
     state, result = video.advance(image, state)
     assert video.model.calls == [0, 1] and state.count == len(result) == count
     assert all(mask.shape == (20, 24) for mask in result)
+
+
+def test_invalid_multiplex_controller_never_runs_model(video, monkeypatch):
+    monkeypatch.setattr(video.model.multiplex_controller, "get_state", lambda **_: object())
+    with pytest.raises(RuntimeError, match="multiplex controller"):
+        initial(video)
+    assert video.model.calls == []
+
+
+@pytest.mark.parametrize("logits", [
+    None, torch.ones(2, 8, 8), torch.ones(1, 1, 8, 8), torch.ones(2, 2, 8, 8),
+    torch.ones(2, 1, 0, 8), torch.full((2, 1, 8, 8), float("nan")),
+    torch.full((2, 1, 8, 8), float("inf")),
+])
+def test_invalid_tracking_logits_are_rejected(video, monkeypatch, logits):
+    run = video.model.track_step
+    def corrupted(**kwargs):
+        return {**run(**kwargs), "pred_masks": logits}
+    monkeypatch.setattr(video.model, "track_step", corrupted)
+    with pytest.raises(RuntimeError, match="invalid mask logits"):
+        initial(video)
+
+
+@pytest.mark.parametrize("change", ["missing", "none", "empty_positions"])
+def test_incomplete_model_memory_is_rejected(video, monkeypatch, change):
+    run = video.model.track_step
+    def corrupted(**kwargs):
+        result = run(**kwargs)
+        if change == "missing":
+            result.pop("image_features")
+        elif change == "none":
+            result["obj_ptr"] = None
+        else:
+            result["maskmem_pos_enc"] = []
+        return result
+    monkeypatch.setattr(video.model, "track_step", corrupted)
+    with pytest.raises(RuntimeError, match="did not produce temporal memory"):
+        initial(video)
 
 
 def test_pruning_keeps_seed_six_masks_fifteen_pointers(video):

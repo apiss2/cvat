@@ -160,7 +160,7 @@ class RequestSerializer(serializers.Serializer):
             and (self._base_rq_job_meta.status or "").startswith(("DICOM:", "WARNING: DICOM:"))
         ):
             # The DICOM plugin needs final counts for its completion notification.
-            # Import request IDs have no format field; other finished messages stay unchanged.
+            # Import requests omit format in their IDs; other finished messages stay unchanged.
             message = self._base_rq_job_meta.status or message
         elif RQJobStatus.FAILED == rq_job_status:
 

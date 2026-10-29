@@ -28,13 +28,14 @@ SUITES = {
     )
 }
 SUITES["project_orm"] = ["components/project_annotations/tests/run_orm_tests.py"]
+SUITES["core_integration"] = ["components/extensions/tests/run_core_tests.py"]
 OPTIONAL_SUITES = {"project_orm"}
 TOOL_VERSIONS = {"coverage": "7.13.5", "radon": "6.0.1"}
 EXCLUDED_PARTS = {"tests", "examples", "migrations", "node_modules"}
 JAVASCRIPT_SUFFIXES = {".ts", ".tsx", ".js", ".jsx", ".cjs", ".mjs"}
 NOTES = [
     "Only Python is measured. UI TypeScript/JavaScript needs source-map-aware instrumentation.",
-    "SAM3.1 tests also execute temporary source copies; their hits are not assigned to original files.",
+    "Behavior tests run original source; deployment-copy checks are separate and do not add source coverage.",
     "Mocked dependencies and statement coverage do not prove assertion quality or deployed behavior.",
     "CRAP uses each function's statement coverage; branch coverage is reported separately.",
     "Raw coverage JSON includes full upstream file context. Use metrics.json for extension and changed-line totals.",

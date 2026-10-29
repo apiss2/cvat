@@ -1,0 +1,4 @@
+# Add these test tools to an environment with CVAT's server dependencies.
+# Keep the server's numerical dependencies separate from the registry API.
+-r requirements-quality.txt
+fakeredis==2.40.0

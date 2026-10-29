@@ -561,7 +561,7 @@ class ProjectViewSet(
         parser_classes=_UPLOAD_PARSER_CLASSES,
     )
     def annotations(self, request: ExtendedRequest, pk: int):
-        if request.method == "GET":
+        if request.method in ("GET", "HEAD"):
             return get_410_response_for_export_api(
                 "/api/projects/id/dataset/export?save_images=False"
             )

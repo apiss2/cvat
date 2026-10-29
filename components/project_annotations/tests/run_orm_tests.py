@@ -20,7 +20,6 @@ import sys
 import tempfile
 import zipfile
 from contextlib import ExitStack
-from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -30,83 +29,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-_RUNTIME = tempfile.TemporaryDirectory(prefix="cvat-project-annotations-orm-")
+from components.extensions.tests.cvat_backend import configure_cvat
 
-
-def configure():
-    os.environ["CVAT_BASE_DIR"] = _RUNTIME.name
-    os.environ["DJANGO_SECRET_KEY"] = "isolated-orm-test-only"
-    os.environ["CVAT_PROJECT_ANNOTATIONS_ENABLED"] = "1"
-    from django.apps import AppConfig
-    from django.conf import settings
-
-    base = import_module("cvat.settings.base")
-    defaults = {name: value for name, value in vars(base).items() if name.isupper()}
-    # Model-only app registration avoids startup dependencies on external
-    # deployment services. Every model and annotation method is unmodified.
-    names = (
-        "django.contrib.auth",
-        "django.contrib.contenttypes",
-        "django.contrib.sessions",
-        "django.contrib.sites",
-        "rest_framework.authtoken",
-        "rest_framework_api_key",
-        "allauth",
-        "allauth.account",
-        "allauth.socialaccount",
-        "cvat.apps.iam",
-        "cvat.apps.engine",
-        "cvat.apps.organizations",
-        "cvat.apps.dataset_manager",
-        "cvat.apps.webhooks",
-        "cvat.apps.access_tokens",
-        "cvat.apps.quality_control",
-        "cvat.apps.consensus",
-    )
-    defaults.update(
-        INSTALLED_APPS=[],
-        DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}},
-        LOGGING_CONFIG=None,
-        AUTHENTICATION_BACKENDS=["django.contrib.auth.backends.ModelBackend"],
-        MIDDLEWARE=[],
-        PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"],
-        IGNORE_TMP_FOLDER_CLEANUP_ERRORS=False,
-    )
-    for name in (
-        "DATA_ROOT",
-        "MEDIA_DATA_ROOT",
-        "CACHE_ROOT",
-        "EXPORT_CACHE_ROOT",
-        "JOBS_ROOT",
-        "TASKS_ROOT",
-        "PROJECTS_ROOT",
-        "SHARE_ROOT",
-        "LOGS_ROOT",
-        "MIGRATIONS_LOGS_ROOT",
-        "CLOUD_STORAGE_ROOT",
-        "TMP_FILES_ROOT",
-        "ASSETS_ROOT",
-    ):
-        defaults[name] = Path(_RUNTIME.name) / name.lower()
-        defaults[name].mkdir(parents=True, exist_ok=True)
-    settings.configure(**defaults)
-    engine_defaults = import_module("cvat.apps.engine.default_settings")
-    for name, value in vars(engine_defaults).items():
-        if name.isupper():
-            setattr(settings, name, value)
-    settings.INSTALLED_APPS = [AppConfig(name, import_module(name)) for name in names]
-    import django
-
-    django.setup()
-    from django.apps import apps
-    from django.db import connection
-
-    with connection.schema_editor() as editor:
-        for model in apps.get_models():
-            editor.create_model(model)
-
-
-configure()
+_RUNTIME = configure_cvat(prefix="cvat-project-annotations-orm-")
 
 import fakeredis
 import rq

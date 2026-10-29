@@ -1650,3 +1650,197 @@ def test_missing_ultrasam_source_fails_before_build_or_start(mgr, file, error, m
         "build" in call or "up" in call or "create" in call or "deploy" in call
         for call in fresh.calls
     )
+
+
+def invoke_cli(manager, monkeypatch, *arguments):
+    monkeypatch.setattr(ops, "Manager", lambda *args: manager)
+    monkeypatch.setattr(ops.sys, "argv", [
+        "cvatctl", "--env-file", str(manager.env_file),
+        "--state-dir", str(manager.state), *arguments,
+    ])
+    ops.main()
+
+
+@pytest.mark.parametrize("arguments", [
+    ["build", "--no-build"], ["status", "--model-id", "a-model"], ["status", "--confirm"],
+])
+def test_cli_invalid_options_fail_before_loading_deployment(monkeypatch, arguments):
+    monkeypatch.setattr(ops, "Manager", lambda *args: pytest.fail("Must reject invalid options first"))
+    monkeypatch.setattr(ops.sys, "argv", ["cvatctl", *arguments])
+    with pytest.raises(SystemExit) as exc:
+        ops.main()
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("arguments,method,expected_args,expected_kwargs", [
+    (["build"], "build", (), {}),
+    (["up"], "up", (), {"no_build": False}),
+    (["up", "--no-build"], "up", (), {"no_build": True}),
+    (["down"], "down", (), {}),
+    (["check"], "check", (), {}),
+    (["purge-deleted", "--model-id", "deleted-model", "--confirm"],
+     "purge_deleted", ("deleted-model",), {"confirm": True}),
+])
+def test_cli_commands_hold_shared_deployment_lock(
+    mgr, monkeypatch, arguments, method, expected_args, expected_kwargs
+):
+    calls = []
+
+    def action(*args, **kwargs):
+        with (mgr.state / "operation.lock").open("a") as competing:
+            with pytest.raises(BlockingIOError):
+                ops.fcntl.flock(competing, ops.fcntl.LOCK_EX | ops.fcntl.LOCK_NB)
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(mgr, method, action)
+    invoke_cli(mgr, monkeypatch, *arguments)
+    assert calls == [(expected_args, expected_kwargs)]
+    with (mgr.state / "operation.lock").open("a") as unlocked:
+        ops.fcntl.flock(unlocked, ops.fcntl.LOCK_EX | ops.fcntl.LOCK_NB)
+
+
+def test_cli_releases_lock_after_command_failure(mgr, monkeypatch):
+    def fail():
+        raise ops.OperationError("injected command failure")
+
+    monkeypatch.setattr(mgr, "build", fail)
+    with pytest.raises(ops.OperationError, match="injected command failure"):
+        invoke_cli(mgr, monkeypatch, "build")
+    with (mgr.state / "operation.lock").open("a") as unlocked:
+        ops.fcntl.flock(unlocked, ops.fcntl.LOCK_EX | ops.fcntl.LOCK_NB)
+
+
+def test_cli_rejects_another_operation_before_runtime_changes(mgr, monkeypatch):
+    with (mgr.state / "operation.lock").open("a") as existing:
+        ops.fcntl.flock(existing, ops.fcntl.LOCK_EX | ops.fcntl.LOCK_NB)
+        with pytest.raises(ops.OperationError, match="Another operation"):
+            invoke_cli(mgr, monkeypatch, "build")
+    assert mgr.calls == []
+
+
+def test_cli_rejects_public_state_directory(mgr, monkeypatch):
+    mgr.state.chmod(0o755)
+    with pytest.raises(ops.OperationError, match="Runtime state must be private"):
+        invoke_cli(mgr, monkeypatch, "build")
+    assert mgr.calls == []
+
+
+def test_cli_rejects_state_inside_checkout(mgr, monkeypatch):
+    monkeypatch.setattr(ops, "ROOT", mgr.root)
+    mgr.state = mgr.root / "state"
+    with pytest.raises(ops.OperationError, match="outside the Git checkout"):
+        invoke_cli(mgr, monkeypatch, "build")
+    assert not mgr.state.exists() and mgr.calls == []
+
+
+def test_cli_pull_excludes_images_built_from_this_checkout(mgr, monkeypatch):
+    invoke_cli(mgr, monkeypatch, "pull")
+    pull = next(call for call in mgr.calls if "pull" in call)
+    selected = pull[pull.index("pull") + 1:]
+    assert selected == ["sam2_redis", "nuclio", "traefik"]
+    assert "cvat_server" not in selected and "cvat_ui" not in selected
+
+
+def test_cli_status_uses_recorded_compose_without_loading_changed_settings(mgr, monkeypatch, capsys):
+    mgr.freeze(mgr.model)
+    mgr.calls.clear()
+    monkeypatch.setattr(mgr, "configuration", lambda: pytest.fail("Status must use frozen Compose"))
+    monkeypatch.setattr(mgr, "functions", lambda: [
+        {"Name": "/test-tracker", "State": {"Status": "exited"}}
+    ])
+    invoke_cli(mgr, monkeypatch, "status")
+    command = next(call for call in mgr.calls if "ps" in call)
+    assert str(mgr.state / "active.compose.json") in command
+    assert command[-2:] == ["ps", "--all"]
+    assert "/test-tracker exited" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "selected,remote", [("", False), ("sam2,model_registry", False), ("model_registry", True)],
+)
+@pytest.mark.parametrize("command", ["config", "doctor"])
+def test_cli_summary_reports_only_selected_services(mgr, monkeypatch, capsys, selected, remote, command):
+    extra = ""
+    if remote:
+        extra = (
+            "CVAT_MODEL_REGISTRY_URL=https://inference.example.internal\n"
+            "CVAT_MODEL_GATEWAY_SECRETS_DIR=/srv/gateway-secrets\n"
+        )
+    write_env(mgr.env_file, f"CVAT_EXTENSIONS={selected}\n" + extra)
+    fresh = Fake(mgr.root, mgr.env_file, mgr.state)
+    invoke_cli(fresh, monkeypatch, command)
+    output = capsys.readouterr().out
+    summary = json.loads(output)
+    assert summary["extensions"] == list(fresh.extensions)
+    assert ("sam2_images" in summary) == ("sam2" in fresh.extensions)
+    assert ("model_gateway_image" in summary) == ("model_registry" in fresh.extensions)
+    assert ("model_registry_home" in summary) == ("model_registry" in fresh.extensions and not remote)
+    if "model_registry_home" in summary:
+        registry = fresh.model["services"]["model-registry"]
+        assert summary["model_worker_image"] == registry["environment"]["MR_WORKER_IMAGE"]
+    assert ("docker_daemon" in summary) == (command == "doctor")
+    assert ("nuclio_version" in summary) == (command == "doctor" and "sam2" in fresh.extensions)
+    assert fresh.values["SAM2_REDIS_PASSWORD"] not in output
+    assert not any("build" in call or "up" in call or "deploy" in call for call in fresh.calls)
+
+
+@pytest.mark.parametrize("selected", ["", "model_registry"])
+def test_cli_init_creates_private_settings_and_only_selected_storage(tmp_path, monkeypatch, selected):
+    root = tmp_path / "repo"
+    template = root / "components/extensions/config.example.env"
+    template.parent.mkdir(parents=True)
+    home = tmp_path / "model-registry"
+    template.write_text(
+        f"CVAT_EXTENSIONS={selected}\nMR_HOME={home}\nMR_PUBLIC_URL=http://localhost:8080/model-registry/\n"
+        "SAM2_REDIS_PASSWORD=GENERATE_ON_INIT\nSAM31_REDIS_PASSWORD=GENERATE_SAM31_ON_INIT\n"
+    )
+    monkeypatch.setattr(ops, "ROOT", root)
+    prepared = []
+    monkeypatch.setattr(ops, "prepare_storage", lambda root, home: prepared.append((root, home)))
+    monkeypatch.setattr(ops, "Manager", lambda *args: pytest.fail("Init must not load runtime services"))
+    env_file = root / ".env"
+    state = tmp_path / "state"
+    monkeypatch.setattr(ops.sys, "argv", [
+        "cvatctl", "--env-file", str(env_file), "--state-dir", str(state), "init"
+    ])
+    ops.main()
+    values = ops.load_env(env_file)
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    assert len(values["SAM2_REDIS_PASSWORD"]) == len(values["SAM31_REDIS_PASSWORD"]) == 64
+    assert values["SAM2_REDIS_PASSWORD"] != values["SAM31_REDIS_PASSWORD"]
+    assert prepared == ([(root, home)] if selected == "model_registry" else [])
+    assert not state.exists()
+
+
+def test_cli_init_refuses_tracked_config_location(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    monkeypatch.setattr(ops, "ROOT", root)
+    env_file = root / "config.env"
+    monkeypatch.setattr(ops.sys, "argv", [
+        "cvatctl", "--env-file", str(env_file), "--state-dir", str(tmp_path / "state"), "init"
+    ])
+    with pytest.raises(ops.OperationError, match="ignored root .env"):
+        ops.main()
+    assert not env_file.exists()
+
+
+def test_cli_manual_deploy_requires_selected_feature_and_recorded_configuration(mgr, monkeypatch):
+    with pytest.raises(ops.OperationError, match="Add ultrasam"):
+        invoke_cli(mgr, monkeypatch, "deploy-ultrasam")
+    assert mgr.calls == []
+    with pytest.raises(ops.OperationError, match="down/up"):
+        invoke_cli(mgr, monkeypatch, "deploy-sam2")
+    assert not any("up" in call or "deploy" in call for call in mgr.calls)
+
+
+def test_cli_sam2_redeploy_waits_for_redis_and_keeps_recorded_images(mgr, monkeypatch):
+    mgr.up(no_build=True)
+    mgr.calls.clear()
+    invoke_cli(mgr, monkeypatch, "deploy-sam2", "tracker")
+    start = next(index for index, call in enumerate(mgr.calls) if "up" in call)
+    deploy = next(index for index, call in enumerate(mgr.calls) if call[:2] == ["nuctl", "deploy"])
+    assert "sam2_redis" in mgr.calls[start] and "--wait" in mgr.calls[start]
+    assert start < deploy
+    assert mgr.rendered[-1]["metadata"]["name"] == "pth-sam2-tracker"
+    saved = ops.read_json(mgr.state / "active.json")
+    assert set(mgr.function_images("1.16.3").values()) <= set(saved["images"])

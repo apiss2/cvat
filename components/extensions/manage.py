@@ -1320,7 +1320,8 @@ def default_state(env_file: Path) -> Path:
     )
 
 
-def main() -> None:
+def parse_arguments() -> argparse.Namespace:
+    """Validate command-specific options before loading deployment settings."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, default=ROOT / ".env")
     parser.add_argument("--state-dir", type=Path)
@@ -1365,6 +1366,188 @@ def main() -> None:
         parser.error("--no-build is only supported with up")
     if (args.model_id or args.confirm) and args.command != "purge-deleted":
         parser.error("--model-id and --confirm are only supported with purge-deleted")
+    return args
+
+
+def initialize_environment(env_file: Path) -> None:
+    """Create private settings without replacing an existing deployment."""
+    if env_file.exists():
+        raise OperationError(
+            f"{env_file} already exists. Merge config.example.env manually; do not replace existing settings."
+        )
+    if ROOT in env_file.parents and env_file != ROOT / ".env":
+        raise OperationError(
+            "Use the ignored root .env, or store the configuration outside the checkout"
+        )
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    text = (
+        (ROOT / "components/extensions/config.example.env")
+        .read_text()
+        .replace("GENERATE_ON_INIT", secrets.token_hex(32))
+        .replace("GENERATE_SAM31_ON_INIT", secrets.token_hex(32))
+    )
+    fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        stream.write(text)
+    initial = settings(env_file)
+    if "model_registry" in enabled_extensions(initial) and local_registry(initial):
+        prepare_storage(ROOT, Path(initial["MR_HOME"]))
+    print(
+        f"Created {env_file}. Review CVAT_HOST and existing volume/network names before starting."
+    )
+    return
+
+
+def configuration_summary(manager: Manager, *, doctor: bool = False) -> dict[str, Any]:
+    """Describe only selected features; probe runtime services for doctor."""
+    model = manager.configuration()
+    summary = {
+        "extensions": manager.extensions,
+        "client_plugins": manager.values["CVAT_CLIENT_PLUGINS"].split(":")
+        if manager.values["CVAT_CLIENT_PLUGINS"] else [],
+        "project": manager.project,
+        "network": manager.values["CVAT_NETWORK_NAME"],
+        "backend_image": model["services"]["cvat_server"]["image"],
+        "ui_image": model["services"]["cvat_ui"]["image"],
+        "backend_services": [
+            s
+            for s in model["services"]
+            if s == "cvat_server" or s.startswith("cvat_worker_")
+        ],
+        "state_directory": str(manager.state),
+    }
+    if "sam2" in manager.extensions:
+        summary["sam2_redis_volume"] = manager.values["SAM2_REDIS_VOLUME"]
+        summary["sam2_model"] = manager.values["SAM2_MODEL"]
+        summary["sam2_checkpoint_source"] = manager.values["SAM2_CHECKPOINT_HOST"]
+    if "sam31" in manager.extensions:
+        summary["sam31_redis_volume"] = manager.values["SAM31_REDIS_VOLUME"]
+        summary["sam31_checkpoint_source"] = manager.values["SAM31_CHECKPOINT_HOST"]
+        summary["sam31_gpu_device"] = manager.values["SAM31_GPU_DEVICE"]
+    if "ultrasam" in manager.extensions:
+        summary["ultrasam_gpu_device"] = manager.values["ULTRASAM_GPU_DEVICE"]
+    if any(feature in FUNCTIONS for feature in manager.extensions):
+        dashboard_image = model["services"]["nuclio"]["image"]
+        version = re.search(r":(\d+\.\d+\.\d+)(?:-|$)", dashboard_image)
+        if not version:
+            raise OperationError(
+                "Cannot determine the Nuclio version from its image tag"
+            )
+        for feature in manager.extensions:
+            if feature in FUNCTIONS:
+                summary[feature + "_images"] = manager.function_images(
+                    version[1], feature
+                )
+    if "model_registry" in manager.extensions:
+        summary["model_gateway_image"] = model["services"]["model-gateway"][
+            "image"
+        ]
+        if registry := model["services"].get("model-registry"):
+            summary["model_registry_home"] = manager.values["MR_HOME"]
+            summary["model_registry_image"] = registry["image"]
+            summary["model_worker_image"] = registry["environment"][
+                "MR_WORKER_IMAGE"
+            ]
+    if doctor:
+        if any(
+            feature in FUNCTIONS for feature in manager.extensions
+        ):
+            summary["nuclio_version"] = manager.nuctl_check(model)
+        summary["docker_daemon"] = manager.identity()["daemon"]
+    return summary
+
+
+def show_status(manager: Manager) -> None:
+    """Prefer the recorded deployment when reporting running containers."""
+    if saved := read_json(manager.state / "active.json"):
+        manager.assert_identity(saved)
+        manager.run(manager.compose("ps", "--all", frozen=True), stream=True)
+    else:
+        manager.configuration()
+        manager.run(manager.compose("ps", "--all"), stream=True)
+    for item in manager.functions():
+        print(item["Name"], item["State"]["Status"])
+
+
+def redeploy_functions(manager: Manager, feature: str, mode: str) -> None:
+    """Redeploy one enabled family after validating the recorded configuration."""
+    if feature not in manager.extensions:
+        raise OperationError(
+            f"Add {feature} to CVAT_EXTENSIONS before deploying it"
+        )
+    model = manager.configuration()
+    saved = read_json(manager.state / "active.json")
+    if not saved or not manager.matches_configuration(saved, model):
+        raise OperationError(
+            "Run down/up for the current source and configuration before manual redeployment"
+        )
+    manager.assert_identity(saved)
+    version = manager.nuctl_check(model)
+    if feature in ("sam2", "sam31"):
+        gpu_functions.local_checkpoint(manager.values, manager.root, verify_file=True, feature=feature)
+    manager.ensure_network()
+    if feature in ("sam2", "sam31"):
+        manager.ensure_volume(feature)
+    manager.run(
+        manager.compose(
+            "up",
+            "-d",
+            "--no-build",
+            "--wait",
+            "--wait-timeout",
+            "180",
+            *([feature + "_redis"] if feature in ("sam2", "sam31") else []),
+            "nuclio",
+        ),
+        stream=True,
+    )
+    manager.deploy(model, mode, force=True, feature=feature)
+    images = manager.local_image_ids(model)
+    for image in manager.function_images(version).values():
+        images[image] = manager.run(
+            [
+                "docker",
+                "image",
+                "inspect",
+                image,
+                "--format",
+                "{{.Id}}",
+            ]
+        ).strip()
+    manager.freeze(model, images)
+
+
+def run_command(manager: Manager, args: argparse.Namespace) -> None:
+    """Execute a validated command while the caller holds the deployment lock."""
+    if args.command in ("config", "doctor"):
+        print(json.dumps(configuration_summary(manager, doctor=args.command == "doctor"), indent=2))
+        return
+    if args.command == "build":
+        manager.build()
+    elif args.command == "pull":
+        model = manager.configuration()
+        services = [
+            name
+            for name, value in model["services"].items()
+            if value.get("pull_policy") != "never"
+        ]
+        manager.run(manager.compose("pull", *services), stream=True)
+    elif args.command == "up":
+        manager.up(no_build=args.no_build)
+    elif args.command == "down":
+        manager.down()
+    elif args.command == "check":
+        manager.check()
+    elif args.command == "purge-deleted":
+        manager.purge_deleted(args.model_id, confirm=args.confirm)
+    elif args.command == "status":
+        show_status(manager)
+    elif args.command in ("deploy-sam2", "deploy-ultrasam", "deploy-sam31"):
+        redeploy_functions(manager, args.command.removeprefix("deploy-"), args.mode)
+
+
+def main() -> None:
+    args = parse_arguments()
     env_file = args.env_file.expanduser().resolve()
     state = (args.state_dir or default_state(env_file)).expanduser().resolve()
     if state == ROOT or ROOT in state.parents:
@@ -1372,30 +1555,7 @@ def main() -> None:
             "Runtime state must be outside the Git checkout and Docker build context"
         )
     if args.command == "init":
-        if env_file.exists():
-            raise OperationError(
-                f"{env_file} already exists. Merge config.example.env manually; do not replace existing settings."
-            )
-        if ROOT in env_file.parents and env_file != ROOT / ".env":
-            raise OperationError(
-                "Use the ignored root .env, or store the configuration outside the checkout"
-            )
-        env_file.parent.mkdir(parents=True, exist_ok=True)
-        text = (
-            (ROOT / "components/extensions/config.example.env")
-            .read_text()
-            .replace("GENERATE_ON_INIT", secrets.token_hex(32))
-            .replace("GENERATE_SAM31_ON_INIT", secrets.token_hex(32))
-        )
-        fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as stream:
-            stream.write(text)
-        initial = settings(env_file)
-        if "model_registry" in enabled_extensions(initial) and local_registry(initial):
-            prepare_storage(ROOT, Path(initial["MR_HOME"]))
-        print(
-            f"Created {env_file}. Review CVAT_HOST and existing volume/network names before starting."
-        )
+        initialize_environment(env_file)
         return
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     if state.stat().st_mode & 0o077:
@@ -1407,137 +1567,7 @@ def main() -> None:
             raise OperationError(
                 "Another operation is using this deployment state"
             ) from exc
-        manager = Manager(ROOT, env_file, state)
-        if args.command in ("config", "doctor"):
-            model = manager.configuration()
-            summary = {
-                "extensions": manager.extensions,
-                "client_plugins": manager.values["CVAT_CLIENT_PLUGINS"].split(":")
-                if manager.values["CVAT_CLIENT_PLUGINS"] else [],
-                "project": manager.project,
-                "network": manager.values["CVAT_NETWORK_NAME"],
-                "backend_image": model["services"]["cvat_server"]["image"],
-                "ui_image": model["services"]["cvat_ui"]["image"],
-                "backend_services": [
-                    s
-                    for s in model["services"]
-                    if s == "cvat_server" or s.startswith("cvat_worker_")
-                ],
-                "state_directory": str(state),
-            }
-            if "sam2" in manager.extensions:
-                summary["sam2_redis_volume"] = manager.values["SAM2_REDIS_VOLUME"]
-                summary["sam2_model"] = manager.values["SAM2_MODEL"]
-                summary["sam2_checkpoint_source"] = manager.values["SAM2_CHECKPOINT_HOST"]
-            if "sam31" in manager.extensions:
-                summary["sam31_redis_volume"] = manager.values["SAM31_REDIS_VOLUME"]
-                summary["sam31_checkpoint_source"] = manager.values["SAM31_CHECKPOINT_HOST"]
-                summary["sam31_gpu_device"] = manager.values["SAM31_GPU_DEVICE"]
-            if "ultrasam" in manager.extensions:
-                summary["ultrasam_gpu_device"] = manager.values["ULTRASAM_GPU_DEVICE"]
-            if any(feature in FUNCTIONS for feature in manager.extensions):
-                dashboard_image = model["services"]["nuclio"]["image"]
-                version = re.search(r":(\d+\.\d+\.\d+)(?:-|$)", dashboard_image)
-                if not version:
-                    raise OperationError(
-                        "Cannot determine the Nuclio version from its image tag"
-                    )
-                for feature in manager.extensions:
-                    if feature in FUNCTIONS:
-                        summary[feature + "_images"] = manager.function_images(
-                            version[1], feature
-                        )
-            if "model_registry" in manager.extensions:
-                summary["model_gateway_image"] = model["services"]["model-gateway"][
-                    "image"
-                ]
-                if registry := model["services"].get("model-registry"):
-                    summary["model_registry_home"] = manager.values["MR_HOME"]
-                    summary["model_registry_image"] = registry["image"]
-                    summary["model_worker_image"] = registry["environment"][
-                        "MR_WORKER_IMAGE"
-                    ]
-            if args.command == "doctor":
-                if any(
-                    feature in FUNCTIONS for feature in manager.extensions
-                ):
-                    summary["nuclio_version"] = manager.nuctl_check(model)
-                summary["docker_daemon"] = manager.identity()["daemon"]
-            print(json.dumps(summary, indent=2))
-        elif args.command == "build":
-            manager.build()
-        elif args.command == "pull":
-            model = manager.configuration()
-            services = [
-                name
-                for name, value in model["services"].items()
-                if value.get("pull_policy") != "never"
-            ]
-            manager.run(manager.compose("pull", *services), stream=True)
-        elif args.command == "up":
-            manager.up(no_build=args.no_build)
-        elif args.command == "down":
-            manager.down()
-        elif args.command == "check":
-            manager.check()
-        elif args.command == "purge-deleted":
-            manager.purge_deleted(args.model_id, confirm=args.confirm)
-        elif args.command == "status":
-            if saved := read_json(state / "active.json"):
-                manager.assert_identity(saved)
-                manager.run(manager.compose("ps", "--all", frozen=True), stream=True)
-            else:
-                manager.configuration()
-                manager.run(manager.compose("ps", "--all"), stream=True)
-            for item in manager.functions():
-                print(item["Name"], item["State"]["Status"])
-        elif args.command in ("deploy-sam2", "deploy-ultrasam", "deploy-sam31"):
-            feature = args.command.removeprefix("deploy-")
-            if feature not in manager.extensions:
-                raise OperationError(
-                    f"Add {feature} to CVAT_EXTENSIONS before deploying it"
-                )
-            model = manager.configuration()
-            saved = read_json(state / "active.json")
-            if not saved or not manager.matches_configuration(saved, model):
-                raise OperationError(
-                    "Run down/up for the current source and configuration before manual redeployment"
-                )
-            manager.assert_identity(saved)
-            version = manager.nuctl_check(model)
-            if feature in ("sam2", "sam31"):
-                gpu_functions.local_checkpoint(manager.values, manager.root, verify_file=True, feature=feature)
-            manager.ensure_network()
-            if feature in ("sam2", "sam31"):
-                manager.ensure_volume(feature)
-            manager.run(
-                manager.compose(
-                    "up",
-                    "-d",
-                    "--no-build",
-                    "--wait",
-                    "--wait-timeout",
-                    "180",
-                    *([feature + "_redis"] if feature in ("sam2", "sam31") else []),
-                    "nuclio",
-                ),
-                stream=True,
-            )
-            manager.deploy(model, args.mode, force=True, feature=feature)
-            images = manager.local_image_ids(model)
-            for image in manager.function_images(version).values():
-                images[image] = manager.run(
-                    [
-                        "docker",
-                        "image",
-                        "inspect",
-                        image,
-                        "--format",
-                        "{{.Id}}",
-                    ]
-                ).strip()
-            manager.freeze(model, images)
-
+        run_command(Manager(ROOT, env_file, state), args)
 
 if __name__ == "__main__":
     try:

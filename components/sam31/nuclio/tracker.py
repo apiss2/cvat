@@ -44,19 +44,25 @@ class Tracker:
         if not states:
             if not seeds:
                 raise ProtocolError("Provide at least one polygon seed")
-            masks = [seed_mask(seed, image.size) for seed in seeds]
-            with self.model_lock:
-                snapshot, predictions = self.video.initialize(image, masks)
-            payload = self.codec.encode(snapshot)
-            shapes = [polygon_shape(mask) for mask in predictions]
-            meta = dict(identity=self.identity, count=len(seeds), width=image.width, height=image.height)
-            for _ in range(3):
-                sid = secrets.token_urlsafe(32)
-                if self.store.create(sid, payload, meta, shapes):
-                    return {"states": self.tokens(sid, 0, len(seeds)), "shapes": shapes}
-            raise RuntimeError("Unable to allocate a tracking state")
+            return self._initialize(image, seeds)
         if seeds and (len(seeds) != len(states) or any(seed is not None for seed in seeds)):
             raise ProtocolError("Continue with states only; start a new run for corrections")
+        return self._advance(image, states)
+
+    def _initialize(self, image, seeds):
+        masks = [seed_mask(seed, image.size) for seed in seeds]
+        with self.model_lock:
+            snapshot, predictions = self.video.initialize(image, masks)
+        payload = self.codec.encode(snapshot)
+        shapes = [polygon_shape(mask) for mask in predictions]
+        meta = dict(identity=self.identity, count=len(seeds), width=image.width, height=image.height)
+        for _ in range(3):
+            sid = secrets.token_urlsafe(32)
+            if self.store.create(sid, payload, meta, shapes):
+                return {"states": self.tokens(sid, 0, len(seeds)), "shapes": shapes}
+        raise RuntimeError("Unable to allocate a tracking state")
+
+    def _advance(self, image, states):
         sid, revision = self.parse(states)
         record = self.store.load(sid)
         if record.meta["identity"] != self.identity:
