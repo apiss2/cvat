@@ -1,8 +1,8 @@
-# UltraSAMによる超音波画像のSegmentation
+# UltraSAMで超音波画像にマスクを作成する
 
 [ドキュメントの入口](../README.md)
 
-UltraSAMは標準AI Toolsに画像用Interactorを追加します。現在の画像に正例点と負例点を指定し、1対象のマスクを生成します。専用のUIプラグインとRedisは不要です。矩形プロンプト、動画追跡、フレーム間の状態保持は提供しません。
+超音波画像の対象領域を推定するモデル **UltraSAM** を、CVATから使う機能です。対象に含める点と除外する点を指定すると、一つの対象のマスクを生成します。「UltraSAM」は標準のAI Toolsから操作します。矩形による指定や動画の追跡には対応しません。
 
 | 目的 | 文書 |
 |---|---|
@@ -18,6 +18,6 @@ UltraSAMは標準AI Toolsに画像用Interactorを追加します。現在の画
 
 ## 配備と利用条件
 
-CVAT_EXTENSIONSへultrasamを追加し、共通cvatctlで関数を管理します。モデル用のPython、PyTorch、OpenMMLabは関数イメージに含め、CVAT本体やSAMの環境へ追加しません。コードは[Nuclio関数](../../serverless/pytorch/camma/ultrasam/nuclio/)、配備設定は[components/ultrasam](../../components/ultrasam/)です。
+専用の画面プラグインとRedisは不要です。CVAT_EXTENSIONSへultrasamを追加し、共通cvatctlで関数を管理します。モデル用のPython、PyTorch、OpenMMLabは関数イメージに含め、CVAT本体やSAMの環境へ追加しません。コードは[Nuclio関数](../../serverless/pytorch/camma/ultrasam/nuclio/)、配備設定は[components/ultrasam](../../components/ultrasam/)です。
 
 モデルの利用前に、[原文の出典と条件](../../serverless/pytorch/camma/ultrasam/NOTICE.md)と[ライセンス本文](../../serverless/pytorch/camma/ultrasam/LICENSE-UltraSAM)を確認してください。第三者のライセンス本文と固有名は原文を保持します。企業での用途を含め、利用条件を確認せずに重みや同梱イメージを配布しないでください。

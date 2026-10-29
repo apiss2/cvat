@@ -1,102 +1,123 @@
-# 拡張機能の管理
+# 機能の選択と管理
 
 [共通運用](README.md)
 
-このフォークで追加する機能は、画面プラグインだけの場合も含め、必ず `cvatctl` の管理に組み込みます。利用者からの個別指示は不要です。機能を追加する変更と同時に、設定、起動と停止、確認処理、文書、回帰テストを更新してください。
+このページは、使う機能を選ぶ管理者と、機能を追加する開発者向けです。**cvatctl** は、このフォークの設定、ビルド、起動と停止をまとめて行うコマンドです。「cvatctl」は `.env` の `CVAT_EXTENSIONS` を読み、選んだ機能に必要な画面とサービスを組み合わせます。初回の導入は[導入と共通設定](installation.md)から始めてください。
 
 ## 管理対象
 
-設定ファイルの `CVAT_EXTENSIONS` に、使用する拡張名をカンマ区切りで指定します。
+設定には、以下の「設定名」をカンマで区切って記載します。画面に表示する機能名と設定名は異なります。必要な機能だけを選び、詳しい操作は各行の文書を参照してください。
 
-| 拡張名 | 対象 | 管理する構成 |
+### データを取り込む
+
+| 機能 | 設定名 | 必要な構成 |
 | --- | --- | --- |
-| `itgformat` | ITGformatの入出力 | Compose構成と登録確認。ソースに登録済みの形式自体は、選択から外しても残ります。 |
-| `sam2` | SAM2の画像分割と追跡 | 画面プラグイン、Nuclio関数、専用Redis。 |
-| `sam31` | SAM3.1の画像分割と追跡 | 画面プラグイン、Nuclio関数、専用Redis、配置済み重み。 |
-| `ultrasam` | UltraSAMの画像分割 | Nuclio関数とGPU設定。専用の画面プラグインはありません。 |
-| `model_registry` | ONNXモデル管理 | 管理画面へのプラグイン、ゲートウェイ、ローカル構成の管理サービスとワーカー。部分更新、画像分類、通常の削除によるモデルファイルの清掃もこの拡張に含まれます。 |
-| `frame_navigation_filter` | フィルター条件によるフレーム移動と全図形表示 | `plugins/frame-navigation-filter` を共通UIイメージに含めます。推論サービスは不要です。 |
-| `selective_ai` | タグ条件と画像選択による自動アノテーション | `plugins/selective-ai` を共通UIイメージに含め、推論APIに必要な既存Nuclio構成を有効にします。 |
-| `filtered_export` | アノテーション条件に合う画像のエクスポート | `plugins/filtered-export` を共通UIイメージに含めます。標準のサーバーと出力ワーカーを使用し、推論サービスは不要です。 |
-| `physical_measurements` | DicomTagのPixelSpacingに基づく折れ線の物理長表示 | `plugins/physical-measurements` を共通UIイメージに含めます。標準のTagを参照し、追加サービスとGPUは不要です。 |
-| `task_context` | 標準AnnotationGuideによる背景情報の参照 | `plugins/task-context` を共通UIイメージに含めます。ガイドのJSON、Markdown Zip、DICOM Report Importは共通バックエンドに登録し、表示を無効にしても利用できます。追加サービスとGPUは不要です。 |
-| `dicom_import` | DICOMから画像と動画のタスクを作成 | `plugins/dicom-import` とサーバーおよび取り込みワーカーの既存サービスを使用します。Keyword属性への保存、タスク単位の部分取り込み、完了時の集計通知も含みます。 |
-| `project_annotations` | Projectの既存タスクへアノテーションを取り込む | `plugins/project-annotations` と既存サーバーおよび取り込みワーカーを使用します。Task名での通常形式取り込みと、DicomTagの完全なUIDで照合するTag取り込みを含みます。追加サービスとGPUは不要です。 |
+| [DICOM取り込み](../annotation/dicom-import.md) | `dicom_import` | 医療画像からタスクを作成します。既存サーバー、取り込みワーカー、画面を使用します。追加サービスとGPUは不要です。 |
+| [アノテーション取り込み](project-annotation-import.md) | `project_annotations` | プロジェクト内の既存タスクへ取り込みます。既存サーバー、取り込みワーカー、画面を使用します。追加サービスとGPUは不要です。 |
+| [専用形式の入出力](../itgformat/README.md) | `itgformat` | ITGformatというアノテーション形式の構成と登録確認を行います。形式自体はソースに登録され、選択から外しても残ります。 |
 
-`selective_ai` は `model_registry` を自動選択しません。登録ONNXモデルを使う場合は両方を選択します。通常のNuclioモデルも使用できますが、画面プラグインの有効化だけでモデルを新しく配備するわけではありません。GPUも自動要求しません。推論の開始と中止は画面で行い、`cvatctl` は配備と停止を管理します。
+タスクごとの説明文をまとめて取り込む機能は、共通のサーバーに登録済みです。専用の設定名はありません。[タスク説明の一括登録](task-guide-import.md)を参照してください。取り込んだ説明文を編集画面から参照する機能は、次の `task_context` で選びます。
 
-この一覧はフォークの追加機能が対象です。upstream由来の `plugins/sam` など、この一覧にないプラグインの指定は `CVAT_CLIENT_PLUGINS`、独自のサイト設定は `CVAT_EXTRA_COMPOSE_FILES` で引き続き扱えます。今後このフォークに追加する機能を、個別パス指定だけで管理対象外にしてはいけません。
+### 画像を確認して編集する
+
+以下は既存のCVATサーバーと画面を使用し、追加サービスとGPUを必要としません。
+
+| 機能 | 設定名 | 内容 |
+| --- | --- | --- |
+| [フレーム移動](../annotation/frame-navigation-filter.md) | `frame_navigation_filter` | 条件に合う画像へ移動し、その画像内の他の図形も表示します。 |
+| [長さの表示](../annotation/physical-measurements.md) | `physical_measurements` | 画像に保存した画素間隔から折れ線の長さをmmで表示します。 |
+| [タスク情報の表示](task-context.md) | `task_context` | CVAT標準のガイドに保存した説明文をInfoから参照します。 |
+| [条件付きエクスポート](../annotation/filtered-export.md) | `filtered_export` | 条件に合う画像を選んで出力します。既存の出力ワーカーを使用します。 |
+
+### モデルで下書きを作る
+
+以下の機能は、推論処理をサービスとして動かす **Nuclio** を有効にします。SAM2、SAM3.1、UltraSAMは「Nuclio」で実行し、登録したONNXモデルは専用ワーカーで実行します。SAM2とSAM3.1の追跡状態は、保存用サービス **Redis** に保持します。これらの構成は「cvatctl」が選択に応じて管理します。
+
+| 機能 | 設定名 | 必要な構成 |
+| --- | --- | --- |
+| [SAM2](../sam2/README.md) | `sam2` | 画像分割と追跡。画面、Nuclioの推論処理、専用Redis、GPUを使用します。 |
+| [SAM3.1](../sam31/README.md) | `sam31` | 画像分割と追跡。画面、Nuclioの推論処理、専用Redis、GPU、事前に用意した重みを使用します。 |
+| [UltraSAM](../ultrasam/README.md) | `ultrasam` | 超音波画像の分割。Nuclioの推論処理とGPUを使用します。専用画面と追跡用Redisはありません。 |
+| [モデル登録](../model-registry/README.md) | `model_registry` | モデルの登録と更新。管理画面への入口、推論要求の中継、管理サービス、推論ワーカーを使用します。GPUは任意です。 |
+| [画像を選んで実行](../annotation/selective-ai.md) | `selective_ai` | 画面と既存の推論APIを有効にします。使用するモデルは別途必要で、モデルやGPUを自動配備しません。 |
+
+選択した画像へ登録済みONNXモデルを実行する場合は、`selective_ai` と `model_registry` を両方選びます。Nuclioへ配備済みの他のモデルを使う場合は、`model_registry` は不要です。推論の開始と中止は画面で行います。
 
 ## 有効化と無効化
 
-既存の選択を保持し、必要な拡張名を追加します。例えば、既存構成に新しい画面機能を追加する場合は次のように指定します。SAM3.1を使用している場合は `sam31` も保持してください。
+新規環境では、目的に合う設定名だけを `CVAT_EXTENSIONS` へ記載します。例えば、DICOMを取り込み、長さと説明文を表示する構成は次のとおりです。この例はGPUを必要としません。
 
 ```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,frame_navigation_filter,selective_ai,filtered_export,physical_measurements,task_context,dicom_import,project_annotations
+CVAT_EXTENSIONS=dicom_import,physical_measurements,task_context
 ```
 
-管理対象のプラグインパスを `CVAT_CLIENT_PLUGINS` に重ねて指定する必要はありません。`cvatctl` はこの変数から管理対象のパスをいったん除き、`CVAT_EXTENSIONS` の選択に応じて再構成します。旧手順でプラグインパスだけを記載していた場合も、新しい拡張名へ変更してください。一覧にない独自のプラグインパスは保持されます。
+既存環境では、稼働中の構成で停止してから `.env` を編集します。引き続き使う設定名は残してください。既存の設定ファイルを `init` で作り直しません。
 
-稼働中の構成を変更する場合は、編集内容を保存し、旧構成で停止してから `.env` を編集します。リポジトリのルートからの操作例です。既存の設定ファイルを `init` で作り直してはいけません。
-
-```sh
-bash components/extensions/cvatctl down
-# .env の CVAT_EXTENSIONS を編集する
-bash components/extensions/cvatctl config
-bash components/extensions/cvatctl up
-bash components/extensions/cvatctl check
+```bash
+./components/extensions/cvatctl down
+# .env の CVAT_EXTENSIONS を編集します。
+./components/extensions/cvatctl config
+./components/extensions/cvatctl up
+./components/extensions/cvatctl check
 ```
 
-`up` は必要なビルドを行います。事前ビルドには `build`、必要な全イメージが既に存在する場合の再利用には `up --no-build` を使います。`--env-file` と `--state-dir` を使用している場合は、全コマンドで同じ値を指定してください。
+`up` は必要なビルドを行います。事前ビルドには `build`、必要な全イメージが既にある場合の再利用には `up --no-build` を使用します。`--env-file` と `--state-dir` を使用する場合は、全コマンドで同じ値を指定してください。
 
-画面機能を無効にする場合は、拡張名を選択から外して同じ停止と再ビルドの手順を実施します。設定の編集やPRのマージだけでは、配備済みのUIも開いているブラウザーも変わりません。再配備後は画面を再読み込みしてください。
+選択を外して無効にする場合も、停止、設定変更、再ビルドと再起動を行います。設定の編集やPRのマージだけでは配備済みの画面は変わらないため、再配備後はブラウザーも再読み込みしてください。選択の変更によって保存済みの画像やアノテーションを削除することはありません。
 
-`filtered_export` を外すと画面メニューが消えます。ソースに登録されたエクスポートAPIはサーバーに残り、通常の権限確認が引き続き適用されます。APIの削除まで必要な場合は、この機能を含まないサーバーと出力ワーカーへ戻してください。
+管理対象の画面プラグインは自動選択されるため、`CVAT_CLIENT_PLUGINS` へのパスの追記は不要です。「cvatctl」は同変数にある管理対象パスを選択内容に合わせて再構成し、一覧にないプラグインのパスは保持します。CVAT本体に由来する `plugins/sam` などは従来どおり同変数で指定できます。HTTPSや共有フォルダーなどの追加構成には `CVAT_EXTRA_COMPOSE_FILES` を使用します。
 
-`physical_measurements` を外すと物理長の表示が消えます。
-参照元の `DicomTag` は標準のアノテーションとして残り、再度有効にすると同じ値を利用します。
-専用APIやDBテーブルは追加しません。ITGformatの間隔出力は表示の有効化にかかわらず適用します。
-参照する属性と確認項目は[物理長の表示](../annotation/physical-measurements.md)を参照してください。
+## サーバーの更新と保存済みデータ
 
-`task_context` の初回導入時は、Job APIの読み取り専用フィールド `task_guide_id` に対応したサーバーも更新します。導入後の選択変更はUIの再ビルドで反映します。拡張名を外すと、プラグインによる背景情報の表示を無効にします。標準のAnnotationGuideの内容、API、既存のガイド画面は維持され、再び有効にすると同じ内容を参照できます。API経路、独自のDjangoアプリ、DBテーブル、マイグレーションは新設しません。データの保存と復元には、既存の[バックアップ手順](backup-restore.md)を使用します。
+初回の導入とサーバー側処理の更新では、サーバー、該当するワーカー、画面を同じソースからビルドします。画面の選択だけを切り替える場合でも、必要な画面の再ビルドは省略できません。
 
-ガイドの取り込み形式を更新するときは、サーバーとインポートワーカーにも共通バックエンドの変更を反映します。`Task Guide JSON 1.0`、`Task Guide Markdown Zip 1.0`、`Task Guide DICOM Report Import 1.0` はプロジェクトの標準取り込み画面から使用します。どの形式もZIPを指定し、JSON形式ではJSONファイル1個をZIPに入れます。形式はソースに登録されるため、`task_context` の選択を外しても残ります。入力と再取り込みの動作は[タスク用ガイドの取り込み](task-guide-import.md)を参照してください。
+| 機能 | 更新と無効化の扱い |
+| --- | --- |
+| DICOM取り込み | 初回はサーバー、取り込みワーカー、画面を更新します。選択解除後の再配備で取り込みを無効にします。画像、動画、画像のDICOM情報、ガイドは保持します。 |
+| アノテーション取り込み | 初回はサーバー、取り込みワーカー、画面を更新します。DICOM取り込みとは独立して選択できます。選択解除後の再配備で追加APIと画面を無効にし、既存データと標準の取り込み操作は保持します。 |
+| 長さの表示 | 参照元のDICOM情報は、独自ラベル `DicomTag` を使ったCVAT標準のタグに残ります。再度有効にすると同じ値を参照します。ITGformatへの画素間隔の出力は表示の有効化とは独立です。 |
+| タスク情報の表示 | 初回はガイド参照用の `task_guide_id` に対応したサーバーと画面を更新します。以降の選択変更は画面へ反映します。CVAT標準のガイド、API、既存のガイド画面は保持します。 |
+| 条件付きエクスポート | 選択解除後の再配備で追加メニューを非表示にします。ソースに登録済みのAPIと権限確認は残ります。API自体の削除には、この機能を含まないサーバーと出力ワーカーが必要です。 |
+| タスク説明の一括登録 | ソースに登録する取り込み形式です。表示機能の選択を外しても利用できます。形式を更新する場合はサーバーと取り込みワーカーを同じ版に更新します。 |
+| 専用形式の入出力 | ITGformatはソースに登録され、選択を外しても利用できます。形式を更新する場合はサーバー、取り込みワーカー、出力ワーカーを同じ版に更新します。 |
 
-DICOMレポートの識別子の別名、日付の正規化、参考生データの表示も同じ共通バックエンドに含まれ、Infoでの表示は既存の `task_context` で管理します。DICOM取り込み時の接頭辞の重複抑制は既存の `dicom_import` に含まれます。これらの内部変更に追加の拡張名、設定項目、サービスは不要です。
+DICOMの属性名の変更は、長さの表示とITGformatの参照処理にも関係します。これらは同じ版に揃え、依存ライブラリの更新時にはDICOMタグ番号と属性名の対応を回帰テストで確認します。独自のデータベース移行は追加しません。
 
-`dicom_import` の初回導入時はサーバーとUIを再ビルドします。選択から外して再配備するとDICOM取り込みを無効化しますが、保存済みの画像、動画、DicomTag、AnnotationGuideは残ります。`physical_measurements` と `task_context` は独立に選択でき、取り込みを無効化した後も保存済みの情報を参照できます。操作は[DICOM取り込み](../annotation/dicom-import.md)を参照してください。
-
-DicomTagのKeyword化は属性とその参照処理の変更です。物理長表示とITGformatも同じ版に更新してください。データベースの移行は追加しません。依存関係を更新した際は、保存したタグ番号とKeywordの対応に変化がないことをDICOMの回帰テストで確認します。
-
-`project_annotations` は `dicom_import` と独立した拡張です。既存のDicomTagがある場合、DICOM取り込みを無効にした構成でも画像を照合できます。有効化するとサーバーと取り込みワーカーの `CVAT_PROJECT_ANNOTATIONS_ENABLED` が設定され、UIに `Import annotations` を追加します。無効化には選択解除後の再配備が必要です。無効化しても保存済みの画像、アノテーション、DicomTag、AnnotationGuideを変更しません。通常のProject Import dataset、Task Import annotations、Task Guideの取り込みは同じ動作を維持します。入力と置換範囲は[Projectへのアノテーション取り込み](project-annotation-import.md)を参照してください。
+機能内部の細かな動作ごとに、新たな設定名を追加する必要はありません。例えば、DICOM取り込みの接頭辞処理と部分失敗の通知は `dicom_import` に、モデルの部分更新と削除時の清掃は `model_registry` に含まれます。入力形式とデータの変更範囲は各機能の操作手順で説明します。
 
 ## 確認コマンドの範囲
 
-`config` と `doctor` は、選択された拡張名と、解決済みの `client_plugins`、UIイメージを表示します。選択した画面プラグインの入口ファイルがない場合や、Composeでそのビルド引数が失われた場合は失敗します。選択が変わるとUIイメージの識別子も変わります。
+| コマンド | 確認または実行する内容 |
+| --- | --- |
+| `config`、`doctor` | 選択した機能、画面プラグイン、Compose構成、イメージを確認します。必要な入口ファイルやビルド引数の欠落を検出します。 |
+| `build`、`up` | 選択に必要な共通イメージとサービスを準備します。GPU用の推論処理は必要に応じて `up` でビルドして配備します。 |
+| `status` | コンテナの状態を表示します。画面プラグインは個別サービスではなく、共通の `cvat_ui` に含まれます。 |
+| `down` | 記録済みの起動構成で停止し、保存データと共有ネットワークを保持します。 |
+| `check` | 記録したイメージと実行中のイメージなどを照合します。 |
 
-`status` はコンテナーの状態を表示します。画面プラグインは個別のサービスではなく `cvat_ui` に含まれます。`down` は保存された起動構成を使って停止し、データと共有ネットワークを保持します。`check` は記録済みイメージと実行中イメージなどを照合します。ブラウザーでのプラグイン登録や操作、実際の推論の成功までを保証するものではありません。
-
-`task_context` もこの画面プラグイン共通の確認を使用します。配備や確認コマンドからAnnotationGuideの内容を読み出したり変更したりしません。
-
-`project_annotations` も既存の共通イメージを使用します。`build` と `up` は通常のサーバーとUIを対象とし、専用サービス、モデル配備、GPUを要求しません。`config` と `doctor` は選択されたComposeとプラグインを解決し、`status`、`down`、`check` は記録された構成とイメージを確認します。これらのコマンドはアノテーション取り込みを開始しません。
+これらのコマンドは推論やアノテーション取り込みを開始せず、ガイドの内容も変更しません。実際の画像を使う推論、画面操作、保存までの確認は、各機能の受入確認として別途行います。
 
 ## 機能を追加するときの手順
 
-1. 既存サービスの設定と画面プラグインで完結する機能は、`components/<機能名>/extension.json` に `name`、`client_plugin`、`compose_files` を登録します。既存の `catalog.py` が管理対象へ追加するため、`manage.py` の分岐を増やす必要はありません。`dicom_import` と `project_annotations` がこの方式を使用します。専用Composeファイルが不要なら `compose_files` は空の配列にし、ダミーのサービスを作りません。
-2. 管理処理への追加が必要な機能は、[manage.py](../../components/extensions/manage.py)の `EXTENSION_COMPOSE` と `EXTENSION_PLUGINS` を更新します。推論APIが必要なら `SERVERLESS_EXTENSIONS` も確認します。GPU関数は既存の `functions.py` と各機能の `build.json` へ組み込み、独立した配備経路を増やしません。
+新しい機能は、画面プラグインだけの場合も含め「cvatctl」で管理します。機能を追加する変更と同時に、設定、起動と停止、確認処理、文書、回帰テストを更新してください。
+
+1. 既存サービスの設定と画面で完結する場合は、`components/<機能名>/extension.json` に `name`、`client_plugin`、`compose_files` を登録します。[catalog.py](../../components/extensions/catalog.py) が管理対象へ追加します。`dicom_import` と `project_annotations` がこの方式です。専用Composeが不要なら `compose_files` を空の配列にします。
+2. 管理処理への追加が必要な場合は、[manage.py](../../components/extensions/manage.py) の `EXTENSION_COMPOSE` と `EXTENSION_PLUGINS` を更新します。推論APIが必要なら `SERVERLESS_EXTENSIONS` も確認します。GPUの推論処理は既存の [functions.py](../../components/extensions/functions.py) と各機能の `build.json` に組み込みます。
+3. [設定例](../../components/extensions/config.example.env)、このページの一覧、機能の文書、回帰テストを更新します。有効化と無効化、ビルド、起動、停止、保存データの保持を確認してください。
 
 ## 開発時の注意
 
-- 既存の設定読み取り、選択に応じたビルド、起動記録、停止、確認処理を再利用します。必要な秘密情報、保存先、重み、追加サービスは事前検証し、不要な構成を自動追加しません。
-- 独自拡張のためのDBスキーマ変更、マイグレーションの追加、既存モデルの構造変更は禁止します。既存モデルを利用した通常のアノテーションの作成、更新、削除を使用してください。Task単位で変更する処理は同じTask内の変更をDBトランザクションで保護し、途中の失敗で一部だけが保存される実装にしません。
-- [設定例](../../components/extensions/config.example.env)、この管理対象一覧、機能のREADMEと回帰テストを機能追加と同じ変更で更新します。独自プラグインをパスの手動追記だけで管理対象外にしません。
-- GitHub Actions の workflow（`.github/workflows/`）は新設しないでください。拡張機能の追加・変更に専用の workflow を設けず、必要な検証は既存のローカル手順で実行します。
+既存の設定読み取り、選択に応じたビルド、起動記録、停止と確認処理を再利用します。必要な秘密情報、保存先、重み、追加サービスは事前検証し、機能に不要な構成は追加しません。個別の配備経路や、プラグインパスの手動指定だけで済ませる方式は使用しません。
+
+データの保存には既存モデルを使用します。独自拡張のためのDBスキーマ変更、マイグレーション追加、既存モデルの構造変更は禁止します。タスク単位の更新は同じタスク内の変更をDBトランザクションで保護し、途中の失敗による部分保存を防ぎます。
+
+検証は既存のローカル手順へ組み込みます。このフォークではGitHub Actionsを無効にしているため、拡張機能のための `.github/workflows/` を新設しません。
 
 ## 回帰テスト
 
-拡張管理と画面プラグインの回帰テストは次で実行できます。PytestとPyYAMLが必要です。
+拡張管理と画面プラグインの回帰テストにはPytestとPyYAMLが必要です。
 
-```sh
+```bash
 python3 -m pytest -q tests/extensions/test_operations.py \
   components/extensions/tests/test_cvatctl.py \
   components/extensions/tests/test_functions.py \
@@ -104,10 +125,4 @@ python3 -m pytest -q tests/extensions/test_operations.py \
   components/project_annotations/tests/test_project_annotations_management.py
 ```
 
-構成生成、有効化と無効化、既存拡張との併用、ビルド対象、保存された起動構成による停止を確認します。
-停止順序、再起動方針の復元、既存Redisボリュームとモデル保存先の維持、同じRedisボリュームへの二重書き込みの拒否も検証します。
-関数の定義と配備は `components/extensions/functions.py` の公開関数を通して確認します。
-このフォークではGitHub Actionsを無効にしているため、このテスト群は上記のコマンドでローカル実行してください。
-物理長表示では、選択解除後の `status` が稼働記録を使うことと、`check` がUIのイメージ不一致を検出し、アノテーションを変更しないことも確認します。
-Dockerの応答と無関係なモデル管理の初期化は代替実装を使用します。
-実配備と画面の確認は、それぞれのREADMEに記載した受入確認を別途実施してください。
+この試験は、構成生成、選択変更、既存機能との併用、ビルド対象、記録済み構成による停止、再起動方針と保存先の維持を確認します。同じRedisボリュームへの二重書き込みの拒否とイメージ不一致の検出も対象です。Dockerの応答や一部の初期化は代替実装を使用するため、実配備とブラウザーでの確認は各機能の手順で別途実施してください。

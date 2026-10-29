@@ -1,22 +1,18 @@
-# Projectへのアノテーション取り込み
+# プロジェクトのアノテーションを一括更新する
 
-[拡張機能の管理](management.md)
+[アノテーション操作](../annotation/README.md) / [追加機能の一覧](../README.md)
 
-Projectの `Import annotations` は、既存のTaskへアノテーションを追加または置換します。Taskや画像を新しく作成せず、通常形式ではTask名、DICOM形式では保存済みのDicomTagを使って更新先を決定します。
+プロジェクト内の既存タスクへ、アノテーションをまとめて追加または置換する機能です。画像やタスクを新規作成する場合は[DICOM取り込み](../annotation/dicom-import.md)、説明文を登録する場合は[タスク説明の一括登録](task-guide-import.md)を使います。
 
-## 有効化と操作
+通常のアノテーション形式ではタスク名で更新先を選びます。DICOMの識別情報で更新先を選ぶ専用形式もあります。この識別情報を画像単位で保存したタグが **DicomTag** です。「DicomTag」の内容は、この機能による追加と置換の両方で保持します。
 
-既存の `.env` の `CVAT_EXTENSIONS` に `project_annotations` を追加し、共通の更新手順でサーバー、取り込みワーカー、UIを同じ版へ更新します。既存の拡張名は保持してください。
+## 画面で取り込む
 
-```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry,project_annotations
-```
+1. プロジェクトの操作メニューから `Import annotations` を開きます。
+2. 取り込み形式と更新方法を選び、ZIPファイルを指定します。
+3. アップロードし、Requestsで処理状態を確認します。完了時には成功タスク数、失敗タスク数、未一致レコード数を通知します。
 
-この拡張は既存のサーバーと取り込みワーカーを使用します。追加サービス、GPU、DBマイグレーションは不要です。`dicom_import` は独立した拡張なので、保存済みのDicomTagがある場合は無効でも照合できます。
-
-画面ではProjectの操作メニューから `Import annotations` を開き、形式、`replace` または `append`、ZIPファイルを指定します。アップロードの受付後は標準のRequestsで処理状態を確認でき、完了時に成功Task数、失敗Task数、未一致レコード数が通知されます。
-
-無効化する場合は `project_annotations` を選択から外して再配備します。保存済みのアノテーション、画像、DicomTag、AnnotationGuideは保持されます。`config`、`doctor`、`build`、`up`、`down`、`status`、`check` は共通管理に従い、取り込みを自動実行しません。
+更新方法の `append` は既存のアノテーションを残して追加します。`replace` は対象タスク全体のアノテーションを置換するため、入力に含まれない画像のアノテーションも削除します。「DicomTag」は保持します。形式ごとの重複処理と置換範囲は、後述の「更新方法と置換範囲」を確認してください。
 
 ## 通常形式のZIP
 
@@ -42,7 +38,7 @@ exported/scan_B/annotations.xml
 
 通常のProject `Import dataset` とTask `Import annotations` は従来どおり使用します。Task Guide形式は従来のProject `Import dataset` で扱い、新しい `Import annotations` の対象外です。DICOMの画像と動画そのものを作成する `DICOM 1.0` も対象外です。
 
-## replaceとappendの範囲
+## 更新方法と置換範囲
 
 更新方法は次のとおりです。
 
@@ -57,9 +53,9 @@ DicomTagとそのAttributeは、両形式の `replace` と `append` で保持し
 
 再取り込みでは、`replace` は再びTask全体を置換します。通常形式の `append` は標準のTask取り込みと同様に追加します。DICOM形式の `append` では前回登録したTagとの重複が検出され、そのTaskを変更しません。
 
-## Annotation Tags DICOM Import 1.0
+## DICOMの識別情報でタグを取り込む
 
-この形式では、既存のDicomTagから対象Taskと画像を照合し、Tagアノテーションだけを登録します。`sample.json` などのJSONファイル1個をZIPに格納してアップロードします。通常形式で使用するTask名のフォルダは不要です。
+形式欄で `Annotation Tags DICOM Import 1.0` を選びます。この形式では、既存の「DicomTag」から対象タスクと画像を照合し、タグのアノテーションだけを登録します。`sample.json` などのJSONファイル1個をZIPに格納してアップロードします。通常形式で使用するTask名のフォルダは不要です。
 
 ```json
 {
@@ -116,7 +112,7 @@ DicomTagとそのAttributeは、両形式の `replace` と `append` で保持し
 
 同じ画像を複数のレコードで指定することはできますが、同一フレームに同じラベルのTagが重複するとエラーです。`append` は既存Tagも含めて検査します。`replace` は置換後に残るTagについて検査し、削除される既存Tagとの重複はエラーにしません。
 
-GT poolを使用するTaskでは、標準処理によって検証用画像のTagが複製されます。DICOM形式では、その複製先も含めて既存Tagとの重複を検査します。複製によるTag数とAttribute値の増加も、取り込み全体の上限に含めます。
+検証用画像を作業中のフレームへ混ぜる「GT pool」を使用するタスクでは、標準処理によって検証用画像のTagが複製されます。DICOM形式では、その複製先も含めて既存Tagとの重複を検査します。複製によるTag数とAttribute値の増加も、取り込み全体の上限に含めます。
 
 ## 検証と失敗時の動作
 
@@ -124,7 +120,7 @@ GT poolを使用するTaskでは、標準処理によって検証用画像のTag
 
 DB更新はTaskごとのトランザクションで保護します。DICOM形式の `replace` は照合と検証を終えてからTaskごとに全Tagをまとめ、削除と登録を同じトランザクションで一度ずつ行います。途中で登録に失敗した場合は、そのTaskで行った削除もロールバックします。
 
-RQの実行時間上限に達した場合は、処理中のTaskをロールバックして取り込み全体を中断し、後続Taskを更新しません。中断前に完了したTaskの更新は残ります。自動再試行は行わないため、手動で `append` を再実行する前に処理済みTaskを確認してください。通常の成功時と失敗時には、標準の削除処理で入力ZIPを削除します。
+バックグラウンド処理を実行するRQの時間上限に達した場合は、処理中のTaskをロールバックして取り込み全体を中断し、後続Taskを更新しません。中断前に完了したTaskの更新は残ります。自動再試行は行わないため、手動で `append` を再実行する前に処理済みTaskを確認してください。通常の成功時と失敗時には、標準の削除処理で入力ZIPを削除します。
 
 通知の成功件数と失敗件数はTask数です。未一致件数は、通常形式ではTaskフォルダ数、DICOM形式ではレコード数です。Taskを特定できない入力エラーも別に表示します。有効なUIDに対応する画像がなく、Tagの指定にも不備がある場合は、未一致と入力エラーの両方に数えます。複数レコードが同じTaskに対応する場合も、Task件数は一度だけ数えます。通知と取り込み処理のエラーには患者ID、UID、Task名、入力Attribute値を不用意に含めません。
 
@@ -132,7 +128,15 @@ ZIPのパス、ファイル種別、暗号化、重複、展開後の大きさ�
 
 通常形式の上限はアップロード512 MiB、展開後の合計2 GiB、100,000エントリー、Taskごとの読み込み済みアノテーション500,000個です。Taskフォルダ内の形式用ZIPも展開後サイズとエントリー数の合計に含めます。DICOM形式はTask Guideの共通ZIP読み込みを使用し、ZIPと展開後のJSONは32 MiB、ZIPは50,000エントリー、JSONは50,000レコードまでです。動画の全フレームへ展開した後の入力Tagは250,000個、Attribute値は1,000,000個までです。
 
-## 実装と開発規約
+## 管理者向けの設定
+
+既存の `.env` の `CVAT_EXTENSIONS` に `project_annotations` を追加します。他の拡張名は保持し、[更新手順](update.md)に従ってサーバー、取り込みワーカー、UIを同じ版へ更新してください。既存のサーバーと取り込みワーカーを使用するため、追加サービスやGPUは不要です。
+
+DICOMの画像自体を登録する `dicom_import` とは独立した設定です。保存済みの「DicomTag」があれば、`dicom_import` が無効でも識別情報を使った照合ができます。
+
+無効にする場合は `project_annotations` を選択から外して再配備します。保存済みのアノテーション、画像、DICOM情報、タスクのガイドは保持します。管理コマンドは構成とサービスを扱い、アノテーションの取り込みを自動実行しません。
+
+## 開発者向けの実装と規約
 
 独自の処理は `components/project_annotations`、画面は `cvat-ui/plugins/project-annotations` に置きます。標準のTask用インポータと部分削除を再利用し、DicomTag保護はProject用の独立した更新処理で行います。標準のTask用Import annotationsへDicomTagの例外処理を追加しません。
 
@@ -170,7 +174,7 @@ python3 components/project_annotations/tests/run_orm_tests.py
 
 GT poolについては複製先の重複検出、複製数の上限、繰り返し取り込み時のDicomTag保持を確認します。RQの実際のタイムアウト例外を送出する試験では、処理済みTaskの維持、処理中Taskのロールバック、後続Taskの未実行を確認します。成功と失敗の各RQコールバックから入力ZIPが削除され、別のアップロードは残ることも検証します。
 
-リクエスト管理は実際のProjectとアップロード用ファイルオブジェクトを使い、`annotation_file` の受け取りと一時保存、モードの解析、コールバック引数、キュー投入前の無効なモード・対象外形式・無効化設定の拒否、自動リトライの無効化、RQ IDの生成と解析を確認します。既存のProject Import datasetが引き続き `dataset_file` と `import_dataset_as_project` を使うことも確認します。これらはHTTPサーバーを経由せず、リクエスト管理クラスを直接実行する検証です。
+リクエスト管理は実際のProjectとアップロード用ファイルオブジェクトを使い、`annotation_file` の受け取りと一時保存、モードの解析、コールバック引数、キュー投入前の無効なモード、対象外形式、無効化設定の拒否、自動リトライの無効化、RQ IDの生成と解析を確認します。既存のProject Import datasetが引き続き `dataset_file` と `import_dataset_as_project` を使うことも確認します。これらはHTTPサーバーを経由せず、リクエスト管理クラスを直接実行する検証です。
 
 この検証のOPAの判断と実行中ワーカーの取得は代替実装で、RQメタデータのRedis保存先には `fakeredis` を使用します。配備時の起動シグナル、HTTPアップロード、実Redisワーカー、PostgreSQLの行ロックによる同時更新制御は対象外です。
 

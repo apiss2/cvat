@@ -1,14 +1,14 @@
-# DicomTagに基づく物理長の表示
+# 折れ線の長さをmmで表示する
 
 [アノテーション操作](README.md) / [拡張機能の管理](../extensions/management.md)
 
-この拡張は、画像のTagアノテーション `DicomTag` に保存された `PixelSpacing` を使い、
-polylineの長さをmmで表示します。参照元はそのフレームの `DicomTag` だけです。
-タスク共通値や専用の設定画面はありません。
+画像上に描いた折れ線の長さを、画素数ではなくmmで確認する機能です。DICOMから保存した画素間隔を使います。
+
+このフォークでは、DICOMの識別情報や撮影条件を画像単位で保存するタグを **DicomTag** と呼びます。「DicomTag」の `PixelSpacing` 属性が隣接画素の間隔です。この機能は表示中のフレームに保存された値だけを参照し、CVATの折れ線 `polyline` の長さを計算します。
 
 ## 参照する属性と単位
 
-DICOM取り込みは、標準タグのKeywordを属性名として保存します。
+DICOM取り込みは、標準の属性名であるKeywordをCVATの属性名として保存します。
 `PixelSpacing (0028,0030)` は `DicomTag` のText属性 `PixelSpacing` です。
 値は `0.30\0.25` のような、バックスラッシュで区切った2個の数値です。
 
@@ -68,7 +68,7 @@ ITGformat HDR spacing = 0.25 0.3 1
 Tagは標準のアノテーションとして保存するため、バックアップも標準の処理を使用します。
 この拡張専用のDBテーブル、API、バックアップファイルは追加しません。
 
-## 有効化と無効化
+## 管理者向けの設定
 
 [共通の更新手順](../extensions/update.md)に従い、既存の選択を保持して
 `.env` の `CVAT_EXTENSIONS` に `physical_measurements` を追加します。

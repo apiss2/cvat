@@ -1,11 +1,14 @@
-# 拡張機能の共通管理
+# 追加機能の設定と起動
 
-設定ファイルの読み込み、Composeの選択、ビルド、起動、停止、関数の配備をcvatctlで管理します。
+このディレクトリには、CVATと追加機能をまとめて設定、ビルド、起動、停止するコマンド **cvatctl** があります。必要な機能を設定ファイルで選ぶと、「cvatctl」が必要な画面とサービスを組み合わせます。
 
-管理対象と機能追加時の手順は[拡張機能の管理](../../docs/extensions/management.md)を参照してください。
+| 目的 | 読む文書 |
+| --- | --- |
+| 初めて導入する | [導入と共通設定](../../docs/extensions/installation.md) |
+| 使う機能を選ぶ | [機能の選択と管理](../../docs/extensions/management.md) |
+| 設定値を確認する | [設定例](config.example.env) |
+| 既存環境を更新する | [更新手順](../../docs/extensions/update.md) |
+| 更新前にデータを保存する | [増分バックアップ](../../docs/extensions/incremental-backup.md) |
+| 管理処理を開発する | [機能追加の手順](../../docs/extensions/management.md#機能を追加するときの手順) |
 
-操作、導入条件、制限、検証方法は[機能のドキュメント](../../docs/extensions/README.md)を参照してください。
-
-Projectの既存タスクへアノテーションを取り込む機能は `project_annotations` で選択します。既存インポータとDicomTagによる画像照合の両方を同じ拡張で管理します。入力形式と置換範囲は[Projectへのアノテーション取り込み](../../docs/extensions/project-annotation-import.md)を参照してください。
-
-更新前の保存には`cvatctl backup create --stop`を使用します。初回設定、保存対象と復元方法は[増分バックアップ](../../docs/extensions/incremental-backup.md)を参照してください。
+管理の実装は [manage.py](manage.py)、機能の登録は [catalog.py](catalog.py)、モデルの配備は [functions.py](functions.py)、バックアップは [backup.py](backup.py) にあります。操作全般は[共通運用](../../docs/extensions/README.md)を参照してください。

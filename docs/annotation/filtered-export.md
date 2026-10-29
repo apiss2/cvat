@@ -1,8 +1,8 @@
-# アノテーション条件による画像のエクスポート
+# 条件に合う画像をエクスポートする
 
 [アノテーション操作](README.md) / [拡張機能の管理](../extensions/management.md)
 
-タスクとプロジェクトのActionsに「条件を指定してエクスポート」を追加します。表示フィルターと同じQuery BuilderとJsonLogicの表現を使い、条件に合うアノテーションがある画像を選択します。表示フィルターの状態は変更しません。
+タグや図形の条件に合う画像を選び、その画像とアノテーションを出力する機能です。タスクまたはプロジェクトのActionsから「条件を指定してエクスポート」を開きます。条件はCVATの表示フィルターと同じ形式で組み立てますが、作業画面の表示条件は変わりません。
 
 ## 条件の指定
 
@@ -27,7 +27,7 @@
 この機能はその仕様を変えず、エラーを回避するためのタグ削除も行いません。
 選択画像の `DicomTag` もそのまま渡るため、HDRには通常出力と同じ画素間隔が入ります。
 
-## 有効化
+## 管理者向けの設定
 
 既存の`.env`の`CVAT_EXTENSIONS`に`filtered_export`を追加します。既存のSAMやモデル管理などの選択は残してください。次は画面機能だけを選ぶ最小例です。
 
@@ -45,7 +45,7 @@ bash components/extensions/cvatctl check
 
 詳しくは[共通管理の手順](../extensions/management.md)を参照してください。推論サービスやGPUは不要です。UIの直接開発では`CLIENT_PLUGINS`を指定します。マージだけでは実行環境に反映されません。`filtered_export`を外してUIを再ビルドするとメニューは消えますが、新APIはサーバーに残ります。APIも除去する場合はこの変更を含まないサーバーとワーカーに戻します。
 
-## 実装の分離
+## 開発者向けの実装
 
 既存のAPIへの追加は`cvat/urls.py`の登録1行です。配備対象の選択は共通の`components/extensions/manage.py`で管理します。新しい処理は`cvat/apps/dataset_manager/filtered_export/`と`cvat-ui/plugins/filtered-export/`に分離しています。既存の表示フィルター、形式変換、権限定義、キュー管理は変更しません。DB変更、追加パッケージ、追加サービスはありません。
 
@@ -100,7 +100,7 @@ GET  /api/filtered-export/tasks/{id}/download?rq_id=...
 ```sh
 python -m unittest discover -s tests/filtered_export -v
 node --test cvat-ui/plugins/filtered-export/tests/*.test.cjs
-npx tsc --noEmit --strict --target es2022 --lib es2022,dom \
+npx tsc --noEmit --skipLibCheck --strict --target es2022 --lib es2022,dom \
   cvat-ui/plugins/filtered-export/src/ts/api.ts
 python -m compileall -q cvat/apps/dataset_manager/filtered_export
 ```

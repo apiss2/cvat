@@ -20,8 +20,8 @@
 [Academy](https://www.cvat.ai/resources/academy) ·
 [Blog](https://www.cvat.ai/resources/blog)
 
-このフォークの追加機能は[独自拡張の日本語ドキュメント](docs/README.md)を参照してください。
-導入、cvatctlによる機能選択、モデル管理、追跡、条件付きエクスポートを説明しています。
+このフォークでは、DICOMの取り込み、アノテーションの一括更新、モデルの登録と実行、画像の確認を支援する機能を追加しています。
+目的別の[機能一覧と操作説明](docs/README.md)、管理者向けの[導入と設定](docs/extensions/installation.md)、[更新とバックアップ](docs/extensions/README.md)を日本語でまとめています。
 冒頭のCIバッジは上流CVATの結果です。このフォークではGitHub Actionsを無効にしているため、試験とビルドは独自拡張のドキュメントに従ってローカルで実行してください。
 
 ## What is CVAT Community?

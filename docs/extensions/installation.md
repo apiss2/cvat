@@ -2,80 +2,93 @@
 
 [共通運用](README.md)
 
-このページはLinux上の単一DockerデーモンにCVATと独自拡張を導入する管理者向けです。既存環境の変更は[更新手順](update.md)から開始してください。
+このページは、Linuxの1台のDockerホストにCVATと追加機能を新規導入する管理者向けです。設定と起動は、共通管理コマンド **cvatctl** で行います。「cvatctl」は設定ファイル `.env` を読み、選択した機能だけを組み合わせます。既存環境の変更は[更新手順](update.md)から開始してください。
 
 ## ホストと保存先を準備する
 
-Python 3.10以上、Git、Docker Engine、Docker Compose 2.24.4以上と、完全なCVATチェックアウトを用意します。Composeの`!override`を使うため、旧形式のdocker-composeは使用しません。
-SAM2、SAM3.1、UltraSAMにはNVIDIA GPU、対応ドライバー、NVIDIA Container Toolkit、Nuclio dashboardと同じ版のnuctlが必要です。版は`components/serverless/docker-compose.serverless.yml`と照合します。モデル用のPythonとCUDA依存関係をCVAT本体へインストールしません。
+共通の前提は、Python 3.10以上、Git、Docker Engine、Docker Compose 2.24.4以上、およびこのリポジトリの完全なチェックアウトです。複数のサービスをまとめて起動するDocker Composeには `!override` 構文が必要なため、旧形式の `docker-compose` は使用しません。ここでのPython要件は「cvatctl」の実行用で、別途CVAT SDKやCLIを利用する場合はPython 3.11以上が必要です。
 
-検証環境と本番環境は別ホストまたは別Dockerデーモンに分けます。標準Composeには固定のコンテナ名と公開ポートがあるため、プロジェクト名だけの変更では分離できません。復元先のメール、Webhook、共有フォルダー、外部DBも本番から隔離します。
+モデルによる画像分割と追跡を使う場合は、追加の準備があります。SAM2、SAM3.1、UltraSAMにはNVIDIA GPU、対応ドライバー、NVIDIA Container Toolkit、および推論サービスNuclioの管理コマンド `nuctl` が必要です。`nuctl` は [NuclioのCompose定義](../../components/serverless/docker-compose.serverless.yml) のdashboardと同じ版を用意します。モデル用のPythonとCUDA依存関係は、CVAT本体とは別のコンテナへ導入します。
 
-モデル管理の既定保存先はチェックアウト内のcvat-model-registry/です。初期化がこのディレクトリの全内容を除外する.gitignoreを作り、Dockerのビルド対象からも除外します。既に追跡されたデータは除外規則だけでは保護できないため、その状態で初期化を進めないでください。
-別の保存先を使う場合はMR_HOMEへ絶対パスを指定します。チェックアウトを移す場合も、既存の保存先を引き継ぐかMR_HOMEを固定します。バックアップと秘密情報の複製はリポジトリ外に保管します。
+検証環境と本番環境は別ホストまたは別Dockerデーモンに分けます。標準構成には固定のコンテナ名と公開ポートがあるため、環境名だけの変更では分離できません。復元先のメール、Webhook、共有フォルダー、外部DBも本番から隔離します。
 
 ## 共通設定を作成する
 
-以下はチェックアウトのルートで実行します。
+リポジトリのルートで、次のコマンドを実行します。`init` は設定例をコピーし、追跡用の秘密情報を生成します。
 
 ```bash
 ./components/extensions/cvatctl init
 chmod 600 .env
 ```
 
-initは既存の設定ファイルを上書きしません。既存環境では[設定例](../../components/extensions/config.example.env)から必要な項目だけを統合してください。既存のComposeプロジェクト名、ネットワーク、ボリューム名、秘密情報を維持します。
+作成された `.env` はGitへ登録しません。`init` は既存ファイルを上書きしないため、既存環境では[設定例](../../components/extensions/config.example.env)から必要な項目だけを統合します。環境名、ネットワーク、保存ボリューム、秘密情報は元の値を維持してください。
+
+## 最初に確認する設定
+
+初めに、接続先、環境の名前、使う機能を確認します。設定例の `[確認必須]` は利用環境に合うか確認する項目、`[選択時必須]` は該当機能を使う場合に必要な項目、`[自動生成]` は `init` が用意する秘密情報、`[任意]` は通常そのまま使う項目です。
+
+| 設定 | 確認する内容 |
+| --- | --- |
+| `CVAT_HOST` | ブラウザーから接続するホスト名またはIPです。スキームとポートを含めません。ホスト内だけで使う場合は `localhost` のままにできます。 |
+| `COMPOSE_PROJECT_NAME` | Dockerで環境を識別する名前です。新規環境の例は `cvat` です。既存環境では変更しません。 |
+| `CVAT_EXTENSIONS` | 使う機能の設定名をカンマで区切ります。初期値にはGPUが必要なSAM2とUltraSAMが含まれるため、必要な機能だけを残します。空欄なら追加機能を選択しません。 |
+| `CVAT_NETWORK_NAME` | 任意です。空欄なら `<COMPOSE_PROJECT_NAME>_cvat` になります。既存ネットワークを引き継ぐ場合は実名を指定します。 |
+| `CVAT_EXTRA_COMPOSE_FILES` | 任意です。HTTPS、共有フォルダー、外部DBなどの追加設定ファイルをセミコロンで区切ります。 |
+
+機能の名前と内容は[機能の選択と管理](management.md)で確認します。例えば、DICOMを取り込み、画像上の長さとタスクの説明を表示する場合は、生成済み `.env` の該当行を次のように変更します。この例はGPUを必要としません。
 
 ```dotenv
 CVAT_HOST=cvat.example.internal
 COMPOSE_PROJECT_NAME=cvat
-CVAT_NETWORK_NAME=cvat_cvat
-CVAT_EXTENSIONS=itgformat,sam2,ultrasam,model_registry
-MR_HOME=
-MR_PUBLIC_URL=https://cvat.example.internal/model-registry/
-MR_CVAT_URL=http://cvat_server:8080
-CVAT_MODEL_REGISTRY_URL=
-CVAT_EXTRA_COMPOSE_FILES=
+CVAT_EXTENSIONS=dicom_import,physical_measurements,task_context
 ```
 
-この例のURLとホスト名は実際の環境へ置き換えます。SAM3.1は必要な場合にsam31を追加し、[モデルの選択と配備](model-selection.md)の重みとRedis設定を行います。
+## 選んだ機能の設定を確認する
 
-| 設定 | 内容 |
-|---|---|
-| CVAT_HOST | 公開ホスト名です。スキームとポートは含めません。 |
-| COMPOSE_PROJECT_NAME | 既存のComposeプロジェクト名を維持します。 |
-| CVAT_NETWORK_NAME | CVATと関数が使用するネットワークです。 |
-| CVAT_EXTENSIONS | 有効にする機能名をカンマで区切ります。 |
-| CVAT_EXTRA_COMPOSE_FILES | HTTPS、共有フォルダー、外部DBなどの追加Composeをセミコロンで区切ります。 |
-| SAM2_REDIS_VOLUME、SAM31_REDIS_VOLUME | 各モデル専用のRedisボリュームです。既存状態を引き継ぐ場合は実名を指定します。 |
-| SAM2_REDIS_PASSWORD、SAM31_REDIS_PASSWORD | initが準備する各Redisと追跡関数の秘密情報です。共用しません。 |
-| NUCLIO_NAMESPACE | CVATと関数で一致させる名前空間です。 |
-| NUCLIO_DASHBOARD_PORT | ループバックへ公開する管理用ポートです。 |
+共通設定の次に、選択した機能の節だけを[設定例](../../components/extensions/config.example.env)で確認します。選んでいないモデルの重みや接続先を埋める必要はありません。
 
-.envには展開済みのKEY=VALUEを書き、空白を含む値は引用符で囲みます。export、コマンド置換、複数行の値、変数展開を使用しません。設定ファイルはシェルとして実行されず、保存した設定は親シェルの環境変数より優先されます。
-設定を別の場所に保管する場合は、全コマンドで同じ--env-fileを指定します。
+| 使う機能 | 必要な確認 | 詳細 |
+| --- | --- | --- |
+| SAM2 | モデルの大きさと重みを選びます。公式重みを使う場合は `SAM2_CHECKPOINT_HOST` を空欄にします。Redis接続用パスワードは `init` が生成します。 | [モデルの選択と配備](model-selection.md) |
+| SAM3.1 | 互換性のある結合済み重みの絶対パスを `SAM31_CHECKPOINT_HOST` に指定します。新規配備時に必要で、自動取得しません。RedisはSAM2と別にします。 | [モデルの選択と配備](model-selection.md) |
+| UltraSAM | GPUの番号またはUUIDを確認します。既定はGPU 0です。 | [導入と検証](../ultrasam/operations.md) |
+| モデル登録 | 画面のURLとモデル保存先を確認します。同じホストか別ホストかで接続設定が変わります。 | 次の節 |
+| DICOM取り込み、アノテーションの一括取り込み、画像の確認機能 | `CVAT_EXTENSIONS` で選びます。機能ごとの追加環境変数は通常不要です。 | [機能の選択と管理](management.md) |
+| 画像を選んで実行 | 使用するモデルを別途用意します。登録ONNXモデルなら `model_registry` も選びます。 | [画像を選んで実行](../annotation/selective-ai.md) |
+
+追跡用の保存先を引き継ぐ場合は、`SAM2_REDIS_VOLUME` と `SAM31_REDIS_VOLUME` に元の実名を指定します。空欄なら環境名から自動設定されます。既存のRedis接続用パスワードは保持し、SAM2とSAM3.1で共用しません。
+
+## モデル管理の接続を設定する
+
+ONNXモデル管理を同じDockerホストで使う場合は、`CVAT_MODEL_REGISTRY_URL` を空欄にし、`MR_PUBLIC_URL` を実際のCVAT画面のURLに合わせます。例えば `http://cvat.example.internal:8080` でCVATを開く場合は次のとおりです。
+
+```dotenv
+MR_PUBLIC_URL=http://cvat.example.internal:8080/model-registry/
+MR_HOME=
+CVAT_MODEL_REGISTRY_URL=
+```
+
+公開URLは、CVAT画面とスキーム、ホスト、ポートを一致させます。HTTPの経路を振り分ける既存のTraefikが `/model-registry/` を管理サービスへ転送し、専用の公開ポートは追加しません。HTTPSを使う場合は、URLの変更に加えて証明書と接続経路を別途設定します。
+
+保存先は、`MR_HOME` が空欄ならチェックアウト内の `cvat-model-registry/` です。初期化がGitの除外設定を作り、Dockerのビルド対象からも除外します。既にGitへ登録したデータは除外規則だけでは保護できないため、その状態で初期化を進めないでください。保存先を変える場合は絶対パスを指定し、既存データを引き継ぐ場合は元の `MR_HOME` と `MR_INSTANCE` を維持します。
+
+別ホストでモデル管理を動かす場合は、`CVAT_MODEL_REGISTRY_URL` と `CVAT_MODEL_GATEWAY_SECRETS_DIR` の指定が必要です。認証、証明書、既存保存先の移行は[モデル管理の配備](../model-registry/deployment.md)と[保守](../model-registry/operations.md)を参照してください。
+
+## 設定ファイルの書き方
+
+`.env` には展開済みの `KEY=VALUE` を記載し、空白を含む値は引用符で囲みます。`export`、コマンド置換、複数行の値、変数展開は使用できません。ファイルはシェルとして実行されず、記載した設定は親シェルの環境変数より優先されます。
+
+別の場所に設定を保管する場合は、全コマンドで同じ `--env-file` を指定します。バックアップと秘密情報の複製はリポジトリ外へ保管してください。
 
 ```bash
 ./components/extensions/cvatctl --env-file /srv/cvat-config/cvat.env config
 ```
 
-追加Composeは記載した順に読み込みます。docker-compose.override.ymlの暗黙の読み込みに依存しません。機能用Composeと管理対象のUIプラグインは、CVAT_EXTENSIONSの選択に応じて自動設定されます。
-UltraSAMは標準のAI Toolsを使うため専用UIは不要で、UltraSAMだけの構成では追跡用Redisを起動しません。
-選択実行、フレーム移動用フィルター、条件付きエクスポート、物理長表示も同じ設定で選びます。
-物理長表示は `physical_measurements` を追加します。
-GPUと追加サービスは不要です。
-拡張名の一覧と設定変更は[拡張機能の管理](management.md)を参照してください。
-
-標準のAnnotationGuideに記載した患者情報や撮影場所などをInfoから参照する場合は、`task_context` を追加します。標準のガイド機能を利用し、API経路やDBテーブルを新設しません。追加サービスとGPUも不要です。初回は、Job APIに参照用の `task_guide_id` を追加するこの変更を含むサーバーとUIを配備してください。導入後の有効化・無効化は、選択に応じたUIの再ビルドで切り替えます。操作は[タスクの背景情報](task-context.md)を参照してください。
-
-## モデル管理の接続を設定する
-
-同じDockerホストではCVAT_MODEL_REGISTRY_URLを空欄にし、MR_HOMEとMR_PUBLIC_URLを共通の.envに設定します。Traefikが/model-registry/を管理サーバーへ転送し、管理サーバーと中継にホストの公開ポートを追加しません。
-MR_PUBLIC_URLはCVAT画面とスキーム、ホスト、ポートを揃えます。HTTPSの指定だけでは証明書やTraefikの入口は作成されません。
-別ホストの接続、認証、証明書、既存保存先の移行は[モデル管理の配備](../model-registry/deployment.md)と[保守](../model-registry/operations.md)を参照してください。
+追加Composeファイルは `CVAT_EXTRA_COMPOSE_FILES` に記載した順に読み込みます。相対パスはリポジトリのルートが基準です。`docker-compose.override.yml` の暗黙の読み込みには依存しません。機能用のComposeと画面プラグインは自動選択されるため、重複指定は不要です。
 
 ## ビルドして起動する
 
-ソースを確認してコミットしてからビルドします。イメージのタグはソースから決まるため、ビルド後のコミットを同一の構成として扱いません。
+ソースを確認してコミットしてからビルドします。イメージのタグはソースから決まるため、ビルド後にコミットしたソースを同一の構成として扱いません。
 
 ```bash
 ./components/extensions/cvatctl config
@@ -87,21 +100,23 @@ MR_PUBLIC_URLはCVAT画面とスキーム、ホスト、ポートを揃えます
 ./components/extensions/cvatctl check
 ```
 
-buildはCVATのサーバーとUI、有効な中継、モデル管理サーバー、ONNXワーカーを対象にします。SAM系の関数は必要に応じてupでビルドして配備するため、buildだけでは関数の準備は完了しません。
-このフォークではGitHub Actionsによるイメージのビルドと公開は行いません。公式の `cvat/server` と `cvat/ui` にはこのフォークの変更は含まれないため、上記の `cvatctl build` でローカルイメージを作成します。`cvatctl pull` は外部の依存イメージを取得する操作で、独自拡張のビルドを代替しません。検証済みイメージの移送と再利用は[更新手順](update.md)を参照してください。
-初回ビルドの外部接続と重みの条件は[モデルの選択](model-selection.md)と[UltraSAMの運用](../ultrasam/operations.md)を確認してください。
-checkの成功は、実GPU推論や画面操作の成功を保証しません。[更新手順](update.md)の受入確認と各機能の試験を行ってから公開します。
+`build` はCVATのサーバーと画面、および選択したモデル管理サービスと推論ワーカーなどを作成します。GPUモデルの推論処理は必要に応じて `up` でビルドして配備するため、`build` だけでは準備が完了しません。
+
+このフォークではGitHub Actionsによるイメージのビルドと公開は行いません。公式の `cvat/server` と `cvat/ui` には独自変更が含まれないため、上記の `cvatctl build` で作成します。`pull` は外部の依存イメージを取得する操作です。検証済みイメージの移送と再利用は[更新手順](update.md)を参照してください。
+
+起動後は、[更新手順](update.md)の受入確認と各機能の試験を行ってから公開します。`check` は構成を検査するため、実画像でのGPU推論やブラウザー操作は別途確認します。
 
 ## 停止、再開、状態記録
 
-新規操作を止め、登録と推論の完了を確認してからdownを実行します。同じホストの管理サーバーとその推論ワーカー、Nuclio関数も停止し、保存データは保持します。別の推論ホストは別途停止します。
+停止する場合は、新規操作を止め、登録と推論の完了を確認してから `down` を実行します。同じホストのモデル管理サービスと推論ワーカー、Nuclioの推論処理も停止し、保存データは保持します。別の推論ホストは別途停止します。
 
 ```bash
 ./components/extensions/cvatctl down
 ./components/extensions/cvatctl up --no-build
 ```
 
-再開には停止前と同じ設定と既存イメージを使います。通常の停止にボリューム削除やデータベースの巻き戻しは含めません。
+再開には停止前と同じ設定と既存イメージを使用します。通常の停止にボリューム削除やデータベースの巻き戻しは含めません。
 
-cvatctlの状態記録は作業ツリー外の~/.local/state/cvat-extensions/配下に保存し、configが具体的な場所を表示します。--state-dirやXDG_STATE_HOMEを使う場合は、停止と再開でも同じ場所を使用します。
-状態記録には秘密情報が含まれます。.env、MR_HOME/config/、MR_HOME/data/、証明書と同様に保護してください。別Dockerデーモンへの復元では、元の稼働記録をそのまま操作に使わず、復元先の設定と関数を確認して新しい記録を作ります。
+起動構成の記録は、作業ツリー外の `~/.local/state/cvat-extensions/` 配下へ保存します。`config` が具体的な場所を表示します。`--state-dir` や `XDG_STATE_HOME` を使用する場合は、停止と再開でも同じ場所を指定します。
+
+この記録には秘密情報が含まれます。`.env`、モデル保存先の `config/` と `data/`、証明書と同様に保護してください。別Dockerデーモンへ復元する場合は、復元先の設定と推論処理を確認し、新しい記録を作ります。

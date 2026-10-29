@@ -1,39 +1,43 @@
-# UIプラグインの案内
+# 画面プラグインの案内
 
-[ドキュメントの入口](../../docs/README.md) / [共通の導入手順](../../docs/extensions/installation.md)
+[追加機能の一覧](../../docs/README.md) / [導入と共通設定](../../docs/extensions/installation.md)
 
-各プラグインは、このフォークの既存の登録機構を通じてCVATの画面や操作を拡張します。以下はプラグインの名前と、その操作を説明する正本です。
+このディレクトリには、CVATのメニューや作業画面に機能を追加するコードを配置しています。以下は開発者が実装と操作説明を探すための一覧です。
 
-| プラグイン | 役割 | 説明 |
-|---|---|---|
-| `model-registry` | モデル管理へのリンクとモデル一覧の更新 | [モデル管理](../../docs/model-registry/README.md) |
-| `sam2` | SAM2の追跡操作 | [共通の追跡操作](../../docs/annotation/tracking.md) |
-| `sam31` | SAM3.1の追跡操作 | [共通の追跡操作](../../docs/annotation/tracking.md) |
-| `frame-navigation-filter` | 表示を隠さず、フィルターをフレーム移動に使う | [フィルター](../../docs/annotation/frame-navigation-filter.md) |
-| `selective-ai` | タグ条件と画像選択による自動アノテーション | [選択実行](../../docs/annotation/selective-ai.md) |
-| `filtered-export` | 条件に合う画像のエクスポート | [条件を指定したエクスポート](../../docs/annotation/filtered-export.md) |
-| `physical-measurements` | DicomTagのPixelSpacingに基づく折れ線の物理長表示 | [物理長の表示](../../docs/annotation/physical-measurements.md) |
-| `task-context` | 標準のタスク用AnnotationGuideをInfoとタスク詳細から参照 | [タスクの背景情報](../../docs/extensions/task-context.md) |
-| `dicom-import` | プロジェクトへDICOMの画像と動画を取り込む | [DICOM取り込み](../../docs/annotation/dicom-import.md) |
-| `project-annotations` | Projectの既存タスクへ通常形式またはDICOM情報でアノテーションを取り込む | [Projectへのアノテーション取り込み](../../docs/extensions/project-annotation-import.md) |
-| `sam` | 上流CVATのSAM用クライアント処理 | [SAMプラグイン](sam/README.md) |
+## データと説明の取り込み
 
-独自プラグインは共通設定のCVAT_EXTENSIONSで選びます。
-画面機能の拡張名はframe_navigation_filter、selective_ai、filtered_export、physical_measurements、task_contextです。
-DICOM取り込みはdicom_importを選択し、サーバーとUIを再ビルドします。
-Projectのアノテーション取り込みはproject_annotationsを選択し、サーバー、取り込みワーカー、UIを同じ版へ更新します。
-管理コマンドが対応するパスをUIビルドへ追加するため、CVAT_CLIENT_PLUGINSへの手動追記は不要です。
-既存のSAMやモデル管理の選択は保持してください。
+| 役割 | ディレクトリ | 操作説明 |
+| --- | --- | --- |
+| DICOMの画像と動画を登録する | `dicom-import/` | [DICOM取り込み](../../docs/annotation/dicom-import.md) |
+| 既存タスクのアノテーションを一括更新する | `project-annotations/` | [アノテーション取り込み](../../docs/extensions/project-annotation-import.md) |
+| タスクに保存した作業説明を表示する | `task-context/` | [タスク情報の表示](../../docs/extensions/task-context.md) |
 
-```dotenv
-CVAT_EXTENSIONS=itgformat,sam2,model_registry,frame_navigation_filter,selective_ai,filtered_export,physical_measurements,task_context
-```
+## 画像の確認と出力
 
-選択の変更と機能追加時の開発方針は[拡張機能の管理](../../docs/extensions/management.md)を参照してください。一覧にない独自パスは引き続きCVAT_CLIENT_PLUGINSで指定できます。
+| 役割 | ディレクトリ | 操作説明 |
+| --- | --- | --- |
+| 他の図形を表示したまま条件で画像を移動する | `frame-navigation-filter/` | [フレーム移動](../../docs/annotation/frame-navigation-filter.md) |
+| 画素間隔から折れ線の長さを表示する | `physical-measurements/` | [長さの表示](../../docs/annotation/physical-measurements.md) |
+| 条件に合う画像を出力する | `filtered-export/` | [条件付きエクスポート](../../docs/annotation/filtered-export.md) |
 
-変更後は、共通の更新手順に従ってUIをビルドし直して起動します。マージや設定ファイルの編集だけでは、配備済みの画面に反映されません。直接UIを開発する場合のビルド変数は`CLIENT_PLUGINS`です。
+## モデルの利用
 
-`frame-navigation-filter`は、このフォークの`methodArguments`対応を含むcoreと組み合わせて使用します。未変更の上流CVATへプラグインだけをコピーする構成は対象外です。
-プラグインを無効にするときも、CVAT_EXTENSIONSから該当の拡張名を除き、UIを再ビルドしてください。
+| 役割 | ディレクトリ | 操作説明 |
+| --- | --- | --- |
+| モデル管理画面を開き、モデル一覧を更新する | `model-registry/` | [モデル登録](../../docs/model-registry/README.md) |
+| 対象画像を選んで自動アノテーションする | `selective-ai/` | [画像を選んで実行](../../docs/annotation/selective-ai.md) |
+| SAM2で図形を追跡する | `sam2/` | [動画の追跡](../../docs/annotation/tracking.md) |
+| SAM3.1で図形を追跡する | `sam31/` | [動画の追跡](../../docs/annotation/tracking.md) |
+| 上流CVATのSAMを実行する | `sam/` | [SAMプラグイン](sam/README.md) |
 
-`task-context` は、Job応答の読み取り専用項目 `task_guide_id` を追加した同じフォークと組み合わせて使用します。共通の管理コマンドで画面プラグインを切り替えます。保存・編集・バックアップには標準のAnnotationGuideを使用し、無効にしてもガイドを保持します。
+## 有効化と再ビルド
+
+独自プラグインは共通設定の `CVAT_EXTENSIONS` で選びます。設定名はディレクトリ名と異なる場合があるため、[機能の管理一覧](../../docs/extensions/management.md)を参照してください。管理コマンドが必要なパスをUIビルドへ追加するため、管理対象のプラグインを `CVAT_CLIENT_PLUGINS` へ手動追記しません。
+
+変更後は[更新手順](../../docs/extensions/update.md)に従って再ビルドし、起動します。DICOMやアノテーションの取り込みなど、サーバー側の処理もある機能はサーバーとワーカーを同じ版へ更新してください。無効にする場合も、機能の選択を外して再ビルドします。ソースや設定を編集しただけでは配備済みの画面に反映されません。
+
+一覧にない独自パスは `CVAT_CLIENT_PLUGINS` で指定できます。UIを直接開発する場合のビルド変数は `CLIENT_PLUGINS` です。
+
+## CVAT本体との接続
+
+フレーム移動のプラグインは、このフォークの `cvat-core/src/plugins.ts` にある引数差し替え機能 `methodArguments` と組み合わせて使用します。タスク情報のプラグインは、Job応答に追加した読み取り専用項目 `task_guide_id` を使います。どちらも未変更の上流CVATへ画面のコードだけをコピーする構成には対応しません。接続の仕様は各操作説明の開発者向けの節を参照してください。
