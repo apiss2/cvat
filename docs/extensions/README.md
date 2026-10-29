@@ -11,6 +11,7 @@
 | 機能の管理対象、設定変更、追加時の開発手順を確認する | [拡張機能の管理](management.md) |
 | 標準AnnotationGuideの背景情報をInfoから参照する | [タスクの背景情報](task-context.md) |
 | DICOMの画像と動画をタスクへ取り込む | [DICOM取り込み](../annotation/dicom-import.md) |
+| Projectの既存タスクへアノテーションを取り込む | [Projectへのアノテーション取り込み](project-annotation-import.md) |
 | 構造化JSONを各タスクのAnnotationGuideへ反映する | [タスク情報のJSON取り込み](task-guide-import.md) |
 | SAM2とSAM3.1の重みを選び、関数を配備する | [モデルの選択と配備](model-selection.md) |
 | devで確認した変更を本番へ反映する | [更新手順](update.md) |
@@ -21,7 +22,7 @@
 ## 機能の選択
 
 `CVAT_EXTENSIONS`には`itgformat`、`sam2`、`sam31`、`ultrasam`、`model_registry`、`frame_navigation_filter`、`selective_ai`、
-`filtered_export`、`physical_measurements`、`task_context`、`dicom_import`をカンマで区切って指定します。
+`filtered_export`、`physical_measurements`、`task_context`、`dicom_import`、`project_annotations`をカンマで区切って指定します。
 SAM3.1は任意の機能です。新規に配備する場合は、互換性のある重みを事前に配置してください。
 画面だけの機能も同じ設定で管理します。選択に応じた構成と有効化・無効化の手順は[拡張機能の管理](management.md)を参照してください。
 

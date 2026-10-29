@@ -1,0 +1,5 @@
+{
+  "name": "project_annotations",
+  "client_plugin": "plugins/project-annotations",
+  "compose_files": ["components/project_annotations/docker-compose.project-annotations.yml"]
+}

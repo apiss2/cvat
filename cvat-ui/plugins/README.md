@@ -15,11 +15,13 @@
 | `physical-measurements` | DicomTagのPixelSpacingに基づく折れ線の物理長表示 | [物理長の表示](../../docs/annotation/physical-measurements.md) |
 | `task-context` | 標準のタスク用AnnotationGuideをInfoとタスク詳細から参照 | [タスクの背景情報](../../docs/extensions/task-context.md) |
 | `dicom-import` | プロジェクトへDICOMの画像と動画を取り込む | [DICOM取り込み](../../docs/annotation/dicom-import.md) |
+| `project-annotations` | Projectの既存タスクへ通常形式またはDICOM情報でアノテーションを取り込む | [Projectへのアノテーション取り込み](../../docs/extensions/project-annotation-import.md) |
 | `sam` | 上流CVATのSAM用クライアント処理 | [SAMプラグイン](sam/README.md) |
 
 独自プラグインは共通設定のCVAT_EXTENSIONSで選びます。
 画面機能の拡張名はframe_navigation_filter、selective_ai、filtered_export、physical_measurements、task_contextです。
 DICOM取り込みはdicom_importを選択し、サーバーとUIを再ビルドします。
+Projectのアノテーション取り込みはproject_annotationsを選択し、サーバー、取り込みワーカー、UIを同じ版へ更新します。
 管理コマンドが対応するパスをUIビルドへ追加するため、CVAT_CLIENT_PLUGINSへの手動追記は不要です。
 既存のSAMやモデル管理の選択は保持してください。
 
