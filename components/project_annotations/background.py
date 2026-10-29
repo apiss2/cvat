@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Use the native upload, queue, request tracking and cleanup mechanisms."""
 
+from django.dispatch import receiver
 from rest_framework.exceptions import MethodNotAllowed, ValidationError
 
 from cvat.apps.dataset_manager.task import AnnotationImportMode
@@ -8,6 +9,7 @@ from cvat.apps.engine.background import DatasetImporter
 from cvat.apps.engine.models import RequestAction, RequestSubresource, RequestTarget
 from cvat.apps.engine.rq import ImportRequestId
 from cvat.apps.engine.serializers import AnnotationFileSerializer
+from cvat.apps.redis_handler.signals import request_failed, request_succeeded
 
 from . import enabled, supported_format
 
@@ -62,3 +64,14 @@ class ProjectAnnotationImporter(DatasetImporter):
             target_id=self.db_instance.pk,
             subresource=RequestSubresource.ANNOTATIONS,
         ).render()
+
+
+@receiver(request_succeeded, sender=ProjectAnnotationImporter)
+@receiver(request_failed, sender=ProjectAnnotationImporter)
+def remove_project_annotation_input_file(sender, rq_job, **kwargs):
+    # Django signal senders match exactly, so the native DatasetImporter
+    # receivers do not handle this subclass. Reuse their bounded cleanup while
+    # preserving the actual request manager in metadata and completion signals.
+    from cvat.apps.engine.request_handlers import remove_import_input_file
+
+    remove_import_input_file(sender=DatasetImporter, rq_job=rq_job)

@@ -308,6 +308,7 @@ def plan_records(
             for task_id in {task_id for task_id, _ in candidates}:
                 plan.failed_tasks.setdefault(task_id, []).append(message)
                 plan.updates.pop(task_id, None)
+                occupied.pop(task_id, None)
                 removed_tags, removed_values = totals.pop(task_id, (0, 0))
                 generated -= removed_tags
                 attribute_values -= removed_values
@@ -339,6 +340,11 @@ def plan_records(
             if not candidates:
                 continue
             task_id, selected_frame = next(iter(candidates))
+            # A failed task can never produce an update. Keep checking identity
+            # ambiguity above so later rows can still invalidate other tasks,
+            # but do not expand video tags or retain duplicate keys for it.
+            if task_id in plan.failed_tasks:
+                continue
             task = by_id[task_id]
             target_key = (task_id, selected_frame, tuple(identity.items()))
             if target_key not in validated_targets:

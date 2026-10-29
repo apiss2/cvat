@@ -386,6 +386,49 @@ class PlanningTest(unittest.TestCase):
         self.assertEqual(set(result.failed_tasks), {7})
         self.assertEqual(set(result.updates), {8})
 
+    def test_failed_video_task_does_not_expand_subsequent_records(self):
+        first = task(video=True, frames=tuple(range(100)))
+        second = task(8, study="2.3.4", frames=(0,), sops=["2.3.4.5"])
+        labels = LABELS + [
+            {"id": 1000 + index, "name": f"Extra{index}", "type": "tag", "attributes": []}
+            for index in range(20)
+        ]
+        rows = [record(label="missing")]
+        rows.extend(record(label=f"Extra{index}", attributes={}) for index in range(20))
+        rows.append(record("2.3.4.5", study="2.3.4"))
+        native_product = dicom.product
+        expanded = 0
+
+        def counted_product(*args):
+            nonlocal expanded
+            for values in native_product(*args):
+                if isinstance(values[1], dict) and "label_id" in values[1]:
+                    expanded += 1
+                yield values
+
+        with (
+            patch.object(dicom, "MAX_GENERATED_TAGS", 100),
+            patch.object(dicom, "product", side_effect=counted_product),
+        ):
+            result = plan(*rows, tasks=[first, second], labels=labels)
+        self.assertEqual(set(result.failed_tasks), {7})
+        self.assertEqual(set(result.updates), {8})
+        # Only the unrelated task's tag is expanded. The failed video's later
+        # records must not build thousands of keys outside the output budget.
+        self.assertEqual(expanded, 1)
+
+    def test_later_ambiguous_row_still_invalidates_other_tasks_after_failure(self):
+        second = task(8, sops=["1.2.3.5", "1.2.3.6"])
+        result = plan(
+            record(label="missing"),
+            record("1.2.3.6"),
+            record("1.2.3.5"),
+            tasks=[task(), second],
+        )
+        self.assertEqual(set(result.failed_tasks), {7, 8})
+        self.assertEqual(result.ambiguous, [3])
+        self.assertFalse(result.updates)
+
     def test_diagnostic_messages_do_not_echo_identifiers_labels_or_values(self):
         row = record(
             patient_id="sensitive-patient",

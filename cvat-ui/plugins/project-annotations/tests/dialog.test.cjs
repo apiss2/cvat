@@ -4,7 +4,7 @@ const test = require('node:test');
 const { load, tick } = require('./helpers.cjs');
 const { DICOM_FORMAT } = load('messages.ts');
 
-function fixture() {
+function fixture({ formatFailure } = {}) {
     let mounted; let stateIndex = 0; let effectRun = false;
     const values = []; const calls = []; const accepted = []; const lifecycle = [];
     const React = {
@@ -30,7 +30,10 @@ function fixture() {
         body: { appendChild: () => {} },
     } });
     const handle = dialog.openDialog({
-        formats: async () => [DICOM_FORMAT, 'CVAT 1.1'],
+        formats: async () => {
+            if (formatFailure) throw formatFailure;
+            return [DICOM_FORMAT, 'CVAT 1.1'];
+        },
         start: async (...args) => { calls.push(args); return 'accepted-request'; },
         dispose: () => lifecycle.push('abort'),
     }, 'Project', () => lifecycle.push('closed'), (id) => accepted.push(id));
@@ -95,4 +98,20 @@ test('invalid file cannot be selected and valid ZIP preserves explicit mode and 
     assert.match(view.nodes.find((node) => node.type === 'Alert' && node.props.type === 'success').props.description, /Requests/);
     current.handle.dispose(); current.handle.dispose();
     assert.deepEqual(current.lifecycle, ['abort', 'unmount', 'remove', 'closed']);
+});
+
+test('format loading failure remains visible after selecting a ZIP and stops the spinner', async () => {
+    const current = fixture({ formatFailure: new Error('Server unavailable') });
+    assert.equal(current.render().nodes.find((node) => node.type === 'Select').props.loading, true);
+    await tick();
+    let view = current.render();
+    const message = view.nodes.find((node) => node.type === 'Alert' && node.props.type === 'error').props.message;
+    assert.equal(view.nodes.find((node) => node.type === 'Select').props.loading, false);
+    view.nodes.find((node) => node.type === 'input').props.onChange({
+        target: { files: [new File(['zip'], 'sample.zip')], value: 'sample.zip' },
+    });
+    view = current.render();
+    assert.equal(view.nodes.find((node) => node.type === 'Alert' && node.props.type === 'error').props.message, message);
+    assert.equal(view.nodes.find((node) => node.type === 'Select').props.loading, false);
+    assert.equal(view.nodes.find((node) => node.type === 'Button' && node.props.type === 'primary').props.disabled, true);
 });

@@ -19,6 +19,8 @@ export function openDialog(api: API, projectName: string, closed: () => void,
     };
     function Dialog(): JSX.Element {
         const [formats, setFormats] = useState<string[]>([]);
+        const [loadingFormats, setLoadingFormats] = useState(true);
+        const [formatsError, setFormatsError] = useState('');
         const [format, setFormat] = useState('');
         const [mode, setMode] = useState<ImportMode>('append');
         const [file, setFile] = useState<File>();
@@ -34,7 +36,9 @@ export function openDialog(api: API, projectName: string, closed: () => void,
                 setFormats(values);
                 setFormat(values.includes('CVAT 1.1') ? 'CVAT 1.1' : values[0]);
             }).catch((reason) => {
-                if (!session.disposed) setError(errorMessage(reason));
+                if (!session.disposed) setFormatsError(errorMessage(reason));
+            }).finally(() => {
+                if (!session.disposed) setLoadingFormats(false);
             });
         }, []);
         const submit = async (): Promise<void> => {
@@ -68,7 +72,7 @@ export function openDialog(api: API, projectName: string, closed: () => void,
                     <Form layout='vertical'>
                         <Form.Item label='取り込み形式' required>
                             <Select aria-label='取り込み形式' value={format || undefined}
-                                loading={!formats.length && !error} disabled={locked || !formats.length}
+                                loading={loadingFormats} disabled={locked || !formats.length}
                                 options={formats.map((name) => ({ label: name, value: name }))}
                                 onChange={setFormat} showSearch optionFilterProp='label' />
                         </Form.Item>
@@ -111,7 +115,7 @@ export function openDialog(api: API, projectName: string, closed: () => void,
                     <Typography.Text type='secondary'>
                         Taskごとに検証して更新します。一つのTaskで失敗しても他のTaskの処理は続行します。
                     </Typography.Text>
-                    {error && <Alert type='error' message={error} />}
+                    {(formatsError || error) && <Alert type='error' message={formatsError || error} />}
                     {requestID && <Alert type='success' message='取り込みを受け付けました。'
                         description='ダイアログを閉じた後、画面上部のRequestsから進捗を確認できます。' />}
                 </Space>

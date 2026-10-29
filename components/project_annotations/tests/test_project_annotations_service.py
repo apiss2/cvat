@@ -29,6 +29,10 @@ from components.project_annotations.dicom import plan_records
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class JobTimeoutException(Exception):
+    """RQ timeout stand-in for the dependency-free orchestration tests."""
+
+
 def module(name, **attributes):
     result = types.ModuleType(name)
     result.__dict__.update(attributes)
@@ -439,6 +443,7 @@ class Harness:
         )
         modules = {
             "rq": module("rq", get_current_job=lambda: object()),
+            "rq.timeouts": module("rq.timeouts", JobTimeoutException=JobTimeoutException),
             "django.contrib.auth": module(
                 "django.contrib.auth",
                 get_user_model=lambda: types.SimpleNamespace(

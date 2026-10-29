@@ -307,6 +307,40 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
         self.create(task, payload(tags=tags, shapes=[shape]))
         return task
 
+    def gt_pool_task(self, name, *, sop="1.2.3.4"):
+        task = self.task(name, size=3, sop=sop)
+        annotation_job = models.Job.objects.get(segment__task=task)
+        models.Segment.objects.filter(pk=annotation_job.segment_id).update(stop_frame=1)
+        gt_segment = models.Segment.objects.create(
+            task=task,
+            start_frame=2,
+            stop_frame=2,
+            type=models.SegmentType.SPECIFIC_FRAMES,
+            frames=[2],
+        )
+        gt_job = models.Job.objects.create(segment=gt_segment, type=models.JobType.GROUND_TRUTH)
+        models.ValidationLayout.objects.create(
+            task_data=task.data,
+            mode=models.ValidationMode.GT_POOL,
+            frames=[2],
+            frames_per_job_count=1,
+        )
+        models.Image.objects.filter(data=task.data, frame=1).update(
+            is_placeholder=True, real_frame=2
+        )
+        # Only the GT source has a saved DICOM identity. Its placeholder still
+        # receives tags through the native GT pool preprocessing on creation.
+        placeholder_tags = self.tags(task, self.protected_label).filter(frame=1)
+        models.LabeledImageAttributeVal.objects.filter(image__in=placeholder_tags).delete()
+        placeholder_tags.delete()
+        gt_tags = self.tags(task).filter(frame=2)
+        models.LabeledImageAttributeVal.objects.filter(image__in=gt_tags).update(job=gt_job)
+        gt_tags.update(job=gt_job)
+        gt_shapes = models.LabeledShape.objects.filter(job=annotation_job, frame=2)
+        models.LabeledShapeAttributeVal.objects.filter(shape__in=gt_shapes).update(job=gt_job)
+        gt_shapes.update(job=gt_job)
+        return task
+
     def create(self, task, data):
         serializer = LabeledDataSerializer(data=data)
         serializer.is_valid(raise_exception=True)
@@ -463,6 +497,115 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
         self.assertEqual(parsed.subresource, models.RequestSubresource.ANNOTATIONS)
         self.assertEqual(queue, manager.QUEUE_NAME)
         self.assertEqual(parsed.render(), request_id)
+
+    def _assert_request_callback_removes_input(self, *, failed):
+        from cvat.apps.redis_handler.signals import request_failed, request_succeeded
+
+        uploaded = SimpleUploadedFile("annotations.zip", b"uploaded annotations")
+        manager = ProjectAnnotationImporter(
+            request=self.request(data={"annotation_file": uploaded}), db_instance=self.project
+        )
+        manager.init_request_args()
+        manager.validate_request()
+        manager._set_default_callback_params()
+        manager.init_callback_with_params()
+        manager.init_job_callbacks()
+        source = manager.tmp_dir / manager.import_args.filename
+        unrelated = manager.tmp_dir / "unrelated-upload.zip"
+        unrelated.write_bytes(b"another request")
+        job = rq.job.Job.create(
+            manager.callback,
+            args=manager.callback_args,
+            kwargs=manager.callback_kwargs,
+            id=manager.build_request_id(),
+            connection=self.job.connection,
+            origin=manager.QUEUE_NAME,
+            meta={
+                **self.job.meta,
+                "request_manager_cls": (f"{type(manager).__module__}.{type(manager).__qualname__}"),
+            },
+        )
+        signal = request_failed if failed else request_succeeded
+        notifications = []
+
+        def observe(sender, **kwargs):
+            notifications.append((sender, kwargs["rq_job"], kwargs["status"]))
+
+        signal.connect(observe, sender=ProjectAnnotationImporter)
+        try:
+            self.assertTrue(source.is_file())
+            if failed:
+                error = ValueError("test import failure")
+                manager.job_on_failure_callback.func(job, job.connection, type(error), error, None)
+                self.assertIn("test import failure", job.meta["formatted_exception"])
+            else:
+                manager.job_on_success_callback.func(job, job.connection, None)
+        finally:
+            signal.disconnect(observe, sender=ProjectAnnotationImporter)
+        self.assertFalse(source.exists())
+        self.assertEqual(unrelated.read_bytes(), b"another request")
+        self.assertEqual(
+            notifications,
+            [
+                (
+                    ProjectAnnotationImporter,
+                    job,
+                    rq.job.JobStatus.FAILED if failed else rq.job.JobStatus.FINISHED,
+                )
+            ],
+        )
+
+    def test_request_success_callback_removes_input_and_keeps_completion_signal(self):
+        self._assert_request_callback_removes_input(failed=False)
+
+    def test_request_failure_callback_removes_input_and_keeps_failure_metadata(self):
+        self._assert_request_callback_removes_input(failed=True)
+
+    def _assert_job_timeout_aborts_remaining_tasks(self, *, dicom):
+        from rq.timeouts import JobTimeoutException
+
+        first = self.task("before-timeout", sop="1.2.3.4")
+        interrupted = self.task("during-timeout", sop="2.3.4.5")
+        remaining = self.task("after-timeout", sop="3.4.5.6")
+        protected = self.protected(first)
+        before_interrupted = self.state(interrupted)
+        before_remaining = self.state(remaining)
+        native_apply = service.apply_task
+        attempted = []
+
+        def timeout_after_write(annotation, *args, **kwargs):
+            attempted.append(annotation.db_task.id)
+            native_apply(annotation, *args, **kwargs)
+            if annotation.db_task.id == interrupted.id:
+                raise JobTimeoutException("test job deadline exceeded")
+
+        with (
+            patch.object(service, "apply_task", side_effect=timeout_after_write),
+            self.assertRaisesRegex(JobTimeoutException, "test job deadline exceeded"),
+        ):
+            if dicom:
+                self.dicom([self.record(sop) for sop in ("1.2.3.4.0", "2.3.4.5.0", "3.4.5.6.0")])
+            else:
+                self.upload(
+                    {
+                        f"{task.name}/annotations.xml": cvat_xml()
+                        for task in (first, interrupted, remaining)
+                    }
+                )
+
+        self.assertEqual(attempted, [first.id, interrupted.id])
+        self.assertEqual(self.tags(first, self.quality).count(), 1)
+        self.assertFalse(self.tags(first, self.old).exists())
+        self.assertEqual(self.protected(first), protected)
+        self.assertEqual(self.state(interrupted), before_interrupted)
+        self.assertEqual(self.state(remaining), before_remaining)
+        self.assertEqual(self.failures, [])
+
+    def test_native_job_timeout_rolls_back_current_task_and_aborts_remaining_tasks(self):
+        self._assert_job_timeout_aborts_remaining_tasks(dicom=False)
+
+    def test_dicom_job_timeout_rolls_back_current_task_and_aborts_remaining_tasks(self):
+        self._assert_job_timeout_aborts_remaining_tasks(dicom=True)
 
     def test_standard_project_dataset_manager_keeps_dataset_upload_and_callback(self):
         content = io.BytesIO()
@@ -649,6 +792,70 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
             self.assertEqual(self.tags(task, self.quality).count(), 4)
             self.assertFalse(self.tags(task, self.old).exists())
             self.assertEqual(self.protected(task), protected)
+
+    def test_dicom_gt_pool_rejects_duplicate_on_native_copy_destination(self):
+        bad = self.gt_pool_task("gt-duplicate")
+        good = self.task("unrelated", sop="1.2.9")
+        self.create(bad, payload(tags=[{"frame": 1, "label_id": self.quality.id}]))
+        before = self.state(bad)
+        message = self.dicom([self.record("1.2.3.4.2"), self.record("1.2.9.0")], mode="append")
+        self.assertIn("1 tasks succeeded; 1 tasks failed", message, repr(self.failures))
+        self.assertEqual(self.state(bad), before)
+        self.assertEqual(self.tags(good, self.quality).count(), 1)
+
+    def test_dicom_gt_pool_copies_once_and_preserves_dicomtag_rows(self):
+        task = self.gt_pool_task("gt-valid")
+        protected = self.protected(task)
+        for mode in ("append", "replace", "replace"):
+            with self.subTest(mode=mode):
+                self.assert_success(self.dicom([self.record("1.2.3.4.2")], mode=mode))
+                self.assertEqual(
+                    list(
+                        self.tags(task, self.quality)
+                        .order_by("frame")
+                        .values_list("frame", flat=True)
+                    ),
+                    [1, 2],
+                )
+                self.assertEqual(self.protected(task), protected)
+
+    def test_dicom_gt_pool_expansion_limits_release_failed_task_budget(self):
+        for index, (constant, limit) in enumerate(
+            (("MAX_GENERATED_TAGS", 2), ("MAX_GENERATED_ATTRIBUTE_VALUES", 4))
+        ):
+            with self.subTest(limit=constant):
+                bad = self.gt_pool_task(f"gt-limit-{index}", sop=f"1.2.8.{index}")
+                good = self.gt_pool_task(f"gt-next-{index}", sop=f"1.2.9.{index}")
+                before = self.state(bad)
+                protected = self.protected(good)
+                with patch.object(service, constant, limit):
+                    message = self.dicom(
+                        [self.record(f"1.2.8.{index}.2"), self.record(f"1.2.9.{index}.2")]
+                    )
+                self.assertIn("1 tasks succeeded; 1 tasks failed", message, repr(self.failures))
+                self.assertEqual(self.state(bad), before)
+                self.assertEqual(self.tags(good, self.quality).count(), 2)
+                self.assertEqual(self.protected(good), protected)
+
+    def test_dicom_gt_pool_limits_are_checked_before_generating_copies(self):
+        for index, (constant, limit) in enumerate(
+            (("MAX_GENERATED_TAGS", 1), ("MAX_GENERATED_ATTRIBUTE_VALUES", 2))
+        ):
+            with self.subTest(limit=constant):
+                task = self.gt_pool_task(f"gt-preflight-{index}", sop=f"1.2.7.{index}")
+                before = self.state(task)
+                with (
+                    patch.object(service, constant, limit),
+                    patch.object(
+                        TaskAnnotation,
+                        "_preprocess_input_annotations_for_gt_pool_task",
+                        side_effect=AssertionError("Expansion must be rejected before copying"),
+                    ) as preprocess,
+                ):
+                    message = self.dicom([self.record(f"1.2.7.{index}.2")])
+                self.assertIn("0 tasks succeeded; 1 tasks failed", message)
+                preprocess.assert_not_called()
+                self.assertEqual(self.state(task), before)
 
     def test_dicom_ambiguous_pair_does_not_modify_either_task(self):
         first, second = self.task("first"), self.task("second")
