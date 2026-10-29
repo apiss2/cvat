@@ -1,5 +1,4 @@
-"""Configuration-contract tests for the only two pre-existing custom files changed."""
-import copy
+"""Validate registry services and routing for the selected CVAT extensions."""
 import importlib.util
 from pathlib import Path
 import pytest
@@ -12,7 +11,7 @@ if not path.exists():pytest.skip("CVAT custom-component source is not present in
 spec=importlib.util.spec_from_file_location('registry_extension_contract',path);ops=importlib.util.module_from_spec(spec);spec.loader.exec_module(ops)
 
 def config(enabled=True):
-    env={'CVAT_EXT_SERVER_IMAGE':'cvat-local/server:test','CVAT_EXT_UI_IMAGE':'cvat-local/ui:test','CVAT_NETWORK_NAME':'cvat_cvat','SAM2_REDIS_VOLUME':'cvat_sam2_redis_data','NUCLIO_NAMESPACE':'nuclio','CVAT_MODEL_REGISTRY_ENABLED':'1' if enabled else '0'}
+    env={'CVAT_EXT_SERVER_IMAGE':'cvat-local/server:test','CVAT_EXT_UI_IMAGE':'cvat-local/ui:test','CVAT_NETWORK_NAME':'cvat_cvat','SAM2_REDIS_VOLUME':'cvat_sam2_redis_data','NUCLIO_NAMESPACE':'nuclio','CVAT_EXTENSIONS':'sam2,model_registry' if enabled else 'sam2'}
     route={'CVAT_NUCLIO_INVOKE_METHOD':'dashboard','CVAT_NUCLIO_FUNCTION_NAMESPACE':'nuclio','CVAT_NUCLIO_HOST':'model-gateway','CVAT_NUCLIO_PORT':'8070','CVAT_NUCLIO_DEFAULT_TIMEOUT':'300'}
     services={name:{'image':env['CVAT_EXT_SERVER_IMAGE'],'pull_policy':'never','environment':route.copy()} for name in ('cvat_server','cvat_worker_annotation','cvat_worker_import','cvat_worker_export')}
     services['cvat_ui']={'image':env['CVAT_EXT_UI_IMAGE'],'pull_policy':'never','build':{'dockerfile':'Dockerfile.ui','args':{'CLIENT_PLUGINS':'plugins/sam2:plugins/model-registry'}}}
@@ -47,7 +46,9 @@ def test_changing_worker_image_is_rejected():
     model,env=config();model['services']['model-registry']['environment']['MR_WORKER_IMAGE']='unselected:latest'
     with pytest.raises(ops.OperationError,match='worker image'):ops.validate_model(model,env)
 
-def test_old_configuration_remains_allowed_when_disabled():
-    model,env=config(False);del model['services']['model-gateway'];model['services']['cvat_ui']['build']['args']['CLIENT_PLUGINS']='plugins/sam2'
+def test_registry_services_and_plugin_are_optional_when_not_selected():
+    model,env=config(False)
+    for name in ('model-gateway','model-registry'):del model['services'][name]
+    model['services']['cvat_ui']['build']['args']['CLIENT_PLUGINS']='plugins/sam2'
     for name in ('cvat_server','cvat_worker_annotation'):model['services'][name]['environment']['CVAT_NUCLIO_HOST']='nuclio'
     ops.validate_model(model,env)

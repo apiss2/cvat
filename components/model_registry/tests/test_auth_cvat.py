@@ -452,7 +452,11 @@ def test_custom_cvat_ca_bundle_reaches_https_client_with_verification_enabled(tm
     context = contexts[0]
     assert isinstance(context, ssl.SSLContext)
     assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname is True
-    assert context.get_ca_certs(binary_form=True) == [ssl.PEM_cert_to_DER_cert(pem)]
+    # Some Python builds preload distrust certificates even into a bare context.
+    # Permit only that initial store and the explicit CA, never the default bundle.
+    initial_certs = set(ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).get_ca_certs(binary_form=True))
+    expected_certs = initial_certs | {ssl.PEM_cert_to_DER_cert(pem)}
+    assert set(context.get_ca_certs(binary_form=True)) == expected_certs
 
 
 @pytest.mark.parametrize('kind', ['missing', 'invalid_pem', 'relative'])
