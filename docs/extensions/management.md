@@ -61,7 +61,7 @@ CVAT_EXTENSIONS=dicom_import,physical_measurements,task_context
 ./components/extensions/cvatctl check
 ```
 
-`up` は必要なビルドを行います。事前ビルドには `build`、必要な全イメージが既にある場合の再利用には `up --no-build` を使用します。`--env-file` と `--state-dir` を使用する場合は、全コマンドで同じ値を指定してください。
+`up` は必要なビルドを行います。事前ビルドには `build`、必要な全イメージが既にある場合の再利用には `up --no-build` を使用します。`--env-file` と `--state-dir` を使用する場合は、同じ環境を操作するコマンドで値を揃えてください。開発用の `quality` は配備設定を使わずに実行します。
 
 選択を外して無効にする場合も、停止、設定変更、再ビルドと再起動を行います。設定の編集やPRのマージだけでは配備済みの画面は変わらないため、再配備後はブラウザーも再読み込みしてください。選択の変更によって保存済みの画像やアノテーションを削除することはありません。
 
@@ -94,6 +94,7 @@ DICOMの属性名の変更は、長さの表示とITGformatの参照処理にも
 | `status` | コンテナの状態を表示します。画面プラグインは個別サービスではなく、共通の `cvat_ui` に含まれます。 |
 | `down` | 記録済みの起動構成で停止し、保存データと共有ネットワークを保持します。 |
 | `check` | 記録したイメージと実行中のイメージなどを照合します。 |
+| `quality` | 開発用のPython試験を計測し、独自コードのカバレッジ、複雑度、CRAPスコアを集計します。[品質計測の手順](../development.md#独自コードの品質を計測する)を参照してください。 |
 
 これらのコマンドは推論やアノテーション取り込みを開始せず、ガイドの内容も変更しません。実際の画像を使う推論、画面操作、保存までの確認は、各機能の受入確認として別途行います。
 
@@ -115,14 +116,14 @@ DICOMの属性名の変更は、長さの表示とITGformatの参照処理にも
 
 ## 回帰テスト
 
-拡張管理と画面プラグインの回帰テストにはPytestとPyYAMLが必要です。
+拡張管理の試験には[試験用の依存一覧](../../components/extensions/tests/requirements.txt)を使用します。モデル登録の接続試験では、同じ一覧からモデル管理のAPI依存も準備します。
 
 ```bash
 python3 -m pytest -q components/extensions/tests/test_operations.py \
   components/extensions/tests/test_cvatctl.py \
   components/extensions/tests/test_functions.py \
-  components/extensions/tests/test_client_plugins.py \
-  components/project_annotations/tests/test_project_annotations_management.py
+  components/extensions/tests/test_client_plugins.py
+python3 -m pytest -q components/project_annotations/tests/test_project_annotations_management.py
 ```
 
 この試験は、構成生成、選択変更、既存機能との併用、ビルド対象、記録済み構成による停止、再起動方針と保存先の維持を確認します。同じRedisボリュームへの二重書き込みの拒否とイメージ不一致の検出も対象です。Dockerの応答や一部の初期化は代替実装を使用するため、実配備とブラウザーでの確認は各機能の手順で別途実施してください。

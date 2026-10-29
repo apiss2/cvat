@@ -97,8 +97,10 @@ GET  /api/filtered-export/tasks/{id}/download?rq_id=...
 
 ## 検証
 
+[Python試験用の依存一覧](../../components/filtered_export/tests/requirements.txt)を準備し、pytestで実行します。
+
 ```sh
-python -m unittest discover -s components/filtered_export/tests -v
+python -m pytest -q components/filtered_export/tests
 node --test cvat-ui/plugins/filtered-export/tests/*.test.cjs
 npx tsc --noEmit --skipLibCheck --strict --target es2022 --lib es2022,dom \
   cvat-ui/plugins/filtered-export/src/ts/api.ts

@@ -2,7 +2,7 @@
 """Explicit integration harness using real CVAT models, importers, and SQLite.
 
 Run from a checkout with the normal CVAT Python dependencies and fakeredis:
-    python components/project_annotations/tests/run_orm_tests.py
+    python -m pytest -q components/project_annotations/tests/run_orm_tests.py
 
 The database and filesystem are temporary. Existing model definitions create
 the test schema; repository models and migrations are never changed. Startup
@@ -18,7 +18,6 @@ import json
 import os
 import sys
 import tempfile
-import unittest
 import zipfile
 from contextlib import ExitStack
 from importlib import import_module
@@ -26,6 +25,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from xml.etree.ElementTree import Element, SubElement, tostring
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -146,10 +147,12 @@ def cvat_xml(*, frame=0, label="ImageQuality", attributes=None, protected=False)
     return tostring(root, encoding="utf-8", xml_declaration=True)
 
 
-class ProjectAnnotationsORMTests(unittest.TestCase):
-    def setUp(self):
+class TestProjectAnnotationsORM:
+    @pytest.fixture(autouse=True)
+    def prepare(self, request, subtests):
+        self.subtests = subtests
         self.stack = ExitStack()
-        self.addCleanup(self.stack.close)
+        request.addfinalizer(self.stack.close)
         self.directory = Path(
             self.stack.enter_context(tempfile.TemporaryDirectory(dir=_RUNTIME.name))
         )
@@ -404,7 +407,7 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
         }
 
     def assert_success(self, message, count=1):
-        self.assertIn(f"{count} tasks succeeded; 0 tasks failed", message, repr(self.failures))
+        assert f'{count} tasks succeeded; 0 tasks failed' in message, repr(self.failures)
 
     def request(self, *, query=None, data=None):
         return SimpleNamespace(
@@ -420,7 +423,7 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
             archive.writestr("scan/annotations.xml", cvat_xml())
         for format_name in ("CVAT 1.1", DICOM_FORMAT):
             for mode in (None, "replace", "append"):
-                with self.subTest(format=format_name, mode=mode):
+                with self.subtests.test(format=format_name, mode=mode):
                     query = {"format": format_name, "conv_mask_to_poly": "false"}
                     if mode is not None:
                         query["import_mode"] = mode
@@ -433,38 +436,35 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                     manager = ProjectAnnotationImporter(request=request, db_instance=self.project)
                     manager.init_request_args()
                     manager.validate_request()
-                    self.assertIs(manager._get_payload_file(), uploaded)
-                    self.assertEqual(manager.import_args.import_mode, mode or "replace")
+                    assert manager._get_payload_file() is uploaded
+                    assert manager.import_args.import_mode == (mode or 'replace')
                     manager._set_default_callback_params()
                     manager.init_callback_with_params()
                     uploaded_path = manager.tmp_dir / manager.import_args.filename
-                    self.assertEqual(uploaded_path.read_bytes(), content.getvalue())
-                    self.assertIs(manager.callback, service.import_project_annotations)
-                    self.assertEqual(
-                        manager.callback_args,
-                        (str(uploaded_path), self.project.id, format_name, False),
-                    )
-                    self.assertEqual(manager.callback_kwargs, {"import_mode": mode or "replace"})
+                    assert uploaded_path.read_bytes() == content.getvalue()
+                    assert manager.callback is service.import_project_annotations
+                    assert manager.callback_args == (str(uploaded_path), self.project.id, format_name, False)
+                    assert manager.callback_kwargs == {'import_mode': mode or 'replace'}
                     request.data = {"dataset_file": dataset_file}
-                    with self.assertRaises(ValidationError) as raised:
+                    with pytest.raises(ValidationError) as raised:
                         manager._get_payload_file()
-                    self.assertIn("annotation_file", raised.exception.detail)
+                    assert 'annotation_file' in raised.value.detail
 
     def test_request_manager_invalid_mode_and_disabled_extension_stop_before_queue(self):
         with patch("django_rq.get_queue") as get_queue:
             for mode in ("merge", "REPLACE", ""):
-                with self.subTest(mode=mode):
+                with self.subtests.test(mode=mode):
                     manager = ProjectAnnotationImporter(
                         request=self.request(query={"import_mode": mode}),
                         db_instance=self.project,
                     )
-                    with self.assertRaisesRegex(ValidationError, "replace or append"):
+                    with pytest.raises(ValidationError, match='replace or append'):
                         manager.enqueue_job()
             with patch.dict(os.environ, {"CVAT_PROJECT_ANNOTATIONS_ENABLED": "0"}):
                 manager = ProjectAnnotationImporter(
                     request=self.request(), db_instance=self.project
                 )
-                with self.assertRaisesRegex(MethodNotAllowed, "disabled"):
+                with pytest.raises(MethodNotAllowed, match='disabled'):
                     manager.enqueue_job()
             get_queue.assert_not_called()
 
@@ -476,27 +476,27 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                 "Task Guide DICOM Report Import 1.0",
                 "DICOM 1.0",
             ):
-                with self.subTest(format=format_name):
+                with self.subtests.test(format=format_name):
                     manager = ProjectAnnotationImporter(
                         request=self.request(query={"format": format_name}),
                         db_instance=self.project,
                     )
-                    with self.assertRaisesRegex(ValidationError, "Import dataset only"):
+                    with pytest.raises(ValidationError, match='Import dataset only'):
                         manager.enqueue_job()
             get_queue.assert_not_called()
 
     def test_request_manager_disables_retries_and_request_id_round_trips(self):
         manager = ProjectAnnotationImporter(request=self.request(), db_instance=self.project)
-        self.assertIsNone(manager.job_retry)
+        assert manager.job_retry is None
         initialize_mappings()
         request_id = manager.build_request_id()
         parsed, queue = ImportRequestId.parse(request_id)
-        self.assertEqual(parsed.action, models.RequestAction.IMPORT)
-        self.assertEqual(parsed.target, models.RequestTarget.PROJECT)
-        self.assertEqual(parsed.target_id, self.project.id)
-        self.assertEqual(parsed.subresource, models.RequestSubresource.ANNOTATIONS)
-        self.assertEqual(queue, manager.QUEUE_NAME)
-        self.assertEqual(parsed.render(), request_id)
+        assert parsed.action == models.RequestAction.IMPORT
+        assert parsed.target == models.RequestTarget.PROJECT
+        assert parsed.target_id == self.project.id
+        assert parsed.subresource == models.RequestSubresource.ANNOTATIONS
+        assert queue == manager.QUEUE_NAME
+        assert parsed.render() == request_id
 
     def _assert_request_callback_removes_input(self, *, failed):
         from cvat.apps.redis_handler.signals import request_failed, request_succeeded
@@ -533,27 +533,24 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
 
         signal.connect(observe, sender=ProjectAnnotationImporter)
         try:
-            self.assertTrue(source.is_file())
+            assert source.is_file()
             if failed:
                 error = ValueError("test import failure")
                 manager.job_on_failure_callback.func(job, job.connection, type(error), error, None)
-                self.assertIn("test import failure", job.meta["formatted_exception"])
+                assert 'test import failure' in job.meta['formatted_exception']
             else:
                 manager.job_on_success_callback.func(job, job.connection, None)
         finally:
             signal.disconnect(observe, sender=ProjectAnnotationImporter)
-        self.assertFalse(source.exists())
-        self.assertEqual(unrelated.read_bytes(), b"another request")
-        self.assertEqual(
-            notifications,
-            [
-                (
-                    ProjectAnnotationImporter,
-                    job,
-                    rq.job.JobStatus.FAILED if failed else rq.job.JobStatus.FINISHED,
-                )
-            ],
-        )
+        assert not source.exists()
+        assert unrelated.read_bytes() == b'another request'
+        assert notifications == [
+            (
+                ProjectAnnotationImporter,
+                job,
+                rq.job.JobStatus.FAILED if failed else rq.job.JobStatus.FINISHED,
+            ),
+        ]
 
     def test_request_success_callback_removes_input_and_keeps_completion_signal(self):
         self._assert_request_callback_removes_input(failed=False)
@@ -581,7 +578,7 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
 
         with (
             patch.object(service, "apply_task", side_effect=timeout_after_write),
-            self.assertRaisesRegex(JobTimeoutException, "test job deadline exceeded"),
+            pytest.raises(JobTimeoutException, match='test job deadline exceeded'),
         ):
             if dicom:
                 self.dicom([self.record(sop) for sop in ("1.2.3.4.0", "2.3.4.5.0", "3.4.5.6.0")])
@@ -593,13 +590,13 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                     }
                 )
 
-        self.assertEqual(attempted, [first.id, interrupted.id])
-        self.assertEqual(self.tags(first, self.quality).count(), 1)
-        self.assertFalse(self.tags(first, self.old).exists())
-        self.assertEqual(self.protected(first), protected)
-        self.assertEqual(self.state(interrupted), before_interrupted)
-        self.assertEqual(self.state(remaining), before_remaining)
-        self.assertEqual(self.failures, [])
+        assert attempted == [first.id, interrupted.id]
+        assert self.tags(first, self.quality).count() == 1
+        assert not self.tags(first, self.old).exists()
+        assert self.protected(first) == protected
+        assert self.state(interrupted) == before_interrupted
+        assert self.state(remaining) == before_remaining
+        assert self.failures == []
 
     def test_native_job_timeout_rolls_back_current_task_and_aborts_remaining_tasks(self):
         self._assert_job_timeout_aborts_remaining_tasks(dicom=False)
@@ -622,37 +619,32 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
         manager = DatasetImporter(request=request, db_instance=self.project)
         manager.init_request_args()
         manager.validate_request()
-        self.assertIsNone(manager.import_args.import_mode)
-        self.assertIs(manager._get_payload_file(), uploaded)
+        assert manager.import_args.import_mode is None
+        assert manager._get_payload_file() is uploaded
         manager._set_default_callback_params()
         manager.init_callback_with_params()
         uploaded_path = manager.tmp_dir / manager.import_args.filename
-        self.assertEqual(uploaded_path.read_bytes(), content.getvalue())
-        self.assertIs(manager.callback, import_dataset_as_project)
-        self.assertEqual(
-            manager.callback_args,
-            (str(uploaded_path), self.project.id, "CVAT 1.1", True),
-        )
-        self.assertIsNone(manager.callback_kwargs)
+        assert uploaded_path.read_bytes() == content.getvalue()
+        assert manager.callback is import_dataset_as_project
+        assert manager.callback_args == (str(uploaded_path), self.project.id, 'CVAT 1.1', True)
+        assert manager.callback_kwargs is None
         initialize_mappings()
         parsed, _ = ImportRequestId.parse(manager.build_request_id())
-        self.assertEqual(parsed.subresource, models.RequestSubresource.DATASET)
+        assert parsed.subresource == models.RequestSubresource.DATASET
         request.data = {"annotation_file": SimpleUploadedFile("annotations.zip", b"unused")}
-        with self.assertRaises(ValidationError) as raised:
+        with pytest.raises(ValidationError) as raised:
             manager._get_payload_file()
-        self.assertIn("dataset_file", raised.exception.detail)
+        assert 'dataset_file' in raised.value.detail
 
     def test_native_replace_reimport_preserves_dicom_rows_and_clears_absent_frames(self):
         task = self.task("scan")
         protected = self.protected(task)
         for _ in range(2):
             self.assert_success(self.upload({"scan/annotations.xml": cvat_xml(protected=True)}))
-            self.assertEqual(self.protected(task), protected)
-            self.assertEqual(
-                list(self.tags(task, self.quality).values_list("frame", flat=True)), [0]
-            )
-            self.assertFalse(self.tags(task, self.old).exists())
-            self.assertFalse(models.LabeledShape.objects.filter(job__segment__task=task).exists())
+            assert self.protected(task) == protected
+            assert list(self.tags(task, self.quality).values_list('frame', flat=True)) == [0]
+            assert not self.tags(task, self.old).exists()
+            assert not models.LabeledShape.objects.filter(job__segment__task=task).exists()
 
     def test_native_append_reimport_preserves_existing_and_allows_duplicate_tags(self):
         task = self.task("scan")
@@ -661,10 +653,10 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
             self.assert_success(
                 self.upload({"scan/annotations.xml": cvat_xml(protected=True)}, mode="append")
             )
-            self.assertEqual(self.tags(task, self.quality).count(), count)
-            self.assertTrue(self.tags(task, self.old).exists())
-            self.assertTrue(models.LabeledShape.objects.filter(job__segment__task=task).exists())
-            self.assertEqual(self.protected(task), protected)
+            assert self.tags(task, self.quality).count() == count
+            assert self.tags(task, self.old).exists()
+            assert models.LabeledShape.objects.filter(job__segment__task=task).exists()
+            assert self.protected(task) == protected
 
     def test_native_common_parent_and_nested_native_zip_keep_format_layout(self):
         task = self.task("scan")
@@ -673,8 +665,8 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
         with zipfile.ZipFile(inner, "w") as archive:
             archive.writestr("annotations.xml", cvat_xml())
         self.assert_success(self.upload({"windows-wrapper/scan/native.zip": inner.getvalue()}))
-        self.assertEqual(self.tags(task, self.quality).count(), 1)
-        self.assertEqual(self.protected(task), protected)
+        assert self.tags(task, self.quality).count() == 1
+        assert self.protected(task) == protected
 
     def test_native_shapes_and_tracks_use_the_existing_importer(self):
         task = self.task("scan")
@@ -713,9 +705,9 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
             )
         self.assert_success(self.upload({"scan/annotations.xml": tostring(root)}))
         shapes = models.LabeledShape.objects.filter(job__segment__task=task)
-        self.assertEqual(set(shapes.values_list("type", flat=True)), {"polygon", "rectangle"})
-        self.assertEqual(models.LabeledTrack.objects.filter(job__segment__task=task).count(), 1)
-        self.assertEqual(self.protected(task), protected)
+        assert set(shapes.values_list('type', flat=True)) == {'polygon', 'rectangle'}
+        assert models.LabeledTrack.objects.filter(job__segment__task=task).count() == 1
+        assert self.protected(task) == protected
 
     def test_native_invalid_attribute_fails_one_task_and_commits_other(self):
         bad, good = self.task("bad"), self.task("good", sop="1.2.9")
@@ -726,9 +718,9 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                 "good/annotations.xml": cvat_xml(),
             }
         )
-        self.assertIn("1 tasks succeeded; 1 tasks failed", message, repr(self.failures))
-        self.assertEqual(self.state(bad), before)
-        self.assertEqual(self.tags(good, self.quality).count(), 1)
+        assert '1 tasks succeeded; 1 tasks failed' in message, repr(self.failures)
+        assert self.state(bad) == before
+        assert self.tags(good, self.quality).count() == 1
 
     def test_native_sql_failure_after_create_rolls_back_delete_and_insert(self):
         bad, good = self.task("bad"), self.task("good", sop="1.2.9")
@@ -747,19 +739,19 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                     "good/annotations.xml": cvat_xml(),
                 }
             )
-        self.assertIn("1 tasks succeeded; 1 tasks failed", message, repr(self.failures))
-        self.assertEqual(self.state(bad), before)
-        self.assertEqual(self.tags(good, self.quality).count(), 1)
-        self.assertFalse(transaction.get_connection().in_atomic_block)
+        assert '1 tasks succeeded; 1 tasks failed' in message, repr(self.failures)
+        assert self.state(bad) == before
+        assert self.tags(good, self.quality).count() == 1
+        assert not transaction.get_connection().in_atomic_block
 
     def test_native_replace_clears_overlap_jobs_without_recreating_protected_rows(self):
         task = self.task("scan", size=4, overlap=True)
         self.create(task, payload(tags=[{"frame": 2, "label_id": self.old.id, "attributes": []}]))
-        self.assertEqual(self.tags(task, self.old).filter(frame=2).count(), 2)
+        assert self.tags(task, self.old).filter(frame=2).count() == 2
         protected = self.protected(task)
         self.assert_success(self.upload({"scan/annotations.xml": cvat_xml()}))
-        self.assertFalse(self.tags(task, self.old).exists())
-        self.assertEqual(self.protected(task), protected)
+        assert not self.tags(task, self.old).exists()
+        assert self.protected(task) == protected
 
     def test_dicom_invalid_record_aborts_whole_task_but_commits_unrelated_task(self):
         bad, good = self.task("bad"), self.task("good", sop="1.2.9")
@@ -771,27 +763,26 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                 self.record("1.2.9.0"),
             ]
         )
-        self.assertIn("1 tasks succeeded; 1 tasks failed", message, repr(self.failures))
-        self.assertEqual(self.state(bad), before)
-        self.assertEqual(self.tags(good, self.quality).count(), 1)
+        assert '1 tasks succeeded; 1 tasks failed' in message, repr(self.failures)
+        assert self.state(bad) == before
+        assert self.tags(good, self.quality).count() == 1
 
     def test_dicom_video_all_frames_append_duplicate_and_replace_reimport(self):
         task = self.task("video", size=4, video=True)
         protected = self.protected(task)
         record = self.record("1.2.3.4")
         self.assert_success(self.dicom([record], mode="append"))
-        self.assertEqual(
-            list(self.tags(task, self.quality).order_by("frame").values_list("frame", flat=True)),
-            [0, 1, 2, 3],
-        )
+        assert list(
+            self.tags(task, self.quality).order_by('frame').values_list('frame', flat=True)
+        ) == [0, 1, 2, 3]
         before = self.state(task)
-        self.assertIn("0 tasks succeeded; 1 tasks failed", self.dicom([record], mode="append"))
-        self.assertEqual(self.state(task), before)
+        assert '0 tasks succeeded; 1 tasks failed' in self.dicom([record], mode='append')
+        assert self.state(task) == before
         for _ in range(2):
             self.assert_success(self.dicom([record], mode="replace"))
-            self.assertEqual(self.tags(task, self.quality).count(), 4)
-            self.assertFalse(self.tags(task, self.old).exists())
-            self.assertEqual(self.protected(task), protected)
+            assert self.tags(task, self.quality).count() == 4
+            assert not self.tags(task, self.old).exists()
+            assert self.protected(task) == protected
 
     def test_dicom_gt_pool_rejects_duplicate_on_native_copy_destination(self):
         bad = self.gt_pool_task("gt-duplicate")
@@ -799,31 +790,26 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
         self.create(bad, payload(tags=[{"frame": 1, "label_id": self.quality.id}]))
         before = self.state(bad)
         message = self.dicom([self.record("1.2.3.4.2"), self.record("1.2.9.0")], mode="append")
-        self.assertIn("1 tasks succeeded; 1 tasks failed", message, repr(self.failures))
-        self.assertEqual(self.state(bad), before)
-        self.assertEqual(self.tags(good, self.quality).count(), 1)
+        assert '1 tasks succeeded; 1 tasks failed' in message, repr(self.failures)
+        assert self.state(bad) == before
+        assert self.tags(good, self.quality).count() == 1
 
     def test_dicom_gt_pool_copies_once_and_preserves_dicomtag_rows(self):
         task = self.gt_pool_task("gt-valid")
         protected = self.protected(task)
         for mode in ("append", "replace", "replace"):
-            with self.subTest(mode=mode):
+            with self.subtests.test(mode=mode):
                 self.assert_success(self.dicom([self.record("1.2.3.4.2")], mode=mode))
-                self.assertEqual(
-                    list(
-                        self.tags(task, self.quality)
-                        .order_by("frame")
-                        .values_list("frame", flat=True)
-                    ),
-                    [1, 2],
-                )
-                self.assertEqual(self.protected(task), protected)
+                assert list(
+                    self.tags(task, self.quality).order_by('frame').values_list('frame', flat=True)
+                ) == [1, 2]
+                assert self.protected(task) == protected
 
     def test_dicom_gt_pool_expansion_limits_release_failed_task_budget(self):
         for index, (constant, limit) in enumerate(
             (("MAX_GENERATED_TAGS", 2), ("MAX_GENERATED_ATTRIBUTE_VALUES", 4))
         ):
-            with self.subTest(limit=constant):
+            with self.subtests.test(limit=constant):
                 bad = self.gt_pool_task(f"gt-limit-{index}", sop=f"1.2.8.{index}")
                 good = self.gt_pool_task(f"gt-next-{index}", sop=f"1.2.9.{index}")
                 before = self.state(bad)
@@ -832,16 +818,16 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                     message = self.dicom(
                         [self.record(f"1.2.8.{index}.2"), self.record(f"1.2.9.{index}.2")]
                     )
-                self.assertIn("1 tasks succeeded; 1 tasks failed", message, repr(self.failures))
-                self.assertEqual(self.state(bad), before)
-                self.assertEqual(self.tags(good, self.quality).count(), 2)
-                self.assertEqual(self.protected(good), protected)
+                assert '1 tasks succeeded; 1 tasks failed' in message, repr(self.failures)
+                assert self.state(bad) == before
+                assert self.tags(good, self.quality).count() == 2
+                assert self.protected(good) == protected
 
     def test_dicom_gt_pool_limits_are_checked_before_generating_copies(self):
         for index, (constant, limit) in enumerate(
             (("MAX_GENERATED_TAGS", 1), ("MAX_GENERATED_ATTRIBUTE_VALUES", 2))
         ):
-            with self.subTest(limit=constant):
+            with self.subtests.test(limit=constant):
                 task = self.gt_pool_task(f"gt-preflight-{index}", sop=f"1.2.7.{index}")
                 before = self.state(task)
                 with (
@@ -853,21 +839,21 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                     ) as preprocess,
                 ):
                     message = self.dicom([self.record(f"1.2.7.{index}.2")])
-                self.assertIn("0 tasks succeeded; 1 tasks failed", message)
+                assert '0 tasks succeeded; 1 tasks failed' in message
                 preprocess.assert_not_called()
-                self.assertEqual(self.state(task), before)
+                assert self.state(task) == before
 
     def test_dicom_ambiguous_pair_does_not_modify_either_task(self):
         first, second = self.task("first"), self.task("second")
         before = self.state(first), self.state(second)
-        self.assertIn("0 tasks succeeded; 2 tasks failed", self.dicom([self.record()]))
-        self.assertEqual((self.state(first), self.state(second)), before)
+        assert '0 tasks succeeded; 2 tasks failed' in self.dicom([self.record()])
+        assert (self.state(first), self.state(second)) == before
 
     def test_dicom_narrowed_snapshot_retains_whitespace_padded_duplicate_candidates(self):
         first = self.task("first")
         second = self.task("second")
         for value in ("\t1.2.3.4.0\n", " 1.2.3.4.0 "):
-            with self.subTest(value=value):
+            with self.subtests.test(value=value):
                 models.LabeledImageAttributeVal.objects.filter(
                     image__job__segment__task=second,
                     image__frame=0,
@@ -876,15 +862,15 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                 candidates = service.snapshots(
                     self.project.id, task_id=first.id, sop_uids={"1.2.3.4.0"}
                 )
-                self.assertEqual({item.id for item in candidates}, {first.id, second.id})
+                assert {item.id for item in candidates} == {first.id, second.id}
 
     def test_dicom_distinct_labels_on_same_image_are_allowed(self):
         task = self.task("scan")
         second = self.record(label="Reviewed")
         second["tags"][0]["attributes"] = {}
         self.assert_success(self.dicom([self.record(), second]))
-        self.assertEqual(self.tags(task, self.quality).count(), 1)
-        self.assertEqual(self.tags(task, self.other).count(), 1)
+        assert self.tags(task, self.quality).count() == 1
+        assert self.tags(task, self.other).count() == 1
 
     def test_dicom_attribute_and_protected_input_errors_preserve_task(self):
         task = self.task("scan")
@@ -894,9 +880,9 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
             self.record(attributes={"contact": "not-a-boolean"}),
             self.record(label="DicomTag"),
         ):
-            with self.subTest(record=record):
-                self.assertIn("0 tasks succeeded; 1 tasks failed", self.dicom([record]))
-                self.assertEqual(self.state(task), before)
+            with self.subtests.test(record=record):
+                assert '0 tasks succeeded; 1 tasks failed' in self.dicom([record])
+                assert self.state(task) == before
 
     def test_standard_task_import_replace_still_deletes_dicomtag(self):
         task = self.task("scan")
@@ -906,8 +892,8 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                 make_importer("CVAT 1.1"),
                 import_mode="replace",
             )
-        self.assertFalse(self.tags(task, self.protected_label).exists())
-        self.assertEqual(self.tags(task, self.quality).count(), 1)
+        assert not self.tags(task, self.protected_label).exists()
+        assert self.tags(task, self.quality).count() == 1
 
     def test_standard_task_import_append_still_allows_duplicate_tags(self):
         task = self.task("scan")
@@ -919,9 +905,5 @@ class ProjectAnnotationsORMTests(unittest.TestCase):
                     make_importer("CVAT 1.1"),
                     import_mode="append",
                 )
-        self.assertEqual(self.tags(task, self.quality).count(), 2)
-        self.assertEqual(self.protected(task), protected)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+        assert self.tags(task, self.quality).count() == 2
+        assert self.protected(task) == protected

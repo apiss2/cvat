@@ -2,18 +2,18 @@
 """Regression coverage for restoring without writing into the original storage."""
 
 import io
-import unittest
+import pytest
 from contextlib import redirect_stdout
 
 from test_backup import Fixture, backup
 
 
-class RestoreIsolationTests(Fixture):
+class TestRestoreIsolation(Fixture):
     def assert_rejected_without_writes(self, target):
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.restore("latest", target)
-        self.assertFalse(target.exists())
-        self.assertNotIn("restore", self.events)
+        assert not target.exists()
+        assert 'restore' not in self.events
 
     def test_refuses_child_of_original_named_volume(self):
         self.create()
@@ -40,9 +40,9 @@ class RestoreIsolationTests(Fixture):
         self.fail = "dump"
         self.assert_rejected_without_writes(self.base / "restore")
 
-    def test_invalid_manifest_does_not_create_target(self):
-        self.create()
-        for manifest in (
+    @pytest.mark.parametrize(
+        "manifest",
+        [
             None,
             [],
             {},
@@ -51,10 +51,12 @@ class RestoreIsolationTests(Fixture):
             {"format": 1, "sources": [None]},
             {"format": 1, "sources": [{"type": "volume", "source": "volume"}]},
             {"format": 1, "sources": [{"type": "bind", "source": "relative"}]},
-        ):
-            with self.subTest(manifest=manifest):
-                self.manifest = manifest
-                self.assert_rejected_without_writes(self.base / "restore")
+        ],
+    )
+    def test_invalid_manifest_does_not_create_target(self, manifest):
+        self.create()
+        self.manifest = manifest
+        self.assert_rejected_without_writes(self.base / "restore")
 
     def test_recovery_does_not_require_current_deployment(self):
         self.create()
@@ -63,10 +65,6 @@ class RestoreIsolationTests(Fixture):
         target = self.base / "restore"
         with redirect_stdout(io.StringIO()):
             self.repo.restore("latest", target)
-        self.assertTrue(target.is_dir())
-        self.assertIn("--verify", self.calls[-1])
-        self.assertIn("dump", self.events)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert target.is_dir()
+        assert '--verify' in self.calls[-1]
+        assert 'dump' in self.events

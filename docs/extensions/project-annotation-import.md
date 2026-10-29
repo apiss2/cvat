@@ -156,7 +156,7 @@ location: local
 
 ## 回帰テストと実環境の確認
 
-追加したPythonテストは次で実行できます。
+[軽量な試験用の依存一覧](../../components/project_annotations/tests/requirements.txt)を準備し、次のコマンドで実行します。
 
 ```sh
 python3 -m pytest -q components/project_annotations/tests
@@ -164,10 +164,10 @@ python3 -m pytest -q components/project_annotations/tests
 
 拡張管理のテストは実際のManagerを使用し、Dockerの応答を代替実装に置き換えています。選択の有効化と解除、DICOM取り込みとの独立性、Composeの選択、`config` と `doctor` の表示、共通イメージの `build` と `up --no-build`、記録された構成による `down` と `status`、`check` のイメージ照合を検証します。データ削除、モデル配備、アノテーション処理を配備コマンドから開始しないことも確認します。
 
-通常のCVAT用Python依存と `fakeredis` がある環境では、実際のモデルとインポータを使う次の検証も実行できます。DBと作業ファイルは一時領域に作成し、リポジトリのモデルやマイグレーションを変更しません。
+通常のCVAT用Python依存、pytest 9以降と `fakeredis` がある環境では、実際のモデルとインポータを使う次の検証も別プロセスで実行できます。DBと作業ファイルは一時領域に作成し、リポジトリのモデルやマイグレーションを変更しません。
 
 ```sh
-python3 components/project_annotations/tests/run_orm_tests.py
+python3 -m pytest -q components/project_annotations/tests/run_orm_tests.py
 ```
 
 この検証は実際のCVATモデル、CVAT 1.1インポータ、TaskData、シリアライザ、アノテーションの書き込み処理、SQLiteのトランザクションを使用します。DicomTagとAttributeの行ID維持、入力外フレームの削除、重複するセグメント内の削除、書き込み後の例外による削除と登録のロールバック、無関係なTaskの成功を確認します。DICOM形式では動画の全フレーム、曖昧な照合、同じTask内の不正レコード、再取り込みを確認します。標準のTask取り込みについても、replaceでDicomTagを削除し、appendで重複Tagを追加する従来動作を確認します。

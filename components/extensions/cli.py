@@ -15,9 +15,9 @@ def main(argv: list[str] | None = None) -> None:
     router.add_argument("--model-id")
     router.add_argument("command", nargs="?")
     route, _ = router.parse_known_args(argv)
-    target = "backup.py" if route.command == "backup" else "entrypoint.py"
+    target = {"backup": "backup.py", "quality": "quality.py"}.get(route.command, "entrypoint.py")
     if target == "entrypoint.py" and ("--help" in argv or "-h" in argv):
-        print("Backup commands: cvatctl backup --help\n", flush=True)
+        print("Backup commands: cvatctl backup --help\nQuality commands: cvatctl quality --help\n", flush=True)
     os.execv(sys.executable, [sys.executable, str(Path(__file__).with_name(target)), *argv])
 
 

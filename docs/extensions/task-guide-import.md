@@ -188,10 +188,10 @@ Impression: English impression
 
 ZIPと展開後のJSONは32 MiBまでです。ZIPは展開後の合計も32 MiBまでで、フォルダを含めて50,000エントリーまでです。JSONは50,000タスクまたはレコードまでです。保存するガイド本文は1,000,000文字までで、DICOM形式では既存本文も含めた上限です。重複JSONキー、不正Unicode、NUL、非有限数、対応外の値の型は拒否します。
 
-次のコマンドで単体試験を実行します。
+[Python試験用の依存一覧](../../components/task_guide/tests/requirements.txt)を準備し、次のコマンドで単体試験を実行します。
 
 ```sh
-python -m unittest discover -s components/task_guide/tests -p test_task_guide_import.py -v
+python -m pytest -q components/task_guide/tests
 ```
 
 回帰テストでは3形式の登録と読み込み、Markdownの維持と置換、完全一致と同名タスクの拒否、JSON1件を入れたZIP、ZIPのサイズ上限と不正なパスの拒否、短縮タスク名と完全なUIDによる照合、Keywordによる識別を確認します。インポート接続のテストはORM、OPA、RQを模擬します。キュー待機中の組織変更とプロジェクト取り込み権限の失効によって書き込みが拒否されることも確認します。

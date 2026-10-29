@@ -109,7 +109,8 @@ Canvasへの変更は、既存の図形ラベルへ文字列を追加する任�
 
 ```sh
 node --test cvat-ui/plugins/physical-measurements/tests/*.test.cjs
-python3 -m pytest -q components/itgformat/tests components/extensions/tests/test_client_plugins.py
+python3 -m pytest -q components/itgformat/tests
+python3 -m pytest -q components/extensions/tests/test_client_plugins.py
 ```
 
 実環境では、異なるXとYの値、Tagがない画像、フレームごとの値の変更、Tag編集とUndo、

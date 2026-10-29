@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""Unit tests require Python only; no Docker daemon or production data is used."""
+"""Pytest unit tests; no Docker daemon or production data is used."""
 import importlib.util
 import io
 import json
 import os
 import subprocess
 import sys
-import tempfile
-import unittest
+import pytest
 from contextlib import redirect_stdout
 from copy import deepcopy
 from pathlib import Path
@@ -22,11 +21,10 @@ cli = importlib.util.module_from_spec(cli_spec)
 cli_spec.loader.exec_module(cli)
 
 
-class Fixture(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+class Fixture:
+    @pytest.fixture(autouse=True)
+    def backup_state(self, tmp_path):
+        self.base = tmp_path
         self.state = self.base / "state"
         backup.private_directory(self.state)
         self.data = self.base / "data"
@@ -184,57 +182,57 @@ class Fixture(unittest.TestCase):
             backup.create_backup(self.repo, self.manager, **kwargs)
 
 
-class SafetyTests(Fixture):
+class TestSafety(Fixture):
     def test_no_live_backup(self):
         self.manager.running = True
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create()
-        self.assertNotIn("backup", self.events)
+        assert 'backup' not in self.events
 
     def test_stop_after_authentication_and_mount_preflight(self):
         self.manager.running = True
         self.create(stop=True)
-        self.assertEqual(self.events[:4], ["snapshots", "version", "stop", "backup"])
-        self.assertFalse(self.manager.running)
-        self.assertEqual(self.manager.down_calls, 1)
+        assert self.events[:4] == ['snapshots', 'version', 'stop', 'backup']
+        assert not self.manager.running
+        assert self.manager.down_calls == 1
 
     def test_bad_repository_does_not_stop_services(self):
         self.fail = "snapshots"
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create(stop=True)
-        self.assertEqual(self.manager.down_calls, 0)
+        assert self.manager.down_calls == 0
 
     def test_bad_mount_does_not_stop_services(self):
         self.fail = "version"
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create(stop=True)
-        self.assertEqual(self.manager.down_calls, 0)
+        assert self.manager.down_calls == 0
 
     def test_failed_snapshot_is_not_promoted(self):
         self.fail = "backup"
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create(stop=True)
-        self.assertNotIn("tag", self.events)
-        self.assertEqual(self.completed, [])
-        self.assertEqual(list(self.state.glob("backup-metadata-*")), [])
+        assert 'tag' not in self.events
+        assert self.completed == []
+        assert list(self.state.glob('backup-metadata-*')) == []
 
     def test_failed_tag_does_not_report_success(self):
         self.fail = "tag"
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create()
-        self.assertEqual(self.completed, [])
+        assert self.completed == []
 
     def test_previous_completed_snapshot_is_explicit_parent(self):
         self.completed = [{"id": "98765432", "time": "2025", "tags": [backup.COMPLETE]}]
         self.create()
         command = next(x for x in self.calls if "backup" in x and "--parent" in x)
-        self.assertEqual(command[command.index("--parent") + 1], "98765432")
-        self.assertIn("host,paths,tags", command)
+        assert command[command.index('--parent') + 1] == '98765432'
+        assert 'host,paths,tags' in command
 
     def test_incomplete_snapshots_are_not_restore_candidates(self):
         self.completed = [{"id": "badbad01", "time": "2025", "tags": [backup.PENDING]}]
-        self.assertEqual(self.repo.snapshots(), [])
-        with self.assertRaises(backup.BackupError):
+        assert self.repo.snapshots() == []
+        with pytest.raises(backup.BackupError):
             self.repo.select("latest")
 
     def test_ambiguous_snapshot_is_rejected(self):
@@ -242,46 +240,46 @@ class SafetyTests(Fixture):
             {"id": "abcdef01" + x, "time": "2025", "tags": [backup.COMPLETE]}
             for x in ("0" * 56, "1" * 56)
         ]
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.select("abcdef01")
 
     def test_unrecognized_snapshot_reference_is_rejected(self):
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.select("--latest")
 
     def test_runtime_lock_is_shared(self):
         with backup.deployment_lock(self.state):
-            with self.assertRaises(backup.BackupError):
+            with pytest.raises(backup.BackupError):
                 with backup.deployment_lock(self.state):
-                    self.fail("unexpected lock acquisition")
+                    pytest.fail("unexpected lock acquisition")
 
     def test_password_permission_is_checked(self):
         self.password.chmod(0o644)
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.command("snapshots")
 
     def test_empty_password_is_rejected(self):
         self.password.write_text("")
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.command("snapshots")
 
     def test_backup_storage_cannot_be_inside_source(self):
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             backup.validate_destinations(self.repo, [{"type": "bind", "source": str(self.base)}])
 
     def test_foreign_writer_is_rejected(self):
         self.manager.foreign = [
             {"Id": "foreign", "Mounts": [{"Type": "volume", "Name": "test_data", "RW": True}]}
         ]
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create()
-        self.assertNotIn("backup", self.events)
+        assert 'backup' not in self.events
 
     def test_foreign_parent_bind_writer_is_rejected(self):
         self.manager.foreign = [
             {"Id": "foreign", "Mounts": [{"Type": "bind", "Source": str(self.base), "RW": True}]}
         ]
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create()
 
     def test_readonly_foreign_reader_is_allowed(self):
@@ -292,26 +290,26 @@ class SafetyTests(Fixture):
 
     def test_mismatched_recorded_compose_is_rejected(self):
         backup.save_json(self.state / "active.compose.json", {})
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create(stop=True)
-        self.assertEqual(self.manager.down_calls, 0)
+        assert self.manager.down_calls == 0
 
     def test_no_saved_deployment_is_rejected(self):
         (self.state / "active.json").unlink()
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create()
 
     def test_external_database_is_rejected(self):
         self.model["services"]["cvat_server"]["environment"]["CVAT_POSTGRES_HOST"] = "external"
         self.write_saved()
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create(stop=True)
-        self.assertEqual(self.manager.down_calls, 0)
+        assert self.manager.down_calls == 0
 
     def test_remote_registry_is_rejected(self):
         self.saved["extensions"] = ["model_registry"]
         self.write_saved()
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create()
 
     def test_missing_bind_source_is_rejected(self):
@@ -323,9 +321,9 @@ class SafetyTests(Fixture):
             }
         )
         self.write_saved()
-        with self.assertRaises(FileNotFoundError):
+        with pytest.raises(FileNotFoundError):
             self.create(stop=True)
-        self.assertEqual(self.manager.down_calls, 0)
+        assert self.manager.down_calls == 0
 
     def test_duplicate_and_nested_binds_are_collapsed(self):
         (self.data / "nested").mkdir()
@@ -334,28 +332,28 @@ class SafetyTests(Fixture):
             for index, x in enumerate((self.data, self.data, self.data / "nested"))
         ]
         entries, _ = backup.sources(self.manager, self.saved)
-        self.assertEqual(sum(x["type"] == "bind" for x in entries), 1)
+        assert sum((x['type'] == 'bind' for x in entries)) == 1
 
     def test_anonymous_volumes_are_rejected(self):
         self.model["services"]["cvat_db"]["volumes"] = [
             {"type": "volume", "target": "/var/lib/postgresql/data"}
         ]
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             backup.sources(self.manager, self.saved)
 
     def test_backed_up_sources_are_readonly_and_never_copied_into_volumes(self):
         self.create()
         command = next(x for x in self.calls if "backup" in x)
         volumes = [x for x in command if "type=volume" in x]
-        self.assertTrue(all("readonly" in x and "volume-nocopy" in x for x in volumes))
-        self.assertIn("none", command)
-        self.assertNotIn("test-only-password", " ".join(command))
-        self.assertNotIn("--privileged", command)
+        assert all(('readonly' in x and 'volume-nocopy' in x for x in volumes))
+        assert 'none' in command
+        assert 'test-only-password' not in ' '.join(command)
+        assert '--privileged' not in command
 
     def test_plan_does_not_stop_or_create_snapshot(self):
         self.create(plan=True)
-        self.assertEqual(self.manager.down_calls, 0)
-        self.assertEqual(self.events, [])
+        assert self.manager.down_calls == 0
+        assert self.events == []
 
     def test_restore_uses_only_new_target_and_verifies(self):
         self.create()
@@ -363,23 +361,23 @@ class SafetyTests(Fixture):
         with redirect_stdout(io.StringIO()):
             self.repo.restore("latest", target)
         command = self.calls[-1]
-        self.assertIn("--verify", command)
-        self.assertFalse(any("type=volume" in x for x in command))
-        self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+        assert '--verify' in command
+        assert not any(('type=volume' in x for x in command))
+        assert target.stat().st_mode & 0o777 == 0o700
 
     def test_restore_refuses_existing_even_empty_target(self):
         self.create()
-        with self.assertRaises(FileExistsError):
+        with pytest.raises(FileExistsError):
             self.repo.restore("latest", self.data)
 
     def test_restore_refuses_repository_overlap(self):
         self.create()
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.restore("latest", self.repository / "restore")
 
     def test_mount_paths_support_spaces_and_reject_commas(self):
-        self.assertIn("source=/data/my files", backup.mount("bind", "/data/my files", "/source")[1])
-        with self.assertRaises(backup.BackupError):
+        assert 'source=/data/my files' in backup.mount('bind', '/data/my files', '/source')[1]
+        with pytest.raises(backup.BackupError):
             backup.mount("bind", "/data/,readonly=false", "/source")
 
     def test_metadata_permissions_are_preserved(self):
@@ -389,10 +387,10 @@ class SafetyTests(Fixture):
             if "backup" in args:
                 binding = next(x for x in args if "target=/source/metadata" in x)
                 source = Path(binding.split("source=", 1)[1].split(",target=", 1)[0])
-                self.assertEqual((source / "environment.env").stat().st_mode & 0o777, 0o600)
-                self.assertFalse((source / "password").exists())
+                assert (source / 'environment.env').stat().st_mode & 0o777 == 0o600
+                assert not (source / 'password').exists()
                 manifest = json.loads((source / "manifest.json").read_text())
-                self.assertEqual(manifest["strategy"], "cold-filesystem")
+                assert manifest['strategy'] == 'cold-filesystem'
             return original(args)
 
         self.repo.run = inspect
@@ -411,7 +409,7 @@ class SafetyTests(Fixture):
                 ],
             }
         ]
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             backup.sources(self.manager, self.saved, containers)
 
     def test_recorded_runtime_mount_is_accepted(self):
@@ -424,7 +422,7 @@ class SafetyTests(Fixture):
             }
         ]
         entries, _ = backup.sources(self.manager, self.saved, containers)
-        self.assertEqual(entries[0]["source"], "test_data")
+        assert entries[0]['source'] == 'test_data'
 
     def test_initialize_generates_private_password_and_settings(self):
         self.repo.values = {}
@@ -432,18 +430,18 @@ class SafetyTests(Fixture):
         password = self.state / "generated-password"
         with redirect_stdout(io.StringIO()):
             self.repo.initialize(self.repository, password)
-        self.assertEqual(password.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(len(password.read_text().strip()), 64)
-        self.assertEqual(self.repo.config.stat().st_mode & 0o777, 0o600)
-        self.assertIn("init", self.events)
+        assert password.stat().st_mode & 0o777 == 0o600
+        assert len(password.read_text().strip()) == 64
+        assert self.repo.config.stat().st_mode & 0o777 == 0o600
+        assert 'init' in self.events
 
     def test_existing_repository_requires_original_password(self):
         self.repo.values = {}
         self.repo.config.unlink()
         (self.repository / "config").write_text("existing")
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.initialize(self.repository, self.state / "missing-password")
-        self.assertFalse(self.repo.config.exists())
+        assert not self.repo.config.exists()
 
     def test_existing_repository_can_be_attached_without_reinitializing(self):
         self.repo.values = {}
@@ -451,27 +449,27 @@ class SafetyTests(Fixture):
         (self.repository / "config").write_text("existing")
         with redirect_stdout(io.StringIO()):
             self.repo.initialize(self.repository, self.password)
-        self.assertIn("snapshots", self.events)
-        self.assertNotIn("init", self.events)
+        assert 'snapshots' in self.events
+        assert 'init' not in self.events
 
     def test_unknown_nonempty_repository_is_rejected(self):
         self.repo.values = {}
         self.repo.config.unlink()
         (self.repository / "keep-me").write_text("content")
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.initialize(self.repository, self.password)
-        self.assertEqual((self.repository / "keep-me").read_text(), "content")
+        assert (self.repository / 'keep-me').read_text() == 'content'
 
     def test_init_failure_does_not_publish_configuration(self):
         self.repo.values = {}
         self.repo.config.unlink()
         self.fail = "init"
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.initialize(self.repository, self.password)
-        self.assertFalse(self.repo.config.exists())
+        assert not self.repo.config.exists()
 
     def test_settings_cannot_be_overwritten_by_init(self):
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.repo.initialize(self.repository, self.password)
 
     def test_writer_appearing_after_backup_prevents_promotion(self):
@@ -484,13 +482,13 @@ class SafetyTests(Fixture):
             return result
 
         self.repo.run = start_writer
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.create()
-        self.assertNotIn("tag", self.events)
+        assert 'tag' not in self.events
 
     def test_remote_docker_context_is_rejected(self):
         self.repo.run = lambda args: json.dumps([{"Endpoints": {"docker": {"Host": "ssh://host"}}}])
-        with patch.dict(os.environ, {}, clear=True), self.assertRaises(backup.BackupError):
+        with patch.dict(os.environ, {}, clear=True), pytest.raises(backup.BackupError):
             self.repo.docker_check()
 
     def test_cached_helper_does_not_require_a_pull(self):
@@ -509,40 +507,40 @@ class SafetyTests(Fixture):
         self.repo.run = cached
         with patch.dict(os.environ, {}, clear=True):
             self.repo.docker_check()
-        self.assertFalse(any("pull" in x for x in commands))
+        assert not any(('pull' in x for x in commands))
 
 
-class CliTests(unittest.TestCase):
+class TestCli:
     def test_help_does_not_need_manager_or_docker(self):
         result = subprocess.run(
             [sys.executable, str(MODULE), "backup", "--help"], capture_output=True, text=True
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--stop", result.stdout)
+        assert result.returncode == 0, result.stderr
+        assert '--stop' in result.stdout
 
     def test_existing_commands_are_delegated_without_reparsing(self):
         args = ["--env-file", "/tmp/backup", "--no-build", "up"]
         with patch.object(cli.os, "execv", side_effect=SystemExit(0)) as execute:
-            with self.assertRaises(SystemExit):
+            with pytest.raises(SystemExit):
                 cli.main(args)
-        self.assertEqual(execute.call_args.args[1][2:], args)
-        self.assertTrue(execute.call_args.args[1][1].endswith("entrypoint.py"))
+        assert execute.call_args.args[1][2:] == args
+        assert execute.call_args.args[1][1].endswith('entrypoint.py')
 
     def test_backup_command_is_routed_with_global_options(self):
         args = ["--state-dir", "/tmp/state", "backup", "--help"]
         with patch.object(cli.os, "execv", side_effect=SystemExit(0)) as execute:
-            with self.assertRaises(SystemExit):
+            with pytest.raises(SystemExit):
                 cli.main(args)
-        self.assertEqual(execute.call_args.args[1][2:], args)
-        self.assertTrue(execute.call_args.args[1][1].endswith("backup.py"))
+        assert execute.call_args.args[1][2:] == args
+        assert execute.call_args.args[1][1].endswith('backup.py')
 
     def test_model_id_named_backup_is_not_a_backup_command(self):
         args = ["--model-id", "backup", "--confirm", "purge-deleted"]
         with patch.object(cli.os, "execv", side_effect=SystemExit(0)) as execute:
-            with self.assertRaises(SystemExit):
+            with pytest.raises(SystemExit):
                 cli.main(args)
-        self.assertEqual(execute.call_args.args[1][2:], args)
-        self.assertTrue(execute.call_args.args[1][1].endswith("entrypoint.py"))
+        assert execute.call_args.args[1][2:] == args
+        assert execute.call_args.args[1][1].endswith('entrypoint.py')
 
     def test_backup_options_work_before_and_after_command(self):
         for args in (
@@ -550,15 +548,11 @@ class CliTests(unittest.TestCase):
             ["backup", "create", "--env-file", "/tmp/env", "--stop"],
         ):
             parsed = backup.parser().parse_args(args)
-            self.assertEqual(parsed.env_file, Path("/tmp/env"))
-            self.assertTrue(parsed.stop)
+            assert parsed.env_file == Path('/tmp/env')
+            assert parsed.stop
 
     def test_create_cannot_silently_ignore_restore_option(self):
         with redirect_stdout(io.StringIO()), patch("sys.stderr", new_callable=io.StringIO):
-            with self.assertRaises(SystemExit) as result:
+            with pytest.raises(SystemExit) as result:
                 backup.main(["backup", "create", "--target", "/tmp/test"])
-        self.assertEqual(result.exception.code, 2)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert result.value.code == 2

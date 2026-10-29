@@ -132,14 +132,14 @@ Docker以外のホストプロセスや別サーバーによる書き込みま�
 Dockerを使用しない単体テストは次のコマンドで実行します。
 
 ```bash
-python -m unittest discover -s components/extensions/tests -p 'test_backup*.py' -v
+python -m pytest -q components/extensions/tests/test_backup*.py
 ```
 
 Dockerを使う試験は明示的に有効化します。ランダムな固有名を持つ試験用コンテナとボリュームだけを作成して削除し、実際のPostgreSQLの停止バックアップ、2回目の追加データ量、古い世代からの復元、格納データの検査を確認します。本番CVATの起動や推論、既存ボリュームの削除は行いません。
 
 ```bash
-CVAT_BACKUP_DOCKER_TEST=1 python -m unittest discover \
-  -s components/extensions/tests -p 'test_backup_docker.py' -v
+CVAT_BACKUP_DOCKER_TEST=1 python -m pytest -v \
+  components/extensions/tests/test_backup_docker.py
 ```
 
 運用環境での受入試験では、拡張を無効にした構成と、実際に使用するSAM系機能およびローカルモデル管理を含む構成の両方で`backup plan`を確認します。Dockerのない開発環境で単体テストが成功したことを、DB復元や実際の全拡張の動作を確認したこととは区別してください。

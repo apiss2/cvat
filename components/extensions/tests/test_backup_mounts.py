@@ -2,12 +2,12 @@
 """Recorded mount mappings must describe the data the containers actually use."""
 import os
 import stat
-import unittest
+import pytest
 
 from test_backup import Fixture, backup
 
 
-class MountMappingTests(Fixture):
+class TestMountMapping(Fixture):
     @staticmethod
     def container(service, mounts):
         return {
@@ -45,7 +45,7 @@ class MountMappingTests(Fixture):
     def test_changed_destination_is_rejected(self):
         mount = self.data_mount()
         mount["Destination"] = "/not-the-data-dir"
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             backup.sources(
                 self.manager,
                 self.saved,
@@ -65,7 +65,7 @@ class MountMappingTests(Fixture):
         ]
         data_mount = self.data_mount()
         data_mount["Name"] = "test_db"
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             backup.sources(
                 self.manager,
                 self.saved,
@@ -85,7 +85,7 @@ class MountMappingTests(Fixture):
             )
 
     def test_missing_runtime_mount_is_rejected(self):
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             backup.sources(
                 self.manager,
                 self.saved,
@@ -97,7 +97,7 @@ class MountMappingTests(Fixture):
     def test_equivalent_container_path_is_accepted(self):
         self.model["services"]["cvat_server"]["volumes"][0]["target"] += "/"
         entries, _ = self.sources_with()
-        self.assertEqual([entry["source"] for entry in entries], ["test_data"])
+        assert [entry['source'] for entry in entries] == ['test_data']
 
     def test_bind_source_symlink_is_compared_after_resolution(self):
         alias = self.base / "data-alias"
@@ -116,25 +116,22 @@ class MountMappingTests(Fixture):
                 "Destination": "/extra-data",
             }
         )
-        self.assertIn(str(self.data), [entry["source"] for entry in entries])
+        assert str(self.data) in [entry['source'] for entry in entries]
 
-    def test_file_backed_configs_and_secrets_default_targets(self):
-        for use_short_syntax in (False, True):
-            with self.subTest(short_syntax=use_short_syntax):
-                configs = ["settings"] if use_short_syntax else [{"source": "settings"}]
-                secrets = ["token"] if use_short_syntax else [{"source": "token"}]
-                config, secret = self.add_file_resources(configs, secrets)
-                entries, _ = self.sources_with(
-                    {"Type": "bind", "Source": str(config), "Destination": "/settings"},
-                    {"Type": "bind", "Source": str(secret), "Destination": "/run/secrets/token"},
-                )
-                self.assertEqual(
-                    {entry["source"] for entry in entries},
-                    {"test_data", str(config), str(secret)},
-                )
+    @pytest.mark.parametrize("use_short_syntax", [False, True])
+    def test_file_backed_configs_and_secrets_default_targets(self, use_short_syntax):
+        configs = ["settings"] if use_short_syntax else [{"source": "settings"}]
+        secrets = ["token"] if use_short_syntax else [{"source": "token"}]
+        config, secret = self.add_file_resources(configs, secrets)
+        entries, _ = self.sources_with(
+            {"Type": "bind", "Source": str(config), "Destination": "/settings"},
+            {"Type": "bind", "Source": str(secret), "Destination": "/run/secrets/token"},
+        )
+        assert {entry["source"] for entry in entries} == {"test_data", str(config), str(secret)}
 
-    def test_file_backed_configs_and_secrets_custom_targets(self):
-        for config_target, secret_target, config_path, secret_path in (
+    @pytest.mark.parametrize(
+        "config_target,secret_target,config_path,secret_path",
+        [
             (
                 "/etc/cvat/settings.conf",
                 "/etc/cvat/password",
@@ -142,20 +139,23 @@ class MountMappingTests(Fixture):
                 "/etc/cvat/password",
             ),
             ("settings.conf", "password", "/settings.conf", "/run/secrets/password"),
-        ):
-            with self.subTest(config_target=config_target, secret_target=secret_target):
-                config, secret = self.add_file_resources(
-                    [{"source": "settings", "target": config_target}],
-                    [{"source": "token", "target": secret_target}],
-                )
-                self.sources_with(
-                    {"Type": "bind", "Source": str(config), "Destination": config_path},
-                    {"Type": "bind", "Source": str(secret), "Destination": secret_path},
-                )
+        ],
+    )
+    def test_file_backed_configs_and_secrets_custom_targets(
+        self, config_target, secret_target, config_path, secret_path
+    ):
+        config, secret = self.add_file_resources(
+            [{"source": "settings", "target": config_target}],
+            [{"source": "token", "target": secret_target}],
+        )
+        self.sources_with(
+            {"Type": "bind", "Source": str(config), "Destination": config_path},
+            {"Type": "bind", "Source": str(secret), "Destination": secret_path},
+        )
 
     def test_secret_mounted_at_a_different_target_is_rejected(self):
         config, secret = self.add_file_resources([{"source": "settings"}], [{"source": "token"}])
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.sources_with(
                 {"Type": "bind", "Source": str(config), "Destination": "/settings"},
                 {"Type": "bind", "Source": str(secret), "Destination": "/unexpected-token"},
@@ -163,7 +163,7 @@ class MountMappingTests(Fixture):
 
     def test_missing_file_backed_config_is_rejected(self):
         _, secret = self.add_file_resources([{"source": "settings"}], [{"source": "token"}])
-        with self.assertRaises(backup.BackupError):
+        with pytest.raises(backup.BackupError):
             self.sources_with(
                 {
                     "Type": "bind",
@@ -184,9 +184,5 @@ class MountMappingTests(Fixture):
             {"Type": "tmpfs", "Destination": "/temporary"},
             {"Type": "bind", "Source": str(socket_path), "Destination": "/var/run/docker.sock"},
         )
-        self.assertEqual([entry["source"] for entry in entries], ["test_data"])
-        self.assertEqual(excluded, [str(socket_path) + " (socket)"])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert [entry['source'] for entry in entries] == ['test_data']
+        assert excluded == [str(socket_path) + ' (socket)']

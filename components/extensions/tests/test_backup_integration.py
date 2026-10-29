@@ -4,8 +4,7 @@
 import io
 import json
 import subprocess
-import tempfile
-import unittest
+import pytest
 from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -13,11 +12,12 @@ from unittest.mock import patch
 from components.extensions import backup, manage
 
 
-class ExtensionBackupIntegrationTests(unittest.TestCase):
-    def setUp(self):
+class TestExtensionBackupIntegration:
+    @pytest.fixture(autouse=True)
+    def backup_state(self, request, tmp_path):
         self.stack = ExitStack()
-        self.addCleanup(self.stack.close)
-        self.base = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        request.addfinalizer(self.stack.close)
+        self.base = tmp_path
         self.state = self.base / "state"
         self.state.mkdir(mode=0o700)
         self.env_file = self.base / "deployment.env"
@@ -147,7 +147,7 @@ class ExtensionBackupIntegrationTests(unittest.TestCase):
         elif args[:2] == ["git", "-C"]:
             output = "a" * 40 if args[-2:] == ["rev-parse", "HEAD"] else ""
         else:
-            self.fail(f"Unexpected external command: {args}")
+            pytest.fail(f"Unexpected external command: {args}")
         return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
 
     def run_restic(self, args):
@@ -167,7 +167,7 @@ class ExtensionBackupIntegrationTests(unittest.TestCase):
                 if value.startswith("source=")
             )
             self.manifest = json.loads((Path(source) / "manifest.json").read_text())
-            self.assertEqual(json.loads((Path(source) / "active.json").read_text()), self.saved)
+            assert json.loads((Path(source) / 'active.json').read_text()) == self.saved
             return json.dumps({"message_type": "summary", "snapshot_id": "12345678"})
         if "tag" in restic:
             self.snapshots = [
@@ -178,7 +178,7 @@ class ExtensionBackupIntegrationTests(unittest.TestCase):
                 }
             ]
             return ""
-        self.fail(f"Unexpected restic command: {restic}")
+        pytest.fail(f"Unexpected restic command: {restic}")
 
     def exercise(self, action, *, dicom_enabled):
         selected = ["physical_measurements", "task_context"]
@@ -201,25 +201,19 @@ class ExtensionBackupIntegrationTests(unittest.TestCase):
                 ]
             )
         manager = manage.Manager(manage.ROOT, self.env_file, self.state)
-        self.assertEqual(manager.extensions, tuple(selected))
-        self.assertEqual(
-            "plugins/dicom-import" in manager.values["CVAT_CLIENT_PLUGINS"].split(":"),
-            dicom_enabled,
-        )
-        self.assertFalse(set(manager.extensions) & manage.SERVERLESS_EXTENSIONS)
+        assert manager.extensions == tuple(selected)
+        assert ('plugins/dicom-import' in manager.values['CVAT_CLIENT_PLUGINS'].split(':')) == dicom_enabled
+        assert not set(manager.extensions) & manage.SERVERLESS_EXTENSIONS
         if action == "plan":
             sources = json.loads(output.getvalue())["sources"]
-            self.assertFalse(any(command[:2] == ["docker", "run"] for command in self.calls))
+            assert not any((command[:2] == ['docker', 'run'] for command in self.calls))
         else:
-            self.assertIsNotNone(self.manifest)
+            assert self.manifest is not None
             sources = self.manifest["sources"]
-            self.assertEqual(len(self.snapshots), 1)
-            self.assertIn(self.snapshots[0]["id"], output.getvalue())
-        self.assertEqual(
-            {source["source"] for source in sources},
-            {"backup-test_cvat_data", "backup-test_cvat_db"},
-        )
-        self.assertEqual(json.loads((self.state / "active.json").read_text()), self.saved)
+            assert len(self.snapshots) == 1
+            assert self.snapshots[0]['id'] in output.getvalue()
+        assert {source['source'] for source in sources} == {'backup-test_cvat_data', 'backup-test_cvat_db'}
+        assert json.loads((self.state / 'active.json').read_text()) == self.saved
 
     def test_plan_with_all_three_extensions(self):
         self.exercise("plan", dicom_enabled=True)
@@ -232,7 +226,3 @@ class ExtensionBackupIntegrationTests(unittest.TestCase):
 
     def test_create_after_disabling_dicom_preserves_recorded_sources(self):
         self.exercise("create", dicom_enabled=False)
-
-
-if __name__ == "__main__":
-    unittest.main()

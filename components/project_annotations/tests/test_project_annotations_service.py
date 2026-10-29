@@ -11,17 +11,19 @@ import copy
 import importlib.util
 import io
 import json
+import logging
 import re
 import sqlite3
 import sys
 import tempfile
 import types
-import unittest
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
+
+import pytest
 
 from components.project_annotations import ANNOTATION_KEYS, PROTECTED_LABEL
 from components.project_annotations.dicom import plan_records
@@ -163,7 +165,8 @@ class Harness:
     def __init__(self):
         self.db = sqlite3.connect(":memory:", isolation_level=None)
         self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.executescript("""
+        self.db.executescript(
+            """
             CREATE TABLE annotations (
                 id INTEGER PRIMARY KEY, job_id INTEGER, task_id INTEGER,
                 kind TEXT, frame INTEGER, label_id INTEGER, payload TEXT
@@ -172,7 +175,8 @@ class Harness:
                 id INTEGER PRIMARY KEY, annotation_id INTEGER REFERENCES annotations(id) ON DELETE CASCADE,
                 spec_id INTEGER, value TEXT
             );
-        """)
+        """
+        )
         self.locks, self.events = [], []
         self.fail_create = set()
         self.allow_project, self.active_user = True, True
@@ -530,15 +534,15 @@ def zipped(files):
     return source
 
 
-class ServiceTest(unittest.TestCase):
-    def setUp(self):
+class TestService:
+    @pytest.fixture(autouse=True)
+    def setup_context(self):
         self.h = Harness()
-        self.context = self.h.services()
-        self.service, self.annotations = self.context.__enter__()
-
-    def tearDown(self):
-        self.context.__exit__(None, None, None)
-        self.h.db.close()
+        try:
+            with self.h.services() as (self.service, self.annotations):
+                yield
+        finally:
+            self.h.db.close()
 
     def dicom(self, *records, mode="replace"):
         return self.service._import_dicom(
@@ -578,74 +582,83 @@ class ServiceTest(unittest.TestCase):
 
     def test_dicom_replace_preserves_protected_rows_and_attributes(self):
         before = self.h.saved(7)
-        self.assertIn("1 tasks succeeded; 0 tasks failed", self.dicom(record()))
+        assert "1 tasks succeeded; 0 tasks failed" in self.dicom(record())
         after = self.h.saved(7)
         protected_ids = {row[0] for row in before[0] if row[5] == 99}
-        self.assertEqual(
-            [row for row in after[0] if row[0] in protected_ids],
-            [row for row in before[0] if row[0] in protected_ids],
-        )
-        self.assertEqual(after[1][: len(before[1])], before[1])
-        self.assertEqual([tag["label_id"] for tag in self.h.tags(7) if tag["label_id"] != 99], [10])
+        assert [row for row in after[0] if row[0] in protected_ids] == [
+            row for row in before[0] if row[0] in protected_ids
+        ]
+        assert after[1][: len(before[1])] == before[1]
+        assert [tag["label_id"] for tag in self.h.tags(7) if tag["label_id"] != 99] == [10]
 
     def test_dicom_append_retains_non_protected_annotations(self):
         before = self.h.saved(7)
         self.dicom(record(), mode="append")
-        self.assertEqual(self.h.saved(7)[0][: len(before[0])], before[0])
-        self.assertEqual(Counter(tag["label_id"] for tag in self.h.tags(7)), {99: 2, 11: 1, 10: 1})
+        assert self.h.saved(7)[0][: len(before[0])] == before[0]
+        assert Counter((tag["label_id"] for tag in self.h.tags(7))) == {99: 2, 11: 1, 10: 1}
 
-    def test_real_transaction_rolls_back_delete_and_partial_create_then_continues(self):
+    def test_real_transaction_rolls_back_delete_and_partial_create_then_continues(self, caplog):
         before = self.h.saved(7)
         self.h.fail_create.add(7)
-        with self.assertLogs(self.service.logger, level="WARNING") as captured:
+        with caplog.at_level(logging.WARNING, logger=self.service.logger.name):
             message = self.dicom(record(), record(8))
-        self.assertIn("1 tasks succeeded; 1 tasks failed", message)
-        self.assertEqual(self.h.saved(7), before)
-        self.assertEqual(Counter(tag["label_id"] for tag in self.h.tags(8)), {99: 2, 10: 1})
-        self.assertEqual(
-            [event for event in self.h.events if event[0] in ("rollback", "commit")],
-            [("rollback",), ("commit",)],
-        )
-        self.assertNotIn("sensitive", " ".join(captured.output))
+        warnings = [
+            entry
+            for entry in caplog.records
+            if (
+                entry.name == self.service.logger.name
+                or entry.name.startswith(self.service.logger.name + ".")
+            )
+            and entry.levelno >= logging.WARNING
+        ]
+        assert warnings, "Expected the failed task to emit a warning"
+        assert "1 tasks succeeded; 1 tasks failed" in message
+        assert self.h.saved(7) == before
+        assert Counter((tag["label_id"] for tag in self.h.tags(8))) == {99: 2, 10: 1}
+        assert [event for event in self.h.events if event[0] in ("rollback", "commit")] == [
+            ("rollback",),
+            ("commit",),
+        ]
+        assert "sensitive" not in " ".join(caplog.handler.format(entry) for entry in warnings)
 
     def test_malformed_record_prevents_every_change_to_its_task(self):
         before = self.h.saved(7)
         bad = record(sop_instance_uid="1.2.3.5", tags=[{"label": "Missing"}])
         message = self.dicom(record(), bad, record(8))
-        self.assertIn("1 tasks succeeded; 1 tasks failed", message)
-        self.assertEqual(self.h.saved(7), before)
-        self.assertNotIn(("create", 7), self.h.events)
+        assert "1 tasks succeeded; 1 tasks failed" in message
+        assert self.h.saved(7) == before
+        assert ("create", 7) not in self.h.events
 
     def test_dicom_reimport_replace_succeeds_append_rejects_duplicate(self):
-        self.assertIn("1 tasks succeeded", self.dicom(record()))
-        self.assertIn("1 tasks succeeded", self.dicom(record()))
+        assert "1 tasks succeeded" in self.dicom(record())
+        assert "1 tasks succeeded" in self.dicom(record())
         before = self.h.saved()
-        self.assertIn("0 tasks succeeded; 1 tasks failed", self.dicom(record(), mode="append"))
-        self.assertEqual(self.h.saved(), before)
+        assert "0 tasks succeeded; 1 tasks failed" in self.dicom(record(), mode="append")
+        assert self.h.saved() == before
 
     def test_normal_append_keeps_standard_duplicate_behavior_on_reimport(self):
         self.folders(mode="append", both=False)
         self.folders(mode="append", both=False)
-        self.assertEqual(Counter(tag["label_id"] for tag in self.h.tags(7)), {99: 2, 11: 1, 10: 2})
+        assert Counter((tag["label_id"] for tag in self.h.tags(7))) == {99: 2, 11: 1, 10: 2}
 
     def test_normal_replace_removes_absent_frame_annotations_and_is_repeatable(self):
-        self.assertIn("1 tasks succeeded", self.folders(both=False))
-        self.assertIn("1 tasks succeeded", self.folders(both=False))
-        self.assertEqual(Counter(tag["label_id"] for tag in self.h.tags(7)), {99: 2, 10: 1})
+        assert "1 tasks succeeded" in self.folders(both=False)
+        assert "1 tasks succeeded" in self.folders(both=False)
+        assert Counter((tag["label_id"] for tag in self.h.tags(7))) == {99: 2, 10: 1}
 
     def test_normal_import_failure_rolls_back_entire_task_and_continues(self):
         before = self.h.saved(7)
         self.h.fail_create.add(7)
-        self.assertIn("1 tasks succeeded; 1 tasks failed", self.folders())
-        self.assertEqual(self.h.saved(7), before)
-        self.assertEqual(Counter(tag["label_id"] for tag in self.h.tags(8)), {99: 2, 10: 1})
+        assert "1 tasks succeeded; 1 tasks failed" in self.folders()
+        assert self.h.saved(7) == before
+        assert Counter((tag["label_id"] for tag in self.h.tags(8))) == {99: 2, 10: 1}
 
     def test_permissions_are_rechecked_for_each_task(self):
         before = self.h.saved(8)
         self.h.meta.save = lambda: self.h.denied_tasks.add(8)
-        self.assertIn("1 tasks succeeded; 1 tasks failed", self.dicom(record(), record(8)))
-        self.assertEqual(self.h.saved(8), before)
-        self.assertTrue(self.h.locks)
+        assert "1 tasks succeeded; 1 tasks failed" in self.dicom(record(), record(8))
+        assert self.h.saved(8) == before
+        assert self.h.locks
 
     def test_normal_preflight_failure_does_not_delete_and_allows_other_task(self):
         before = self.h.saved(7)
@@ -657,9 +670,9 @@ class ServiceTest(unittest.TestCase):
             return native_validate(annotation, payload, labels)
 
         with patch.object(self.service, "validate_payload", validate):
-            self.assertIn("1 tasks succeeded; 1 tasks failed", self.folders())
-        self.assertEqual(self.h.saved(7), before)
-        self.assertNotIn(("delete", 70), self.h.events)
+            assert "1 tasks succeeded; 1 tasks failed" in self.folders()
+        assert self.h.saved(7) == before
+        assert ("delete", 70) not in self.h.events
 
     def test_normal_target_rename_after_preflight_prevents_that_task_update(self):
         before = self.h.saved(7)
@@ -672,34 +685,32 @@ class ServiceTest(unittest.TestCase):
             return result
 
         with patch.object(self.service, "locked_task", locked):
-            self.assertIn("1 tasks succeeded; 1 tasks failed", self.folders())
-        self.assertEqual(self.h.saved(7), before)
+            assert "1 tasks succeeded; 1 tasks failed" in self.folders()
+        assert self.h.saved(7) == before
 
     def test_workspace_change_after_preflight_prevents_writes(self):
         before = self.h.saved()
         self.h.project.organization_id = 2
-        self.assertIn("0 tasks succeeded; 1 tasks failed", self.dicom(record()))
-        self.assertEqual(self.h.saved(), before)
+        assert "0 tasks succeeded; 1 tasks failed" in self.dicom(record())
+        assert self.h.saved() == before
 
-    def test_inactive_user_or_project_permission_prevents_writes(self):
-        for name in ("active_user", "allow_project"):
-            with self.subTest(name=name):
-                before = self.h.saved()
-                setattr(self.h, name, False)
-                self.assertIn("0 tasks succeeded; 1 tasks failed", self.dicom(record()))
-                self.assertEqual(self.h.saved(), before)
-                setattr(self.h, name, True)
+    @pytest.mark.parametrize("name", ("active_user", "allow_project"))
+    def test_inactive_user_or_project_permission_prevents_writes(self, name):
+        before = self.h.saved()
+        setattr(self.h, name, False)
+        assert "0 tasks succeeded; 1 tasks failed" in self.dicom(record())
+        assert self.h.saved() == before
 
     def test_unmatched_and_unidentifiable_invalid_records_are_reported(self):
         message = self.dicom(record(sop_instance_uid="1.2.3.999"), {}, record())
-        self.assertIn(
-            "1 tasks succeeded; 0 tasks failed; 1 unmatched records; 1 invalid records", message
+        assert (
+            "1 tasks succeeded; 0 tasks failed; 1 unmatched records; 1 invalid records" in message
         )
 
     def test_nonexistent_target_is_counted_even_when_tag_definition_is_invalid(self):
         message = self.dicom(record(sop_instance_uid="1.2.3.999", tags=[{"label": "Missing"}]))
-        self.assertIn(
-            "0 tasks succeeded; 0 tasks failed; 1 unmatched records; 1 invalid records", message
+        assert (
+            "0 tasks succeeded; 0 tasks failed; 1 unmatched records; 1 invalid records" in message
         )
 
     def test_each_locked_task_revalidates_only_its_original_records(self):
@@ -712,8 +723,8 @@ class ServiceTest(unittest.TestCase):
 
         with patch.object(self.service, "plan_records", planning):
             message = self.dicom(record(), record(8), record(sop_instance_uid="1.2.3.5"))
-        self.assertIn("2 tasks succeeded; 0 tasks failed", message)
-        self.assertEqual(sizes, [3, 2, 1])
+        assert "2 tasks succeeded; 0 tasks failed" in message
+        assert sizes == [3, 2, 1]
 
     def test_current_duplicate_from_concurrent_change_is_rechecked(self):
         native_lock = self.service.locked_task
@@ -725,8 +736,8 @@ class ServiceTest(unittest.TestCase):
 
         before = self.h.saved(7)
         with patch.object(self.service, "locked_task", locked):
-            self.assertIn("0 tasks succeeded; 1 tasks failed", self.dicom(record(), mode="append"))
-        self.assertEqual(self.h.saved(7), before)
+            assert "0 tasks succeeded; 1 tasks failed" in self.dicom(record(), mode="append")
+        assert self.h.saved(7) == before
 
     def test_snapshot_uses_maximum_per_job_tag_multiplicity(self):
         self.h.jobs.append(types.SimpleNamespace(id=71, task_id=7, type="annotation"))
@@ -735,38 +746,38 @@ class ServiceTest(unittest.TestCase):
             self.h.seed(7, job, 0, 10, [{"spec_id": 20, "value": "good"}])
         snapshot = next(item for item in self.service.snapshots(1) if item.id == 7)
         counts = Counter((item["frame"], item["label_id"]) for item in snapshot.existing_tags)
-        self.assertEqual(counts[(0, 99)], 1)
-        self.assertEqual(counts[(0, 10)], 2)
-        self.assertEqual(len([item for item in snapshot.identities if item.frame == 0]), 1)
+        assert counts[0, 99] == 1
+        assert counts[0, 10] == 2
+        assert len([item for item in snapshot.identities if item.frame == 0]) == 1
 
     def test_snapshot_reads_stored_date_and_does_not_invent_from_label_defaults(self):
         self.h.db.execute("UPDATE attributes SET value='2025/1/1' WHERE spec_id=104")
         snapshots = self.service.snapshots(1)
-        self.assertEqual(snapshots[0].identities[0].values["StudyDate"], {"2025/1/1"})
+        assert snapshots[0].identities[0].values["StudyDate"] == {"2025/1/1"}
         result = plan_records([record(study_date="20250101")], snapshots, self.h.labels, "replace")
-        self.assertIn(7, result.updates)
+        assert 7 in result.updates
         self.h.db.execute("DELETE FROM attributes WHERE spec_id=104")
-        self.assertIn(
-            7,
-            plan_records(
+        assert (
+            7
+            in plan_records(
                 [record(study_date="20250101")], self.service.snapshots(1), self.h.labels, "replace"
-            ).failed_tasks,
+            ).failed_tasks
         )
 
     def test_snapshot_does_not_use_ordinary_ground_truth_job_as_match(self):
         self.h.jobs.append(types.SimpleNamespace(id=81, task_id=8, type="ground_truth"))
         self.h.seed(8, 81, 0, 99, self.h.identity("1.2.3", "1.2.3.4"))
-        self.assertIn("1 tasks succeeded; 0 tasks failed", self.dicom(record()))
+        assert "1 tasks succeeded; 0 tasks failed" in self.dicom(record())
 
     def test_current_candidate_query_keeps_whitespace_padded_duplicate_sop(self):
         initial = self.service.snapshots(1, task_id=7, sop_uids={"1.2.3.4"})
-        self.assertEqual([snapshot.id for snapshot in initial], [7])
+        assert [snapshot.id for snapshot in initial] == [7]
         self.h.seed(8, 80, 0, 99, self.h.identity("1.2.3", "\t1.2.3.4\n"))
         current = self.service.snapshots(1, task_id=7, sop_uids={"1.2.3.4"})
-        self.assertEqual([snapshot.id for snapshot in current], [7, 8])
+        assert [snapshot.id for snapshot in current] == [7, 8]
         plan = plan_records([record()], current, self.h.labels, "replace")
-        self.assertEqual(set(plan.failed_tasks), {7, 8})
-        self.assertFalse(plan.updates)
+        assert set(plan.failed_tasks) == {7, 8}
+        assert not plan.updates
 
     def test_snapshot_includes_ground_truth_job_for_gt_pool_tasks(self):
         self.h.tasks[8].data.validation_mode = "gt_pool"
@@ -774,8 +785,4 @@ class ServiceTest(unittest.TestCase):
         self.h.seed(8, 81, 0, 99, self.h.identity("1.2.3", "1.2.3.4"))
         snapshots = self.service.snapshots(1)
         plan = plan_records([record()], snapshots, self.h.labels, "replace")
-        self.assertEqual(set(plan.failed_tasks), {7, 8})
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert set(plan.failed_tasks) == {7, 8}

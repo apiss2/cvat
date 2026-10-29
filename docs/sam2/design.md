@@ -76,3 +76,9 @@ node cvat-ui/plugins/sam2/tests/run-tests.cjs
 Nodeの試験にはリポジトリのTypeScript依存関係が必要です。小さいCVAT契約用の定義で型と制御を確認し、CVAT全体のビルドやブラウザーの描画は行いません。CPU試験も公式重みのGPU推論を保証しません。
 
 [GPU確認](../../components/sam2/tests/gpu_smoke.py)と[Redis確認](../../components/sam2/tests/redis_integration.py)は実際の対応環境で別に実施します。状態復元、応答消失時の再送、競合、マスク入力、逆方向、削除フレーム、中止、Undo、Save後の再読込を確認します。モデルや状態形式の変更時は、実画像と長い動画の結果も記録してください。
+
+Redisの確認は、破棄できる試験用Redisの接続先を `SAM2_TEST_REDIS_URL` に設定してから、次のコマンドで明示的に実行します。接続先がなければ失敗し、未実施を成功として扱いません。
+
+```bash
+/srv/cvat-test-envs/sam2/bin/python -m pytest -q components/sam2/tests/redis_integration.py
+```

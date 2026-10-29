@@ -1,0 +1,7 @@
+# Shared extension tests reuse the model-registration API dependencies.
+-r ../../model_registry/requirements-control.txt
+pytest==9.0.3
+PyYAML==6.0.3
+# Local coverage collection and function-level quality reports.
+coverage==7.13.5
+radon==6.0.1

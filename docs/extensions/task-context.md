@@ -117,9 +117,10 @@ URL、権限規則、ガイドの保存処理、バックアップ処理は変�
 python -m pytest -q components/extensions/tests/test_client_plugins.py \
   components/extensions/tests/test_cvatctl.py
 node cvat-ui/plugins/task-context/tests/task-context.test.cjs
-yarn tsc -p cvat-ui/tsconfig.json --noEmit
-CLIENT_PLUGINS=plugins/task-context yarn run build:cvat-ui
+yarn run type-check
 ```
+
+本番用の画面ビルドは、設定ファイルでタスク情報の表示を選択したうえで、[共通の更新手順](update.md#devで受入確認を行う)にある `cvatctl build` を使います。
 
 標準のAPIテストには、プロジェクト用とタスク用ガイドの組み合わせ、未登録時のnull、
 ジョブのみの担当者による取得、既存の `guide_id` の維持を確認する回帰テストを追加しています。

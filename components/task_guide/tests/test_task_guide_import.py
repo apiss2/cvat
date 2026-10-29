@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Run without CVAT services: python -m unittest discover -s components/task_guide/tests -p test_task_guide_import.py"""
+"""Run without CVAT services: python -m pytest -q components/task_guide/tests"""
 
 import ast
 import importlib.util
@@ -11,7 +11,7 @@ import shutil
 import stat
 import sys
 import tempfile
-import unittest
+import pytest
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -124,7 +124,7 @@ def video(task_id=2, uid="1.2.3"):
     )
 
 
-class ReportTests(unittest.TestCase):
+class TestReport:
     def test_minimal_fields_and_no_extras(self):
         r = record()
         r["input"]["institution"] = "DO NOT INCLUDE"
@@ -144,24 +144,21 @@ class ReportTests(unittest.TestCase):
             "## 診断",
             "診断です。",
         ):
-            self.assertIn(value, md)
+            assert value in md
         for value in ("DO NOT INCLUDE", "P1", "1.2.3", "20250101", "English finding"):
-            self.assertNotIn(value, md)
+            assert value not in md
 
-    def test_language_fallbacks_independently(self):
-        for key, heading in (("findings", "所見"), ("impression", "診断")):
-            for preferred in ("ja", "jp", "extracted", "en", "plain"):
-                with self.subTest(key=key, preferred=preferred):
-                    r = record()
-                    r["result"][key + "_ja"] = " "
-                    r["result"]["extracted"].pop(key)
-                    if preferred == "extracted":
-                        r["result"]["extracted"][key] = "chosen"
-                    else:
-                        r["result"][
-                            key if preferred == "plain" else key + "_" + preferred
-                        ] = "chosen"
-                    self.assertIn(f"## {heading}\nchosen", reports(r)[0].markdown)
+    @pytest.mark.parametrize("key, heading", [("findings", "所見"), ("impression", "診断")])
+    @pytest.mark.parametrize("preferred", ["ja", "jp", "extracted", "en", "plain"])
+    def test_language_fallbacks_independently(self, key, heading, preferred):
+        r = record()
+        r["result"][key + "_ja"] = " "
+        r["result"]["extracted"].pop(key)
+        if preferred == "extracted":
+            r["result"]["extracted"][key] = "chosen"
+        else:
+            r["result"][key if preferred == "plain" else key + "_" + preferred] = "chosen"
+        assert f"## {heading}\nchosen" in reports(r)[0].markdown
 
     def test_empty_values_and_zero_age(self):
         r = record()
@@ -169,19 +166,19 @@ class ReportTests(unittest.TestCase):
         r["input"]["patient_sex"] = None
         r["result"] = {"extracted": {"history": [None, " ", []]}}
         md = reports(r)[0].markdown
-        self.assertIn("年齢：0", md)
-        self.assertNotIn("性別", md)
-        self.assertNotIn("## 検査概要", md)
-        self.assertIn("## 所見\n記載なし", md)
-        self.assertIn("## 診断\n記載なし", md)
+        assert "年齢：0" in md
+        assert "性別" not in md
+        assert "## 検査概要" not in md
+        assert "## 所見\n記載なし" in md
+        assert "## 診断\n記載なし" in md
 
     def test_no_invented_translation_or_age_conversion(self):
         r = record()
         r["input"]["parsed_patient_age"] = "005M"
         md = reports(r)[0].markdown
-        self.assertIn("005M", md)
-        self.assertIn("brain", md)
-        self.assertNotIn("脳", md)
+        assert "005M" in md
+        assert "brain" in md
+        assert "脳" not in md
 
     def test_plain_text_escaping_and_line_breaks(self):
         r = record()
@@ -189,18 +186,16 @@ class ReportTests(unittest.TestCase):
             "<script>x</script>\r\n![x](https://example.invalid)\n" + core.END
         )
         md = reports(r)[0].markdown
-        self.assertNotIn("<script>", md)
-        self.assertNotIn("![x]", md)
-        self.assertNotIn(core.END, md)
-        self.assertIn("  \n", md)
+        assert "<script>" not in md
+        assert "![x]" not in md
+        assert core.END not in md
+        assert "  \n" in md
 
     def test_aliases_and_iso_date(self):
         r = record()
         r["input"] = {"study_uid": "1.2.3", "pid": "P1", "date": "2025-01-01"}
         report = reports(r)[0]
-        self.assertEqual(
-            (report.study_uid, report.patient_id, report.date), ("1.2.3", "P1", "20250101")
-        )
+        assert (report.study_uid, report.patient_id, report.date) == ("1.2.3", "P1", "20250101")
 
     def test_ptc_aliases_and_overview(self):
         r = record()
@@ -213,27 +208,27 @@ class ReportTests(unittest.TestCase):
             "mod": "CT",
         }
         report = reports(r)[0]
-        self.assertEqual(report.study_uid, r["input"]["uid"])
-        self.assertEqual((report.patient_id, report.date), ("ABC_DEFGH", "20250101"))
+        assert report.study_uid == r["input"]["uid"]
+        assert (report.patient_id, report.date) == ("ABC_DEFGH", "20250101")
         for value in ("年齢：21Y", "性別：M", "検査方法：CT"):
-            self.assertIn(value, report.markdown)
+            assert value in report.markdown
 
     def test_overview_prefers_nonempty_canonical_fields(self):
         r = record()
         r["input"].update(age="21Y", sex="F", mod="MR")
         md = reports(r)[0].markdown
         for value in ("年齢：25Y", "性別：M", "検査方法：CT"):
-            self.assertIn(value, md)
+            assert value in md
         r["input"].update(parsed_patient_age=" ", patient_sex=None, modality="")
         md = reports(r)[0].markdown
         for value in ("年齢：21Y", "性別：F", "検査方法：MR"):
-            self.assertIn(value, md)
+            assert value in md
 
     def test_uid_is_a_study_alias_only(self):
         r = record()
         r["input"] = {"uid": "1.2.3"}
         report = reports(r)[0]
-        self.assertEqual((report.study_uid, report.patient_id), ("1.2.3", ""))
+        assert (report.study_uid, report.patient_id) == ("1.2.3", "")
 
     def test_equivalent_identifier_aliases_are_accepted(self):
         r = record()
@@ -245,29 +240,28 @@ class ReportTests(unittest.TestCase):
             dt="Wed, 01 Jan 2025 00:00:00 GMT",
         )
         report = reports(r)[0]
-        self.assertEqual(
-            (report.study_uid, report.patient_id, report.date), ("1.2.3", "P1", "20250101")
-        )
+        assert (report.study_uid, report.patient_id, report.date) == ("1.2.3", "P1", "20250101")
 
-    def test_conflicting_aliases_rejected(self):
-        for alias, value in (
+    @pytest.mark.parametrize(
+        "alias, value",
+        [
             ("study_uid", "1.2.4"),
             ("uid", "1.2.4"),
             ("uid", "P1"),
             ("pid", "OTHER"),
             ("date", "20250102"),
             ("dt", "2025-01-02 00:00:00"),
-        ):
-            r = record()
-            r["input"][alias] = value
-            with (
-                self.subTest(alias=alias, value=value),
-                self.assertRaisesRegex(core.GuideImportError, "Conflicting aliases"),
-            ):
-                reports(r)
+        ],
+    )
+    def test_conflicting_aliases_rejected(self, alias, value):
+        r = record()
+        r["input"][alias] = value
+        with pytest.raises(core.GuideImportError, match="Conflicting aliases"):
+            reports(r)
 
-    def test_supported_dates_keep_the_written_calendar_date(self):
-        for value, expected in (
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
             ("20250107", "20250107"),
             ("2025-01-07", "20250107"),
             ("2025/01/07", "20250107"),
@@ -284,17 +278,19 @@ class ReportTests(unittest.TestCase):
             (" 2024-02-29 ", "20240229"),
             ("00010101", "00010101"),
             ("1 Jan 0001 00:00:00 GMT", "00010101"),
-        ):
-            with self.subTest(value=value):
-                self.assertEqual(reports(record(date=value))[0].date, expected)
+        ],
+    )
+    def test_supported_dates_keep_the_written_calendar_date(self, value, expected):
+        assert reports(record(date=value))[0].date == expected
 
-    def test_full_uid_required(self):
-        for uid in (None, "", "12345678", "1.2.x", "1.2.3x", "1." + "2" * 64):
-            with self.subTest(uid=uid), self.assertRaises(core.GuideImportError):
-                reports(record(uid=uid))
+    @pytest.mark.parametrize("uid", [None, "", "12345678", "1.2.x", "1.2.3x", "1." + "2" * 64])
+    def test_full_uid_required(self, uid):
+        with pytest.raises(core.GuideImportError):
+            reports(record(uid=uid))
 
-    def test_invalid_date(self):
-        for date in (
+    @pytest.mark.parametrize(
+        "date",
+        [
             "20250230",
             "2025-02-29",
             "2025/13/01",
@@ -309,9 +305,11 @@ class ReportTests(unittest.TestCase):
             "1 Jan 0000 00:00:00 GMT",
             "yesterday",
             20250101,
-        ):
-            with self.subTest(date=date), self.assertRaises(core.GuideImportError):
-                reports(record(date=date))
+        ],
+    )
+    def test_invalid_date(self, date):
+        with pytest.raises(core.GuideImportError):
+            reports(record(date=date))
 
     def test_reference_text_is_the_last_section_and_escaped(self):
         r = record()
@@ -321,67 +319,67 @@ class ReportTests(unittest.TestCase):
         )
         md = reports(r)[0].markdown
         reference = md.split("## 参考生データ\n", 1)[1]
-        self.assertGreater(md.index("## 参考生データ"), md.index("## 診断"))
-        self.assertIn("History: original  \nObjective: unchanged  \nFindings: original", reference)
+        assert md.index("## 参考生データ") > md.index("## 診断")
+        assert "History: original  \nObjective: unchanged  \nFindings: original" in reference
         for raw in ("![image]", "<script>", core.END, "\r"):
-            self.assertNotIn(raw, reference)
-        self.assertIn("&lt;script&gt;text&lt;/script&gt;", reference)
-        self.assertTrue(md.endswith(reference))
+            assert raw not in reference
+        assert "&lt;script&gt;text&lt;/script&gt;" in reference
+        assert md.endswith(reference)
 
-    def test_optional_reference_and_reference_only_report(self):
+    def test_optional_reference_and_reference_only_report(self, subtests):
         for value in (None, "", " \r\n "):
             r = record()
             r["input_text"] = value
-            with self.subTest(value=value):
-                self.assertNotIn("参考生データ", reports(r)[0].markdown)
+            with subtests.test(value=value):
+                assert "参考生データ" not in reports(r)[0].markdown
         r = {"input": {"uid": "1.2.3"}, "result": {}, "input_text": "Original report"}
-        self.assertIn("## 参考生データ\nOriginal report", reports(r)[0].markdown)
+        assert "## 参考生データ\nOriginal report" in reports(r)[0].markdown
 
-    def test_reference_validation_and_guide_size_limit(self):
+    def test_reference_validation_and_guide_size_limit(self, subtests):
         for value in (123, True, ["text"], {"text": "report"}, "bad\x00text"):
             r = record()
             r["input_text"] = value
-            with self.subTest(value=value), self.assertRaises(core.GuideImportError):
+            with subtests.test(value=value), pytest.raises(core.GuideImportError):
                 reports(r)
         r = record()
         base_size = len(reports(r)[0].markdown)
         r["input_text"] = "reference"
         with (
             patch.object(core, "MAX_GUIDE_CHARS", base_size),
-            self.assertRaisesRegex(core.GuideImportError, "size limit"),
+            pytest.raises(core.GuideImportError, match="size limit"),
         ):
             reports(r)
 
-    def test_two_sample_formats_from_json_zip(self):
+    def test_two_sample_formats_from_json_zip(self, subtests):
         fixtures = Path(__file__).resolve().parent / "fixtures"
         for filename, dates, suffixes in (
             ("structured_report.json", ["20250102", "20250107"], ["05522970", "02065974"]),
             ("ptc_report.json", ["20250101", "20250102"], ["30673432", "30694803"]),
         ):
-            with self.subTest(filename=filename):
+            with subtests.test(filename=filename):
                 raw = (fixtures / filename).read_bytes()
                 rows = json.loads(raw)["records"]
                 parsed, duplicates = core.read_reports(
                     io.BytesIO(core.read_json_zip(zip_stream([(filename, raw)])))
                 )
-                self.assertEqual(duplicates, 0)
-                self.assertEqual([r.date for r in parsed], dates)
-                self.assertEqual([r.study_uid[-8:] for r in parsed], suffixes)
+                assert duplicates == 0
+                assert [r.date for r in parsed] == dates
+                assert [r.study_uid[-8:] for r in parsed] == suffixes
                 tasks = []
                 for task_id, (row, report, date) in enumerate(zip(rows, parsed, dates), 1):
                     source = row["input"]
                     uid = source.get("study_instance_uid", source.get("uid"))
                     patient = source.get("patient_id", source.get("pid"))
-                    self.assertEqual((report.study_uid, report.patient_id), (uid, patient))
+                    assert (report.study_uid, report.patient_id) == (uid, patient)
                     for label in ("年齢", "性別", "検査方法", "既往歴", "検査部位", "検査目的"):
-                        self.assertIn(label + "：", report.markdown)
-                    self.assertIn("## 参考生データ\nHistory: Synthetic", report.markdown)
+                        assert label + "：" in report.markdown
+                    assert "## 参考生データ\nHistory: Synthetic" in report.markdown
                     tasks.append(image(task_id, uid=uid, patient=patient, date=date))
                 updates, unmatched = core.plan_updates(parsed, tasks)
-                self.assertEqual(set(updates), {1, 2})
-                self.assertEqual(unmatched, [])
+                assert set(updates) == {1, 2}
+                assert unmatched == []
 
-    def test_bad_json_and_structure(self):
+    def test_bad_json_and_structure(self, subtests):
         for raw in (
             b"",
             b"\xff",
@@ -393,74 +391,74 @@ class ReportTests(unittest.TestCase):
             b'{"x": 1e999}',
             b"[[[]]]",
         ):
-            with self.subTest(raw=raw), self.assertRaises(core.GuideImportError):
+            with subtests.test(raw=raw), pytest.raises(core.GuideImportError):
                 core.read_reports(io.BytesIO(raw))
         for r in (None, {}, {"input": {}, "result": []}):
-            with self.assertRaises(core.GuideImportError):
+            with pytest.raises(core.GuideImportError):
                 reports(r)
 
     def test_bom_and_top_level_array(self):
-        self.assertEqual(
-            len(core.read_reports(io.BytesIO(b"\xef\xbb\xbf" + stream([record()]).read()))[0]), 1
+        assert (
+            len(core.read_reports(io.BytesIO(b"\xef\xbb\xbf" + stream([record()]).read()))[0]) == 1
         )
-        self.assertEqual(len(core.read_reports(io.BytesIO(json.dumps([record()]).encode()))[0]), 1)
+        assert len(core.read_reports(io.BytesIO(json.dumps([record()]).encode()))[0]) == 1
 
     def test_limits(self):
-        with patch.object(core, "MAX_FILE_BYTES", 5), self.assertRaises(core.GuideImportError):
+        with patch.object(core, "MAX_FILE_BYTES", 5), pytest.raises(core.GuideImportError):
             reports(record())
-        with patch.object(core, "MAX_RECORDS", 1), self.assertRaises(core.GuideImportError):
+        with patch.object(core, "MAX_RECORDS", 1), pytest.raises(core.GuideImportError):
             reports(record(), record())
-        with patch.object(core, "MAX_GUIDE_CHARS", 5), self.assertRaises(core.GuideImportError):
+        with patch.object(core, "MAX_GUIDE_CHARS", 5), pytest.raises(core.GuideImportError):
             reports(record())
 
     def test_unsupported_selected_value_is_not_silently_dropped(self):
         for value in ({"nested": "value"}, True, "\x00"):
             r = record()
             r["result"]["extracted"]["history"] = value
-            with self.assertRaises(core.GuideImportError):
+            with pytest.raises(core.GuideImportError):
                 reports(r)
 
     def test_duplicate_reports(self):
         unique, duplicates = core.read_reports(stream([record(), record()]))
-        self.assertEqual((len(unique), duplicates), (1, 1))
+        assert (len(unique), duplicates) == (1, 1)
         changed = record()
         changed["result"]["findings_ja"] = "Different"
-        with self.assertRaisesRegex(core.GuideImportError, "Conflicting reports"):
+        with pytest.raises(core.GuideImportError, match="Conflicting reports"):
             reports(record(), changed)
 
     def test_different_reference_text_is_not_deduplicated(self):
         first, second = record(), record()
         first["input_text"] = "Original report"
         second["input_text"] = "Different original report"
-        with self.assertRaisesRegex(core.GuideImportError, "Conflicting reports"):
+        with pytest.raises(core.GuideImportError, match="Conflicting reports"):
             reports(first, second)
 
 
-class MatchingTests(unittest.TestCase):
+class TestMatching:
     def test_all_images_and_videos_with_same_full_uid(self):
         tasks = [image(), image(3, prefix="other_site"), video()]
         updates, unmatched = core.plan_updates(reports(record()), tasks)
-        self.assertEqual(set(updates), {1, 2, 3})
-        self.assertEqual(unmatched, [])
+        assert set(updates) == {1, 2, 3}
+        assert unmatched == []
 
     def test_sanitized_patient_and_arbitrary_prefix(self):
         r = record(patient="A/B_C")
         updates, _ = core.plan_updates(
             reports(r), [image(patient="A/B_C", prefix="prefix_with_underlines")]
         )
-        self.assertEqual(set(updates), {1})
+        assert set(updates) == {1}
 
-    def test_prefixed_patient_matches_without_name_inference(self):
+    def test_prefixed_patient_matches_without_name_inference(self, subtests):
         r = record(patient="ABC_DEFGH", date="Tue, 07 Jan 2025 00:00:00 GMT")
         task = image(patient="ABC_DEFGH", date="20250107", prefix="ABC")
         task.name = "ABC_DEFGH_20250107_123"
-        self.assertEqual(set(core.plan_updates(reports(r), [task])[0]), {1})
+        assert set(core.plan_updates(reports(r), [task])[0]) == {1}
         task.name = "renamed task"
-        self.assertEqual(set(core.plan_updates(reports(r), [task])[0]), {1})
+        assert set(core.plan_updates(reports(r), [task])[0]) == {1}
         for different_patient in ("DEFGH", "OTHER_DEFGH", "ABCDEFGH"):
             with (
-                self.subTest(patient=different_patient),
-                self.assertRaisesRegex(core.GuideImportError, "patient ID mismatch"),
+                subtests.test(patient=different_patient),
+                pytest.raises(core.GuideImportError, match="patient ID mismatch"),
             ):
                 core.plan_updates(
                     reports(record(patient=different_patient, date="20250107")), [task]
@@ -468,37 +466,37 @@ class MatchingTests(unittest.TestCase):
 
     def test_uid_not_substring_or_short_sop(self):
         for task in (image(uid="1.2.30"), core.TaskIdentity(1, "video_12345678")):
-            with self.assertRaisesRegex(core.GuideImportError, "No matching tasks"):
+            with pytest.raises(core.GuideImportError, match="No matching tasks"):
                 core.plan_updates(reports(record()), [task])
 
     def test_unmatched_record_positions(self):
         updates, unmatched = core.plan_updates(reports(record(), record(uid="1.2.4")), [image()])
-        self.assertEqual(set(updates), {1})
-        self.assertEqual(unmatched, [2])
+        assert set(updates) == {1}
+        assert unmatched == [2]
 
     def test_name_is_not_used_as_a_source_of_study_identity(self):
         task = image()
         task.name = "site_OTHER_19991231_9.9.9"
-        self.assertEqual(set(core.plan_updates(reports(record()), [task])[0]), {1})
+        assert set(core.plan_updates(reports(record()), [task])[0]) == {1}
         task.tags.clear()
         task.name = "site_P1_20250101_1.2.3"
-        with self.assertRaisesRegex(core.GuideImportError, "No matching tasks"):
+        with pytest.raises(core.GuideImportError, match="No matching tasks"):
             core.plan_updates(reports(record()), [task])
 
     def test_mixed_study_task_rejected(self):
         task = video()
         task.tags[core.STUDY_UID].add("1.2.4")
-        with self.assertRaises(core.GuideImportError):
+        with pytest.raises(core.GuideImportError):
             core.plan_updates(reports(record()), [task])
 
     def test_patient_date_and_name_checks(self):
         for task in (image(patient="WRONG"), image(date="20250102")):
-            with self.assertRaises(core.GuideImportError):
+            with pytest.raises(core.GuideImportError):
                 core.plan_updates(reports(record()), [task])
         for key, value in ((core.PATIENT_ID, "WRONG"), (core.STUDY_DATE, "20250102")):
             task = video()
             task.tags[key] = {value}
-            with self.assertRaises(core.GuideImportError):
+            with pytest.raises(core.GuideImportError):
                 core.plan_updates(reports(record()), [task])
 
     def test_full_uid_only_and_renamed_task(self):
@@ -506,7 +504,7 @@ class MatchingTests(unittest.TestCase):
         r["input"].pop("patient_id")
         r["input"].pop("study_date")
         task = core.TaskIdentity(9, "renamed", {core.STUDY_UID: {"1.2.3"}})
-        self.assertEqual(set(core.plan_updates(reports(r), [task])[0]), {9})
+        assert set(core.plan_updates(reports(r), [task])[0]) == {9}
 
     def test_shortened_study_names_use_full_metadata_uid_for_images_and_videos(self):
         tags = {
@@ -519,8 +517,8 @@ class MatchingTests(unittest.TestCase):
             core.TaskIdentity(2, video().name, tags),
         ]
         updates, unmatched = core.plan_updates(reports(record(uid="1.2.12345678")), tasks)
-        self.assertEqual(set(updates), {1, 2})
-        self.assertEqual(unmatched, [])
+        assert set(updates) == {1, 2}
+        assert unmatched == []
 
     def test_identical_short_uid_suffix_does_not_match_another_study(self):
         tasks = [
@@ -532,60 +530,64 @@ class MatchingTests(unittest.TestCase):
             ),
         ]
         updates, _ = core.plan_updates(reports(record(uid="1.2.12345678")), tasks)
-        self.assertEqual(set(updates), {1})
-        with self.assertRaisesRegex(core.GuideImportError, "No matching tasks"):
+        assert set(updates) == {1}
+        with pytest.raises(core.GuideImportError, match="No matching tasks"):
             core.plan_updates(
                 reports(record(uid="1.2.12345678")), [core.TaskIdentity(3, tasks[0].name)]
             )
 
     def test_only_keyword_metadata_is_used_for_identity(self):
         task = core.TaskIdentity(1, "site_P1_20250101_1.2.3", {"0020000D": {"1.2.3"}})
-        with self.assertRaisesRegex(core.GuideImportError, "No matching tasks"):
+        with pytest.raises(core.GuideImportError, match="No matching tasks"):
             core.plan_updates(reports(record()), [task])
 
 
-class JsonZipTests(unittest.TestCase):
+class TestJsonZip:
     def test_one_json_file_in_a_directory_is_read_without_changing_content(self):
         raw = named_stream({"task": "# Markdown\n"}).read()
         source = zip_stream([("guides/", ""), ("guides/data.JSON", raw)])
-        self.assertEqual(core.read_json_zip(source), raw)
+        assert core.read_json_zip(source) == raw
 
-    def test_json_archive_requires_exactly_one_json_file(self):
-        for members in (
+    @pytest.mark.parametrize(
+        "members",
+        [
             [],
             [("directory/", "")],
             [("a.json", "{}"), ("b.json", "{}")],
             [("one/report.json", "{}"), ("two/report.json", "{}")],
-        ):
-            with (
-                self.subTest(members=members),
-                self.assertRaisesRegex(core.GuideImportError, "exactly one JSON"),
-            ):
-                core.read_json_zip(zip_stream(members))
+        ],
+    )
+    def test_json_archive_requires_exactly_one_json_file(self, members):
+        with pytest.raises(core.GuideImportError, match="exactly one JSON"):
+            core.read_json_zip(zip_stream(members))
 
-    def test_json_archive_rejects_extra_files_and_unsafe_paths(self):
-        for members in (
+    @pytest.mark.parametrize(
+        "members",
+        [
             [("data.json", "{}"), ("README.txt", "text")],
             [("data.md", "{}")],
             [("../data.json", "{}")],
-        ):
-            with self.subTest(members=members), self.assertRaises(core.GuideImportError):
-                core.read_json_zip(zip_stream(members))
+        ],
+    )
+    def test_json_archive_rejects_extra_files_and_unsafe_paths(self, members):
+        with pytest.raises(core.GuideImportError):
+            core.read_json_zip(zip_stream(members))
 
     def test_raw_json_is_not_an_accepted_upload(self):
-        with self.assertRaisesRegex(core.GuideImportError, "ZIP"):
+        with pytest.raises(core.GuideImportError, match="ZIP"):
             core.read_json_zip(named_stream({"task": "text"}))
 
 
-class NamedGuideTests(unittest.TestCase):
+class TestNamedGuide:
     def test_json_preserves_task_name_and_complete_markdown(self):
         markdown = "# 見出し\r\n\n![image](/api/assets/a)\n  text  \n"
         guides = core.read_named_json(named_stream({" task 名 ": markdown, "empty": ""}))
-        self.assertEqual(
-            guides, [core.NamedGuide(1, " task 名 ", markdown), core.NamedGuide(2, "empty", "")]
-        )
+        assert guides == [
+            core.NamedGuide(1, " task 名 ", markdown),
+            core.NamedGuide(2, "empty", ""),
+        ]
 
-    def test_json_rejects_bad_structure_names_and_text(self):
+    def test_json_rejects_bad_structure_names_and_text(self, subtests):
         for raw in (
             b"[]",
             b"{}",
@@ -602,7 +604,7 @@ class NamedGuideTests(unittest.TestCase):
             b"\xff",
             b'{"task":NaN}',
         ):
-            with self.subTest(raw=raw), self.assertRaises(core.GuideImportError):
+            with subtests.test(raw=raw), pytest.raises(core.GuideImportError):
                 core.read_named_json(io.BytesIO(raw))
 
     def test_json_size_and_entry_limits(self):
@@ -611,20 +613,20 @@ class NamedGuideTests(unittest.TestCase):
             ("MAX_RECORDS", 1, {"a": "text", "b": "text"}),
             ("MAX_GUIDE_CHARS", 3, {"task": "text"}),
         ):
-            with patch.object(core, constant, limit), self.assertRaises(core.GuideImportError):
+            with patch.object(core, constant, limit), pytest.raises(core.GuideImportError):
                 core.read_named_json(named_stream(mapping))
 
     def test_name_matching_is_exact_and_reports_unmatched_positions(self):
         guides = core.read_named_json(named_stream({"task A": "a", "task B": "b", "TASK A": "c"}))
         updates, unmatched = core.plan_named_updates(guides, [core.TaskIdentity(1, "task A")])
-        self.assertEqual(updates, {1: "a"})
-        self.assertEqual(unmatched, [2, 3])
-        with self.assertRaisesRegex(core.GuideImportError, "No matching tasks"):
+        assert updates == {1: "a"}
+        assert unmatched == [2, 3]
+        with pytest.raises(core.GuideImportError, match="No matching tasks"):
             core.plan_named_updates(guides, [core.TaskIdentity(2, "task A ")])
 
     def test_ambiguous_target_name_rejected(self):
         guides = core.read_named_json(named_stream({"task": "text"}))
-        with self.assertRaisesRegex(core.GuideImportError, "multiple tasks"):
+        with pytest.raises(core.GuideImportError, match="multiple tasks"):
             core.plan_named_updates(
                 guides, [core.TaskIdentity(1, "task"), core.TaskIdentity(2, "task")]
             )
@@ -639,11 +641,12 @@ class NamedGuideTests(unittest.TestCase):
                 ]
             )
         )
-        self.assertEqual(
-            guides, [core.NamedGuide(1, "日本語", "# 日本語\r\n"), core.NamedGuide(2, "empty", "")]
-        )
+        assert guides == [
+            core.NamedGuide(1, "日本語", "# 日本語\r\n"),
+            core.NamedGuide(2, "empty", ""),
+        ]
 
-    def test_zip_rejects_unsafe_paths_non_markdown_and_duplicate_task_names(self):
+    def test_zip_rejects_unsafe_paths_non_markdown_and_duplicate_task_names(self, subtests):
         for members in (
             [("../task.md", "text")],
             [("/task.md", "text")],
@@ -660,60 +663,63 @@ class NamedGuideTests(unittest.TestCase):
             [],
             [("directory/", "")],
         ):
-            with self.subTest(members=members), self.assertRaises(core.GuideImportError):
+            with subtests.test(members=members), pytest.raises(core.GuideImportError):
                 core.read_markdown_zip(zip_stream(members))
         info = ZipInfo("task.md")
         info.create_system = 3
         info.external_attr = (stat.S_IFLNK | 0o777) << 16
-        with self.assertRaisesRegex(core.GuideImportError, "regular files"):
+        with pytest.raises(core.GuideImportError, match="regular files"):
             core.read_markdown_zip(zip_stream([(info, "elsewhere")]))
-        with self.assertRaisesRegex(core.GuideImportError, "Invalid"):
+        with pytest.raises(core.GuideImportError, match="Invalid"):
             core.read_markdown_zip(io.BytesIO(b"not a zip"))
 
     def test_zip_size_entry_and_total_uncompressed_limits(self):
-        with patch.object(core, "MAX_FILE_BYTES", 5), self.assertRaises(core.GuideImportError):
+        with patch.object(core, "MAX_FILE_BYTES", 5), pytest.raises(core.GuideImportError):
             core.read_markdown_zip(zip_stream([("task.md", "text")]))
-        with patch.object(core, "MAX_RECORDS", 1), self.assertRaises(core.GuideImportError):
+        with patch.object(core, "MAX_RECORDS", 1), pytest.raises(core.GuideImportError):
             core.read_markdown_zip(zip_stream([("a.md", "a"), ("b.md", "b")]))
-        with patch.object(core, "MAX_GUIDE_CHARS", 3), self.assertRaises(core.GuideImportError):
+        with patch.object(core, "MAX_GUIDE_CHARS", 3), pytest.raises(core.GuideImportError):
             core.read_markdown_zip(zip_stream([("task.md", "text")]))
         with (
             patch.object(core, "MAX_FILE_BYTES", 1024),
-            self.assertRaisesRegex(core.GuideImportError, "Uncompressed"),
+            pytest.raises(core.GuideImportError, match="Uncompressed"),
         ):
             core.read_markdown_zip(zip_stream([("a.md", "a" * 600), ("b.md", "b" * 600)]))
 
 
-class MergeTests(unittest.TestCase):
+class TestMerge:
     def test_append_preserves_manual_text_and_assets(self):
         manual = "# Manual\n![asset](/api/assets/1234)\n"
         md = core.merge_markdown(manual, "# 概要\nFirst\n")
-        self.assertTrue(md.startswith(manual))
-        self.assertEqual(md.count(core.START), 1)
+        assert md.startswith(manual)
+        assert md.count(core.START) == 1
 
     def test_idempotence_and_replace_only_block(self):
         md = core.merge_markdown("manual", "old") + "manual suffix\n"
         updated = core.merge_markdown(md, "new")
-        self.assertTrue(updated.startswith("manual\n\n"))
-        self.assertTrue(updated.endswith("manual suffix\n"))
-        self.assertNotIn("old", updated)
-        self.assertEqual(core.merge_markdown(updated, "new"), updated)
+        assert updated.startswith("manual\n\n")
+        assert updated.endswith("manual suffix\n")
+        assert "old" not in updated
+        assert core.merge_markdown(updated, "new") == updated
 
-    def test_broken_markers(self):
-        for md in (
+    @pytest.mark.parametrize(
+        "md",
+        [
             core.START,
             core.END,
             core.END + core.START,
             core.START * 2 + core.END,
             core.START + core.END * 2,
-        ):
-            with self.subTest(md=md), self.assertRaises(core.GuideImportError):
-                core.merge_markdown(md, "new")
+        ],
+    )
+    def test_broken_markers(self, md):
+        with pytest.raises(core.GuideImportError):
+            core.merge_markdown(md, "new")
 
     def test_size_and_invalid_unicode(self):
-        with patch.object(core, "MAX_GUIDE_CHARS", 1), self.assertRaises(core.GuideImportError):
+        with patch.object(core, "MAX_GUIDE_CHARS", 1), pytest.raises(core.GuideImportError):
             core.merge_markdown("", "new")
-        with self.assertRaises(core.GuideImportError):
+        with pytest.raises(core.GuideImportError):
             core.merge_markdown("", "\ud800")
 
 
@@ -723,10 +729,11 @@ def module(name, **attributes):
     return obj
 
 
-class AdapterTests(unittest.TestCase):
+class TestAdapter:
     """Contract tests with mocked ORM/OPA/RQ, not CVAT/PostgreSQL integration tests."""
 
-    def setUp(self):
+    @pytest.fixture(autouse=True)
+    def setup_context(self, request):
         self.in_transaction = False
         self.project = self.timestamped(pk=7, id=7, organization_id=None)
         self.tasks = [
@@ -812,7 +819,7 @@ class AdapterTests(unittest.TestCase):
         }
         self.modules_patch = patch.dict(sys.modules, dependencies)
         self.modules_patch.start()
-        self.addCleanup(self.modules_patch.stop)
+        request.addfinalizer(self.modules_patch.stop)
         spec = importlib.util.spec_from_file_location(
             "cvat.apps.dataset_manager.formats.task_guide_adapter_test", FORMATS / "task_guide.py"
         )
@@ -822,15 +829,13 @@ class AdapterTests(unittest.TestCase):
             self.adapter, "_import_context", return_value=("request", {"user_id": 3}, self.meta)
         )
         self.context_patch.start()
-        self.addCleanup(self.context_patch.stop)
+        request.addfinalizer(self.context_patch.stop)
 
     def timestamped(self, **attributes):
         obj = SimpleNamespace(updated_date=datetime(2026, 1, 1, tzinfo=timezone.utc), **attributes)
 
         def touch():
-            self.assertTrue(
-                self.in_transaction, "Timestamp writes must share the guide transaction"
-            )
+            assert self.in_transaction, "Timestamp writes must share the guide transaction"
             obj.updated_date += timedelta(seconds=1)
 
         obj.touch = MagicMock(side_effect=touch)
@@ -844,27 +849,24 @@ class AdapterTests(unittest.TestCase):
         self.adapter.import_project_guides(report_zip(rows or [record()]), self.project)
 
     def test_registration_and_project_only(self):
-        self.assertEqual(
-            self.registration,
-            {
-                name: {"name": name, "version": "1.0", "ext": ext}
-                for name, ext in (
-                    ("Task Guide JSON", "ZIP"),
-                    ("Task Guide Markdown Zip", "ZIP"),
-                    ("Task Guide DICOM Report Import", "ZIP"),
-                )
-            },
-        )
+        assert self.registration == {
+            name: {"name": name, "version": "1.0", "ext": ext}
+            for name, ext in (
+                ("Task Guide JSON", "ZIP"),
+                ("Task Guide Markdown Zip", "ZIP"),
+                ("Task Guide DICOM Report Import", "ZIP"),
+            )
+        }
         for importer in (
             self.adapter.import_task_guides,
             self.adapter.import_task_guides_markdown_zip,
             self.adapter.import_task_guides_dicom_report,
         ):
-            with self.assertRaisesRegex(self.error, "project imports only"):
+            with pytest.raises(self.error, match="project imports only"):
                 importer(io.BytesIO(), "unused", object())
         self.guide_manager.create.assert_not_called()
 
-    def test_registered_formats_route_their_actual_payloads(self):
+    def test_registered_formats_route_their_actual_payloads(self, subtests):
         instance = self.project_data()
         instance.db_project = self.project
         for importer, payload in (
@@ -875,13 +877,13 @@ class AdapterTests(unittest.TestCase):
             ),
             (self.adapter.import_task_guides_dicom_report, report_zip([record()])),
         ):
-            with self.subTest(importer=importer.__name__):
+            with subtests.test(importer=importer.__name__):
                 self.guide_manager.create.reset_mock()
                 importer(payload, "unused", instance)
-                self.assertTrue(self.guide_manager.create.called)
-        self.assertEqual(self.guide_manager.create.call_count, 2)
+                assert self.guide_manager.create.called
+        assert self.guide_manager.create.call_count == 2
 
-    def test_registered_formats_report_invalid_input_without_writes(self):
+    def test_registered_formats_report_invalid_input_without_writes(self, subtests):
         instance = self.project_data()
         instance.db_project = self.project
         for importer, raw in (
@@ -889,13 +891,13 @@ class AdapterTests(unittest.TestCase):
             (self.adapter.import_task_guides_markdown_zip, b"not a zip"),
             (self.adapter.import_task_guides_dicom_report, b"{}"),
         ):
-            with self.subTest(importer=importer.__name__), self.assertRaises(self.error):
+            with subtests.test(importer=importer.__name__), pytest.raises(self.error):
                 importer(io.BytesIO(raw), "unused", instance)
         self.guide_manager.create.assert_not_called()
         self.meta.save.assert_not_called()
         self.assert_no_timestamps_changed()
 
-    def test_json_formats_validate_the_contents_of_the_uploaded_archive(self):
+    def test_json_formats_validate_the_contents_of_the_uploaded_archive(self, subtests):
         instance = self.project_data()
         instance.db_project = self.project
         for importer, raw in (
@@ -903,7 +905,7 @@ class AdapterTests(unittest.TestCase):
             (self.adapter.import_task_guides_dicom_report, b"{}"),
             (self.adapter.import_task_guides, b"\xff"),
         ):
-            with self.subTest(importer=importer.__name__), self.assertRaises(self.error):
+            with subtests.test(importer=importer.__name__), pytest.raises(self.error):
                 importer(zip_stream([("data.json", raw)]), "unused", instance)
         self.guide_manager.create.assert_not_called()
         self.assert_no_timestamps_changed()
@@ -915,7 +917,7 @@ class AdapterTests(unittest.TestCase):
         self.adapter.import_project_guides(
             named_zip({self.tasks[0].name: text}), self.project, input_format="json"
         )
-        self.assertEqual(guide.markdown, text)
+        assert guide.markdown == text
         guide.save.assert_called_once_with(update_fields=["markdown", "updated_date"])
         self.guide_manager.create.assert_not_called()
         self.values_manager.filter.assert_not_called()
@@ -930,7 +932,7 @@ class AdapterTests(unittest.TestCase):
         )
         guide.save.assert_not_called()
         self.assert_no_timestamps_changed()
-        self.assertIn("1 unchanged", self.meta.status)
+        assert "1 unchanged" in self.meta.status
 
     def test_generic_import_accepts_empty_markdown_and_tasks_without_media(self):
         self.adapter.import_project_guides(
@@ -939,7 +941,7 @@ class AdapterTests(unittest.TestCase):
         self.guide_manager.create.assert_called_once_with(task_id=1, markdown="")
         self.task_manager.select_for_update.return_value.filter.return_value.exclude.assert_not_called()
 
-    def test_generic_new_guide_asset_reference_prevents_all_writes(self):
+    def test_generic_new_guide_asset_reference_prevents_all_writes(self, subtests):
         markdown = "![image](/api/assets/12345678-1234-5678-9abc-123456789abc)"
         for input_format in ("json", "zip"):
             mapping = {self.tasks[0].name: "valid first guide", self.tasks[1].name: markdown}
@@ -949,8 +951,8 @@ class AdapterTests(unittest.TestCase):
                 else zip_stream([(name + ".md", text) for name, text in mapping.items()])
             )
             with (
-                self.subTest(input_format=input_format),
-                self.assertRaisesRegex(core.GuideImportError, "Task 2.*assets already owned"),
+                subtests.test(input_format=input_format),
+                pytest.raises(core.GuideImportError, match="Task 2.*assets already owned"),
             ):
                 self.adapter.import_project_guides(payload, self.project, input_format=input_format)
         self.guide_manager.create.assert_not_called()
@@ -967,12 +969,12 @@ class AdapterTests(unittest.TestCase):
         self.adapter.import_project_guides(
             named_zip({self.tasks[0].name: markdown}), self.project, input_format="json"
         )
-        self.assertEqual(guide.markdown, markdown)
+        assert guide.markdown == markdown
         assets.filter.assert_called_once_with(uuid__in={asset_id})
         guide.save.assert_called_once_with(update_fields=["markdown", "updated_date"])
         self.guide_manager.create.assert_not_called()
 
-    def test_generic_guide_rejects_foreign_or_unknown_asset_references(self):
+    def test_generic_guide_rejects_foreign_or_unknown_asset_references(self, subtests):
         own_id = UUID("12345678-1234-5678-9abc-123456789abc")
         foreign_or_missing_id = UUID("87654321-4321-8765-cba9-cba987654321")
         for available in ([], [own_id]):
@@ -984,13 +986,13 @@ class AdapterTests(unittest.TestCase):
                 f"![own](/api/assets/{own_id})\n![other](/api/assets/{foreign_or_missing_id})"
             )
             with (
-                self.subTest(available=available),
-                self.assertRaisesRegex(core.GuideImportError, "assets already owned"),
+                subtests.test(available=available),
+                pytest.raises(core.GuideImportError, match="assets already owned"),
             ):
                 self.adapter.import_project_guides(
                     named_zip({self.tasks[0].name: markdown}), self.project, input_format="json"
                 )
-            self.assertEqual(guide.markdown, "original")
+            assert guide.markdown == "original"
             guide.save.assert_not_called()
             assets.filter.assert_called_once_with(uuid__in={own_id, foreign_or_missing_id})
         self.guide_manager.create.assert_not_called()
@@ -1008,7 +1010,7 @@ class AdapterTests(unittest.TestCase):
         guide = SimpleNamespace(task_id=1, markdown=markdown, save=MagicMock())
         self.existing[:] = [guide]
         self.run_import()
-        self.assertTrue(guide.markdown.startswith(markdown))
+        assert guide.markdown.startswith(markdown)
         self.asset_ids_from_markdown.assert_not_called()
         guide.save.assert_called_once_with(update_fields=["markdown", "updated_date"])
 
@@ -1016,7 +1018,7 @@ class AdapterTests(unittest.TestCase):
         allowed = SimpleNamespace(check_access=lambda: SimpleNamespace(allow=True))
         denied = SimpleNamespace(check_access=lambda: SimpleNamespace(allow=False))
         self.permission.create_base_perm.side_effect = [allowed, denied]
-        with self.assertRaisesRegex(core.GuideImportError, "Task 2.*permission denied"):
+        with pytest.raises(core.GuideImportError, match="Task 2.*permission denied"):
             self.adapter.import_project_guides(
                 named_zip({task.name: "text" for task in self.tasks}),
                 self.project,
@@ -1033,11 +1035,11 @@ class AdapterTests(unittest.TestCase):
             input_format="json",
         )
         self.guide_manager.create.assert_called_once_with(task_id=1, markdown="text")
-        self.assertIn("1 unmatched records", self.meta.status)
-        self.assertNotIn("SECRET_UNMATCHED", self.meta.status)
+        assert "1 unmatched records" in self.meta.status
+        assert "SECRET_UNMATCHED" not in self.meta.status
         self.guide_manager.create.reset_mock()
         self.tasks[1].name = self.tasks[0].name
-        with self.assertRaisesRegex(core.GuideImportError, "multiple tasks"):
+        with pytest.raises(core.GuideImportError, match="multiple tasks"):
             self.adapter.import_project_guides(
                 named_zip({self.tasks[0].name: "text"}), self.project, input_format="json"
             )
@@ -1045,12 +1047,12 @@ class AdapterTests(unittest.TestCase):
 
     def test_create_and_scoped_metadata_read(self):
         self.run_import()
-        self.assertEqual(self.guide_manager.create.call_count, 2)
+        assert self.guide_manager.create.call_count == 2
         filters = self.values_manager.filter.call_args.kwargs
-        self.assertEqual(filters["image__job__segment__task__project_id"], 7)
-        self.assertEqual(filters["image__label__name"], "DicomTag")
-        self.assertEqual(set(filters["spec__name__in"]), set(core.IDENTITY_TAGS))
-        self.assertIn("2 created", self.meta.status)
+        assert filters["image__job__segment__task__project_id"] == 7
+        assert filters["image__label__name"] == "DicomTag"
+        assert set(filters["spec__name__in"]) == set(core.IDENTITY_TAGS)
+        assert "2 created" in self.meta.status
         self.transaction.atomic.assert_called_once()
         for task in self.tasks:
             task.touch.assert_called_once_with()
@@ -1060,7 +1062,7 @@ class AdapterTests(unittest.TestCase):
         allowed = SimpleNamespace(check_access=lambda: SimpleNamespace(allow=True))
         denied = SimpleNamespace(check_access=lambda: SimpleNamespace(allow=False))
         self.permission.create_base_perm.side_effect = [allowed, denied]
-        with self.assertRaisesRegex(core.GuideImportError, "Task 2.*permission denied"):
+        with pytest.raises(core.GuideImportError, match="Task 2.*permission denied"):
             self.run_import()
         self.guide_manager.create.assert_not_called()
         self.meta.save.assert_not_called()
@@ -1070,9 +1072,7 @@ class AdapterTests(unittest.TestCase):
         self.project_permission.create_base_perm.return_value.check_access.return_value.allow = (
             False
         )
-        with self.assertRaisesRegex(
-            core.GuideImportError, "Project dataset import permission denied"
-        ):
+        with pytest.raises(core.GuideImportError, match="Project dataset import permission denied"):
             self.run_import()
         self.task_manager.select_for_update.assert_not_called()
         self.guide_manager.create.assert_not_called()
@@ -1082,7 +1082,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_workspace_change_after_enqueue_prevents_import(self):
         self.project.organization_id = 12
-        with self.assertRaisesRegex(core.GuideImportError, "Project workspace changed"):
+        with pytest.raises(core.GuideImportError, match="Project workspace changed"):
             self.run_import()
         self.task_manager.select_for_update.assert_not_called()
         self.guide_manager.create.assert_not_called()
@@ -1092,14 +1092,14 @@ class AdapterTests(unittest.TestCase):
     def test_same_organization_is_allowed(self):
         self.project.organization_id = self.meta.org_id = 12
         self.run_import()
-        self.assertEqual(self.guide_manager.create.call_count, 2)
+        assert self.guide_manager.create.call_count == 2
         self.project_permission.create_base_perm.assert_called_once_with(
             "request", None, "import:dataset", {"user_id": 3}, obj=self.project
         )
 
     def test_malformed_second_guide_prevents_first_write(self):
         self.existing[:] = [SimpleNamespace(task_id=2, markdown=core.START)]
-        with self.assertRaises(core.GuideImportError):
+        with pytest.raises(core.GuideImportError):
             self.run_import()
         self.guide_manager.create.assert_not_called()
         self.assert_no_timestamps_changed()
@@ -1110,9 +1110,9 @@ class AdapterTests(unittest.TestCase):
         self.existing[:] = [guide]
         self.run_import()
         guide.save.assert_not_called()
-        self.assertEqual(self.guide_manager.create.call_count, 1)
-        self.assertIn("1 unchanged", self.meta.status)
-        self.assertEqual(self.permission.create_base_perm.call_args_list[0].args[2], "update")
+        assert self.guide_manager.create.call_count == 1
+        assert "1 unchanged" in self.meta.status
+        assert self.permission.create_base_perm.call_args_list[0].args[2] == "update"
         self.tasks[0].touch.assert_not_called()
         self.tasks[1].touch.assert_called_once_with()
         self.project.touch.assert_called_once_with()
@@ -1128,47 +1128,47 @@ class AdapterTests(unittest.TestCase):
         for guide in self.existing:
             guide.save.assert_not_called()
         self.assert_no_timestamps_changed()
-        self.assertIn("2 unchanged", self.meta.status)
+        assert "2 unchanged" in self.meta.status
 
     def test_unmatched_task_timestamp_is_preserved(self):
         self.tasks.append(self.timestamped(id=3, name=image(3, uid="1.2.4").name))
         self.run_import()
         self.tasks[2].touch.assert_not_called()
-        self.assertEqual(self.guide_manager.create.call_count, 2)
+        assert self.guide_manager.create.call_count == 2
         self.project.touch.assert_called_once_with()
 
     def test_existing_guide_updated_without_replacement(self):
         guide = SimpleNamespace(task_id=1, markdown="manual", save=MagicMock())
         self.existing[:] = [guide]
         self.run_import()
-        self.assertTrue(guide.markdown.startswith("manual\n\n"))
+        assert guide.markdown.startswith("manual\n\n")
         guide.save.assert_called_once_with(update_fields=["markdown", "updated_date"])
-        self.assertIn("1 updated", self.meta.status)
+        assert "1 updated" in self.meta.status
         self.tasks[0].touch.assert_called_once_with()
         self.project.touch.assert_called_once_with()
 
     def test_unmatched_summary_contains_positions_not_patient_data(self):
         self.run_import([record(), record(uid="1.2.4", patient="SECRET_PATIENT")])
-        self.assertIn("1 unmatched records", self.meta.status)
-        self.assertIn("unmatched positions: 2", self.meta.status)
-        self.assertNotIn("SECRET_PATIENT", self.meta.status)
+        assert "1 unmatched records" in self.meta.status
+        assert "unmatched positions: 2" in self.meta.status
+        assert "SECRET_PATIENT" not in self.meta.status
 
     def test_write_failure_does_not_report_success(self):
         self.guide_manager.create.side_effect = RuntimeError("write failed")
-        with self.assertRaisesRegex(RuntimeError, "write failed"):
+        with pytest.raises(RuntimeError, match="write failed"):
             self.run_import()
         self.meta.save.assert_not_called()
         self.assert_no_timestamps_changed()
 
     def test_timestamp_failure_aborts_before_reporting_success(self):
         self.tasks[0].touch.side_effect = RuntimeError("timestamp write failed")
-        with self.assertRaisesRegex(RuntimeError, "timestamp write failed"):
+        with pytest.raises(RuntimeError, match="timestamp write failed"):
             self.run_import()
         self.project.touch.assert_not_called()
         self.meta.save.assert_not_called()
-        self.assertFalse(self.in_transaction)
+        assert not self.in_transaction
 
-    def test_standard_backup_cache_contains_created_and_updated_guides(self):
+    def test_standard_backup_cache_contains_created_and_updated_guides(self, subtests):
         # Execute the standard cache logic unchanged, without importing service dependencies.
         # ORM, locks and exporters are substitutes; ZIP files and cache reuse are real.
         source = ROOT / "cvat/apps/engine/backup.py"
@@ -1190,7 +1190,7 @@ class AdapterTests(unittest.TestCase):
         task = self.tasks[0]
 
         def create_guide(**attributes):
-            self.assertTrue(self.in_transaction)
+            assert self.in_transaction
             guide = SimpleNamespace(**attributes, save=MagicMock())
             self.existing.append(guide)
             return guide
@@ -1199,7 +1199,7 @@ class AdapterTests(unittest.TestCase):
         for existing in (False, True):
             for target in (task, self.project):
                 with (
-                    self.subTest(existing=existing, target_id=target.id),
+                    subtests.test(existing=existing, target_id=target.id),
                     tempfile.TemporaryDirectory() as cache,
                 ):
                     self.existing[:] = (
@@ -1254,27 +1254,23 @@ class AdapterTests(unittest.TestCase):
                         )
 
                     original = backup()
-                    self.assertEqual(backup(), original)
+                    assert backup() == original
                     exports.assert_called_once()
                     with ZipFile(original) as archive:
                         if existing:
-                            self.assertEqual(archive.read(member), b"original")
+                            assert archive.read(member) == b"original"
                         else:
-                            self.assertNotIn(member, archive.namelist())
+                            assert member not in archive.namelist()
 
                     self.run_import()
                     refreshed = backup()
-                    self.assertNotEqual(refreshed, original)
-                    self.assertEqual(exports.call_count, 2)
+                    assert refreshed != original
+                    assert exports.call_count == 2
                     with ZipFile(refreshed) as archive:
                         markdown = archive.read(member).decode("utf-8")
-                        self.assertEqual(markdown, self.existing[0].markdown)
-                        self.assertIn("所見です。", markdown)
+                        assert markdown == self.existing[0].markdown
+                        assert "所見です。" in markdown
 
                     self.run_import()
-                    self.assertEqual(backup(), refreshed)
-                    self.assertEqual(exports.call_count, 2)
-
-
-if __name__ == "__main__":
-    unittest.main()
+                    assert backup() == refreshed
+                    assert exports.call_count == 2

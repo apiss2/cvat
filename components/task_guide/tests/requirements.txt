@@ -1,0 +1,2 @@
+# Stateful comparisons use pytest's built-in subtests fixture.
+pytest==9.0.3

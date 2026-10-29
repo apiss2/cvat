@@ -1,0 +1,2 @@
+# The batched JavaScript comparison uses pytest's built-in subtests fixture.
+pytest==9.0.3

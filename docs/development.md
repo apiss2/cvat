@@ -56,14 +56,18 @@
 
 ## 機能ごとに試験を実行する
 
-Pythonの試験は、各機能の依存関係を準備し、リポジトリのルートから機能ごとに別プロセスで実行します。既存の `unittest` による試験も、機能内に置いたまま既存の実行方法を使用できます。
+開発時の独自Pythonテストはpytestへ統一します。通常の `assert`、`pytest.raises`、fixture、入力ごとの `parametrize` を使います。標準ライブラリの `unittest.mock` はモックの部品なので使用できます。各機能の依存関係を準備し、リポジトリのルートから機能ごとに別プロセスで実行します。
 
 ```bash
 python -m pytest -q components/itgformat/tests
 python -m pytest -q components/filtered_export/tests
 python -m pytest -q components/extensions/tests
-python -m unittest discover -s components/task_guide/tests -p test_task_guide_import.py
+python -m pytest -q components/task_guide/tests
 ```
+
+状態を順番に変える確認や、一度の外部呼び出しで得た多数の結果を照合する場合は、pytest 9以降の `subtests` fixtureを使えます。独立して準備できる入力表は `parametrize` を優先します。必要なpytestの版は各機能の `tests/requirements.txt` で指定します。実際のCVATモデルを使うアノテーション取り込みの試験は、[その機能の手順](extensions/project-annotation-import.md#回帰テストと実環境の確認)に従って別環境で実行します。
+
+配備後の [ITGformat診断](../components/itgformat/tests/check_in_cvat.py)だけは標準ライブラリの `unittest` を使います。`cvatctl check` がこのコードを稼働中のCVATサーバーとワーカーへ送り、pytestのない本番イメージ内で実行するためです。開発時の単体試験はpytestで実行し、この診断のためだけに本番イメージへ試験用の依存を追加しません。
 
 全機能を一つのPython環境と一つの試験プロセスへまとめることは配置規則に含めません。モデル管理と推論機能では依存するPythonやライブラリが異なり、試験用のモジュール置き換えや同名の `conftest.py` もあるためです。必要な機能の文書から、その機能の依存一覧と実行コマンドを確認してください。
 
@@ -78,6 +82,64 @@ yarn run type-check
 プラグインを含む本番用ビルドは、[更新手順の受入確認](extensions/update.md#devで受入確認を行う)にある `cvatctl build` で行います。設定ファイルの `CVAT_EXTENSIONS` による選択を反映し、文書に固定のプラグイン一覧を複製しません。
 
 実GPU、実Redis、ブラウザー、バックアップ復元を使う試験は、必要な環境を用意したうえで明示的に起動します。通常の単体試験の成功と実環境での受入確認を区別し、実行結果には対象、条件、実行したコマンド、スキップと未実施事項を記載します。結果をこのページや機能の文書へ累積しません。
+
+## 独自コードの品質を計測する
+
+Pythonの計測は `cvatctl quality` で行います。カバレッジはテストが実行した行と分岐の割合、循環的複雑度は関数内の独立した処理経路の数を表します。CRAPスコアは複雑度と未実行の割合を組み合わせ、変更前に詳しく確認する関数を探すために使用します。
+
+計測には [Coverage.py](https://coverage.readthedocs.io/en/7.13.5/) と [Radon](https://radon.readthedocs.io/en/latest/) を使用します。集計に使う環境は[共通管理の試験用依存](../components/extensions/tests/requirements.txt)から準備します。別のPython環境で試験を動かす場合は、その環境にも同じ版のCoverage.pyを導入します。推論用のPythonやPyTorchを、集計用の環境へ揃える必要はありません。
+
+```bash
+python -m pip install -r components/extensions/tests/requirements.txt
+# 別の試験環境では、その環境のPythonで計測用ライブラリを追加します。
+/srv/cvat-test-envs/sam2/bin/python -m pip install coverage==7.13.5
+```
+
+### 分母と対象を揃える
+
+計測対象は、取り込み済みの上流との共通祖先から自動的に調べます。既定の比較先は `upstream/master` です。別の接続先やリリースを使う場合は、各コマンドの `--upstream` にGit参照を指定します。
+
+| 対象 | 集計方法 |
+| --- | --- |
+| 独自に追加したPythonの実装 | 未実行、未読み込みのファイルも含め、実行可能な全行と全分岐を分母にします。 |
+| 本体のPythonファイルへ追加、変更した箇所 | 追加、変更した実行可能行のカバレッジを別に集計します。追加、変更、削除が及んだ現存する関数は、その関数全体の複雑度とカバレッジを評価します。削除済みの行を分母へ加えません。 |
+| 試験コード、作例、マイグレーション、品質集計コード | 実装のカバレッジから除外します。テストや計測補助コードを多く実行して、製品コードの率が高く見えることを防ぎます。 |
+| TypeScriptとJavaScript | 未計測としてファイル一覧を出します。既存のテストでは変換後のJavaScriptを仮想環境で実行するため、元のソース位置を復元する対応が必要です。Pythonの率へ含めません。 |
+
+関数ごとの値を対応付けて、`CRAP = C² × (1 − L)³ ＋ C` を計算します。`C` はその関数の循環的複雑度、`L` はその関数の行カバレッジを0から1で表した値です。分岐カバレッジは別列に出します。ファイル全体の率を各関数へ流用せず、ネストした関数も分けます。[指標の定義と制約](https://dx42.github.io/gmetrics/metrics/CrapMetric)を参照してください。
+
+### 試験を収集して集計する
+
+結果の保存先はGit管理外のディレクトリを指定します。各機能の試験用依存を準備したうえで、例えば次のように実行します。`quality` は環境の配備や推論を行いません。
+
+```bash
+CVAT_QUALITY_DIR="$HOME/cvat-quality/current"
+bash components/extensions/cvatctl quality scope
+bash components/extensions/cvatctl quality run --suite extensions --output "$CVAT_QUALITY_DIR"
+bash components/extensions/cvatctl quality run --suite task_guide --output "$CVAT_QUALITY_DIR"
+bash components/extensions/cvatctl quality run --suite sam2 \
+  --python /srv/cvat-test-envs/sam2/bin/python --output "$CVAT_QUALITY_DIR"
+bash components/extensions/cvatctl quality report --output "$CVAT_QUALITY_DIR"
+```
+
+試験名は `extensions`、`itgformat`、`filtered_export`、`task_guide`、`dicom_import`、`project_annotations`、`model_registry`、`sam2`、`sam31`、`ultrasam` です。実際のCVATモデルを使う `project_orm` は、必要なサーバー依存を持つ別環境で追加実行します。GPU、実Redis、Dockerの確認は、各機能の手順で明示的に実行します。
+
+集計結果には、使用したソース、試験、Pythonとライブラリの版、失敗と未実施を残します。異なるソースの計測結果は混合しません。未実施の機能がある集計は部分的な結果として扱い、全機能を確認した値とは比較しません。出力するJSON、CSV、HTMLと実行ログを、恒久文書としてコミットしません。
+
+計測は元ソースの実行位置を使います。SAM3.1などの試験が配備用に一時ディレクトリへコピーして実行したコードは、元ソースへ自動的に合算しません。同じ名前のファイルという理由だけで対応付けると別実装を混同するためです。この場合、元ソースの未実行行は、機能自体が未検証という意味とは限りません。
+
+### 変更時の判断に使う
+
+変更した関数について、未実行の異常系や分岐を確認します。複雑度10超またはCRAP30超をレビューの目安とし、CRAP60超は優先して確認します。これらはこのフォークで確認順を決める目安であり、バグの有無を判定する基準ではありません。分割やテスト追加を行わない場合も、その理由を変更の説明へ残します。
+
+標準の試験をすべて実行した後は、計測対象の全関数へ明示した上限を適用し、終了コードで判定することもできます。未実施または失敗があると、この判定は不合格になります。既存コードも対象なので、導入時は集計結果を確認してから上限を決めます。
+
+```bash
+bash components/extensions/cvatctl quality report \
+  --output "$CVAT_QUALITY_DIR" --max-crap 60
+```
+
+計測条件を揃えて変更前後を比較し、合計のカバレッジだけで判断しません。カバレッジは実行を示すもので、正しい結果を検証したことを保証しません。CRAPが低くても、認証、データ保持、後始末、実GPUでの挙動などの受入確認は必要です。既存のGitHub Actions無効化の運用は維持し、ローカルで計測する手順として管理します。
 
 ## 編集を完了する前に確認する
 
