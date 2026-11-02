@@ -1,0 +1,4 @@
+# Shared extension tests reuse the model-registration API dependencies.
+-r ../../model_registry/requirements-control.txt
+-r requirements-quality.txt
+PyYAML==6.0.3

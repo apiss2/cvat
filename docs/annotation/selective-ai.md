@@ -1,20 +1,10 @@
-# 選択した画像への自動アノテーション
+# 画像を選んで自動アノテーションする
 
 [アノテーション操作](README.md) / [モデル管理](../model-registry/README.md)
 
-タスクまたはプロジェクトで、保存済みタグの条件に合う画像を選び、Segmentation、Detection、Classificationのモデルを実行します。現在の画面にダイアログを開き、新しいブラウザータブは作りません。
+タスクまたはプロジェクトから対象画像を選び、領域分割、物体検出、分類のモデルを実行する機能です。保存済みタグの条件で候補を絞り、画像一覧で対象を調整できます。
 
-## 有効化
-
-既存の.envのCVAT_EXTENSIONSへselective_aiを追加します。登録ONNXモデルを使う場合はmodel_registryも選び、既存の機能名を保持してください。
-
-```dotenv
-CVAT_EXTENSIONS=model_registry,frame_navigation_filter,selective_ai
-```
-
-この例ではモデル管理とフレーム移動用フィルターを併用します。通常のNuclioモデルで選択実行だけを使う場合はselective_aiを選びます。cvatctlは推論APIに必要なNuclio構成を追加しますが、モデルやGPUを自動配備しません。
-
-保存と停止、設定変更、再ビルドと起動は[共通管理の手順](../extensions/management.md)に従ってください。無効化するときもselective_aiを選択から外して再ビルドします。直接UIを開発する場合だけCLIENT_PLUGINSへplugins/selective-aiを指定します。
+画面の「タグ条件で自動アノテーション」から操作します。結果はサーバーへ順次追記されるため、実行前に対象画像と保存先ラベルを確認してください。
 
 ## 対象画像を選ぶ
 
@@ -47,7 +37,19 @@ Interactor、Tracker、ReIDは対象外です。必要ならマスクからポ�
 最初のエラーで停止し、自動再試行しません。保存のタイムアウトや通信エラーでは、サーバーが保存していて応答だけが失われた可能性があります。対象フレームを確認してから再実行してください。追記は冪等ではなく、再実行によって図形やタグが重複する場合があります。
 実行結果のJSONには選択した画像、ラベル対応、画像ごとの保存済み、出力なし、除外、失敗の結果を記録します。選択一覧と照合して未処理の画像を確認します。保存状態が不明な失敗を成功として扱わないでください。
 
-## 実装と制約
+## 管理者向けの設定
+
+既存の.envのCVAT_EXTENSIONSへselective_aiを追加します。登録ONNXモデルを使う場合はmodel_registryも選び、既存の機能名を保持してください。
+
+```dotenv
+CVAT_EXTENSIONS=model_registry,frame_navigation_filter,selective_ai
+```
+
+この例ではモデル管理とフレーム移動用フィルターを併用します。CVAT標準の推論関数を動かすサービス「Nuclio」に配備済みのモデルを使う場合は、selective_aiだけでも選択実行を利用できます。cvatctlは推論APIに必要なNuclio構成を追加しますが、モデルやGPUを自動配備しません。
+
+保存と停止、設定変更、再ビルドと起動は[共通管理の手順](../extensions/management.md)に従ってください。無効化するときもselective_aiを選択から外して再ビルドします。直接UIを開発する場合だけCLIENT_PLUGINSへplugins/selective-aiを指定します。
+
+## 開発者向けの実装と制約
 
 cvat-ui/plugins/selective-ai/の範囲で、projectActions.itemsとtaskActions.itemsを使います。標準の実行画面、サーバー、データベースを変更しません。配備対象の選択は共通のcomponents/extensions/manage.pyで管理します。
 mapper.tsxは既存のLabelsMapperとそのスタイルを再利用します。入力配列をモデル単位で保持し、進捗更新で選択を初期化しません。実行中は対応付けの操作を隠しますが、状態は保持します。
@@ -77,7 +79,7 @@ ONNXモデルの識別には既存の予約済みmr-関数IDを使用し、表�
 
 ```bash
 node --test cvat-ui/plugins/selective-ai/tests/*.test.cjs
-npx tsc --noEmit --strict --target ES2020 --lib ES2020,DOM   cvat-ui/plugins/selective-ai/src/ts/engine.ts   cvat-ui/plugins/selective-ai/src/ts/api.ts
+npx tsc --noEmit --skipLibCheck --strict --target ES2020 --lib ES2020,DOM   cvat-ui/plugins/selective-ai/src/ts/engine.ts   cvat-ui/plugins/selective-ai/src/ts/api.ts
 ```
 
 単体試験は条件の組合せ、100件を超えるタスク一覧、番号、未選択フレームへの書き込み防止、出力検査、中止、保存結果不明、認証の切り替え、メニュー、属性と点の対応、閾値の送信有無を代替応答で確認します。

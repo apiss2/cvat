@@ -613,6 +613,7 @@ function ImportDatasetModal(props: StateToProps): JSX.Element {
                             .filter(
                                 (importer: any): boolean => (
                                     instance !== null &&
+                                    importer.name !== 'Annotation Tags DICOM Import 1.0' &&
                                     (!instance?.dimension || importer.dimension === instance.dimension)
                                 ),
                             )

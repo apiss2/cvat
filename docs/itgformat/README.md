@@ -1,14 +1,16 @@
-# ITGformatの機能と導入
+# 領域と矩形を専用形式で入出力する
 
-## 目的と対象
+[追加機能の一覧](../README.md) / [アノテーション操作](../annotation/README.md)
 
-この拡張は、CVATのデータセット入出力に`ITGformat 1.0`を追加します。対象は2D画像のタスク、ジョブ、プロジェクトです。CVATの既存の形式登録を使い、画面やデータベースの構造は変更しません。
+領域のマスクと矩形を複数のファイルで保存する独自形式 **ITGformat** を、CVATで読み書きする機能です。形式の選択欄では `ITGformat 1.0` と表示されます。対象は2D画像のタスク、ジョブ、プロジェクトです。
+
+「ITGformat」では、画像の寸法とクラスの対応表を `.hdr`、圧縮した領域データを `.re4`、矩形を `.bb` に保存します。以下では、それぞれHDR、RE4、BBと記します。
 
 ## 利用できる機能
 
 入力では、HDRの画素幅とビット対応表を読み取り、RE4の領域とBBの矩形をCVATへ変換します。出力では、対象に含まれるクラスから対応表と画素幅を選び直します。固定の16bit形式として扱いません。
 
-画素間隔の出力には、各画像のTagアノテーション `DicomTag` にある `PixelSpacing` 属性を使います。
+画素間隔の出力には、DICOMの情報を画像単位で保存するタグ **DicomTag** の `PixelSpacing` 属性を使います。「DicomTag」の保存方法は[DICOM取り込み](../annotation/dicom-import.md)を参照してください。
 DICOMのPixelSpacingの順序に従い、第2値をx、第1値をyとしてHDRに書き込みます。
 zは1です。
 属性がない場合や値が不正な場合は、従来どおりすべて1にします。
@@ -17,12 +19,12 @@ zは1です。
 
 ## ファイルの配置
 
-```text
-cvat/apps/dataset_manager/formats/itgformat/  HDR、RE4、BBとCVATの変換
-components/itgformat/                       バックエンド用Compose
-cvat/apps/dataset_manager/formats/registry.py  登録のimport 1行
-tests/itgformat/                            単体試験と実依存確認
-```
+| 配置 | 役割 |
+| --- | --- |
+| `cvat/apps/dataset_manager/formats/itgformat/` | HDR、RE4、BBとCVATの変換 |
+| `cvat/apps/dataset_manager/formats/registry.py` | 形式の登録 |
+| `components/itgformat/` | バックエンド用Compose |
+| `components/itgformat/tests/` | 単体試験と実依存確認 |
 
 各モジュールの責務と変換順序は[設計](design.md)に記載しています。Dockerfileはルートの公式ファイルを使用し、専用Dockerfileは複製しません。
 
@@ -39,7 +41,7 @@ tests/itgformat/                            単体試験と実依存確認
 
 ## 確認方法
 
-単体試験は`tests/itgformat`、実際のCVATとDatumaroを使う確認は`tests/itgformat/check_in_cvat.py`です。`cvatctl check`は登録とイメージの一致を全バックエンドで調べ、実依存関係の確認をAPI、import worker、export workerで実行します。
+単体試験は`components/itgformat/tests`、実際のCVATとDatumaroを使う確認は`components/itgformat/tests/check_in_cvat.py`です。`cvatctl check`は登録とイメージの一致を全バックエンドで調べ、実依存関係の確認をAPI、import worker、export workerで実行します。
 
 これらは、実データを使ったHTTP経由の入出力や画面操作の代わりにはなりません。実ファイルを別の試験タスクへ取り込み、出力して比較してください。
 

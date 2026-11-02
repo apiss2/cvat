@@ -2,7 +2,7 @@
 
 [ドキュメントの入口](../README.md)
 
-Segmentation、Detection、ClassificationのONNXモデルをブラウザーで登録し、CVATから実行する機能です。登録時に試験推論を行い、成功した版を公開します。
+領域分割、物体検出、分類に使うONNX形式のモデルをブラウザーで登録し、CVATから実行する機能です。登録時に試験推論を行い、成功した版を利用可能にします。設定やコードでは、このモデル管理機能を `model_registry` と表記します。
 
 ## 読む順序
 
@@ -22,4 +22,4 @@ Segmentation、Detection、ClassificationのONNXモデルをブラウザーで�
 ## 実装の配置
 
 サービス、ワーカー、モデル作成用SDKは[components/model_registry](../../components/model_registry/README.md)、CVAT側のリンクと一覧更新は[UIプラグイン](../../cvat-ui/plugins/model-registry/README.md)にあります。
-Classificationと部分更新の説明はそれぞれ利用手順、実装仕様、設計とAPIに統合しています。機能追加順ではなく、実施する作業の順に読み進めてください。
+分類モデルの使い方は[利用手順](usage.md)、既存モデルの一部だけを変更する方法は[実装仕様](model-development.md)と[設計とAPI](architecture.md)で説明しています。

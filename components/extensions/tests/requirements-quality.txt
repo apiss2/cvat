@@ -1,0 +1,4 @@
+# Shared pytest runner and local quality measurement tools.
+pytest==9.0.3
+coverage==7.13.5
+radon==6.0.1

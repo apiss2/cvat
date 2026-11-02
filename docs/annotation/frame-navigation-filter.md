@@ -1,28 +1,24 @@
 # フレーム移動用フィルター
 
-[アノテーション操作](README.md) / [UIプラグイン](../../cvat-ui/plugins/README.md)
+[アノテーション操作](README.md) / [画面プラグイン](../../cvat-ui/plugins/README.md)
 
-アノテーションのフィルターをフレーム移動の条件として使い、条件に一致しない図形やタグも表示する機能です。例えば、特定タグのある画像へ移動しながら、その画像のマスクを編集できます。
+アノテーションのフィルターをフレーム移動の条件として使い、条件に一致しない図形やタグも表示する機能です。例えば、特定のタグがある画像へ移動しながら、その画像のマスクを編集できます。
 
-## 有効化と操作
+## 画面で使う
 
-既存の.envのCVAT_EXTENSIONSへframe_navigation_filterを追加します。既存の機能名は保持してください。次はこの機能だけを選ぶ最小例です。
+フィルターダイアログと移動のショートカットは、CVATの標準のものを使います。フィルターによる前後の移動は条件に合うフレームを探しますが、キャンバスとオブジェクト一覧から他のマスク、図形、タグを除外しません。
 
-```dotenv
-CVAT_EXTENSIONS=frame_navigation_filter
-```
+手動で非表示にしたオブジェクトは非表示のままです。新しく作成した図形も再表示時に残ります。この動作は、タグに限らずアノテーションのフィルター条件全体に適用します。タスクのAPI、エクスポート、一覧画面のフィルター、音声の区間は対象外です。
 
-保存と停止、設定変更、再ビルドと起動は[共通管理の手順](../extensions/management.md)に従ってください。推論サービスやGPUは不要です。直接UIを開発する場合だけCLIENT_PLUGINSへplugins/frame-navigation-filterを指定します。
+## 管理者向けの設定
 
-フィルターダイアログと移動のショートカットは従来のものを使用します。フィルターによる前後の移動は条件に合うフレームを探しますが、キャンバスとオブジェクト一覧から他のマスク、図形、タグを除外しません。
-手動で非表示にしたオブジェクトは非表示のままです。新しく作成した図形も再表示時に残ります。
+既存の `.env` の `CVAT_EXTENSIONS` へ `frame_navigation_filter` を追加します。他の機能名は保持してください。保存と停止、設定変更、再ビルドと起動は[機能の管理手順](../extensions/management.md)に従います。追加の推論サービスやGPUは不要です。
 
-この動作はタグの条件だけに限定されません。有効化中のフィルター付きJob.annotations.get全体に適用します。Task API、エクスポート、一覧画面のフィルター、音声のinterval APIは対象外です。
-CVAT_EXTENSIONSからframe_navigation_filterを除き、UIを再ビルドすると元の表示方式へ戻ります。
+無効にする場合は `frame_navigation_filter` を選択から外し、UIを再ビルドします。通常のフィルターによる表示方式へ戻ります。UIを直接開発する場合だけ、`CLIENT_PLUGINS` へ `plugins/frame-navigation-filter` を指定します。
 
-## coreとの接続
+## 開発者向けの接続箇所
 
-このフォークのcvat-core/src/plugins.tsにあるmethodArguments対応と一緒に使用します。未変更の上流coreへプラグインだけをコピーしても動作しません。
+このフォークの `cvat-core/src/plugins.ts` にある `methodArguments` 対応と組み合わせます。有効化中は、フィルター付きの `Job.annotations.get` 全体に適用します。未変更の上流coreへプラグインだけをコピーしても動作しません。
 
 プラグインのenterフックは[frame, allTracks, []]を指定し、coreが通常の実装へ渡す引数だけを置き換えます。公開APIの再呼び出し、呼出元の配列変更、非公開implementationの直接実行は行いません。
 引数検査、キャッシュ、トラックの補間、手動の非表示状態は元の実装を使います。annotations.searchは元のフィルターを使用します。
@@ -38,7 +34,7 @@ enterまたは実装で例外が起きた場合はleaveへ進まず、leaveの�
 
 ```bash
 node --test cvat-ui/plugins/frame-navigation-filter/tests/filter.test.cjs
-npx tsc --noEmit --strict --target ES2020 --lib ES2020,DOM   cvat-ui/plugins/frame-navigation-filter/src/ts/filter.ts
+npx tsc --noEmit --skipLibCheck --strict --target ES2020 --lib ES2020,DOM   cvat-ui/plugins/frame-navigation-filter/src/ts/filter.ts
 ```
 
 試験は実際のプラグイン登録処理を使い、表示条件、検索条件の維持、無効化、手動非表示、新規図形、両方の登録順でのフック実行回数、呼び出しの競合、戻り値の置換、例外を確認します。アノテーションの実装と例外の依存は代替実装であり、全体のビルドと描画の試験ではありません。

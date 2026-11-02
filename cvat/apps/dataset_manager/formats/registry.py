@@ -124,6 +124,7 @@ def make_exporter(name):
 
 # pylint: disable=unused-import
 import components.dicom_import.format
+import components.project_annotations.format
 import cvat.apps.dataset_manager.formats.audio_tsv
 import cvat.apps.dataset_manager.formats.camvid
 import cvat.apps.dataset_manager.formats.cityscapes

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Opt-in PostgreSQL/restic round trip using only uniquely named disposable volumes.
 
-CVAT_BACKUP_DOCKER_TEST=1 python -m unittest discover \
-    -s components/extensions/tests -p test_backup_docker.py -v
+CVAT_BACKUP_DOCKER_TEST=1 python -m pytest \
+    components/extensions/tests/test_backup_docker.py -v
 """
 import hashlib
 import io
@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-import unittest
+import pytest
 import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -20,11 +20,11 @@ from pathlib import Path
 from test_backup import backup
 
 
-@unittest.skipUnless(
-    os.environ.get("CVAT_BACKUP_DOCKER_TEST") == "1" and shutil.which("docker"),
-    "Requires explicit opt-in and a local Docker daemon",
+@pytest.mark.skipif(
+    os.environ.get("CVAT_BACKUP_DOCKER_TEST") != "1" or not shutil.which("docker"),
+    reason="Requires explicit opt-in and a local Docker daemon",
 )
-class DockerRoundTrip(unittest.TestCase):
+class TestDockerRoundTrip:
     def test_incremental_and_postgres_restore(self):
         base = Path(tempfile.mkdtemp(prefix="cvatctl-backup-test-"))
         name = "cvatctl-backup-test-" + uuid.uuid4().hex
@@ -135,7 +135,7 @@ class DockerRoundTrip(unittest.TestCase):
                         return
                     except backup.BackupError:
                         time.sleep(0.5)
-                self.fail("PostgreSQL did not become ready")
+                pytest.fail("PostgreSQL did not become ready")
 
             start(db, volumes[0])
             run(
@@ -169,7 +169,7 @@ class DockerRoundTrip(unittest.TestCase):
             # Only metadata should be new while the database remains stopped.
             text = output.getvalue()
             report, _ = json.JSONDecoder().raw_decode(text[text.index("{") :])
-            self.assertLess(report["summary"]["data_added"], 1024 * 1024)
+            assert report['summary']['data_added'] < 1024 * 1024
             run(["docker", "start", db])
             for _ in range(120):
                 try:
@@ -189,7 +189,7 @@ class DockerRoundTrip(unittest.TestCase):
                 except backup.BackupError:
                     time.sleep(0.5)
             else:
-                self.fail("PostgreSQL did not restart")
+                pytest.fail("PostgreSQL did not restart")
             run(["docker", "stop", "--time", "120", db])
             target = base / "restore"
             with redirect_stdout(io.StringIO()):
@@ -224,7 +224,7 @@ class DockerRoundTrip(unittest.TestCase):
                     "SELECT value FROM marker;",
                 ]
             )
-            self.assertEqual(result.strip(), "before")
+            assert result.strip() == 'before'
             repo.execute("check", "--read-data")
         finally:
             for container in (db, restored):
@@ -249,7 +249,3 @@ class DockerRoundTrip(unittest.TestCase):
                 capture_output=True,
             )
             shutil.rmtree(base)
-
-
-if __name__ == "__main__":
-    unittest.main()

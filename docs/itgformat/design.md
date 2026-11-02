@@ -58,7 +58,7 @@ ZIP
 - 対応する画素幅とビット数の判断は `codec.py` に集約しています。
 - 入力容量の保護上限は `codec.py` と `archive.py` の先頭定数で定義しています。
 - CVATを更新した場合は、登録関数、抽出器、マスク変換、プロジェクト入力の呼出し規約を確認します。
-- 更新後は [check_in_cvat.py](../../tests/itgformat/check_in_cvat.py) を実依存関係入りのバックエンドで再実行します。
+- 更新後は [check_in_cvat.py](../../components/itgformat/tests/check_in_cvat.py) を実依存関係入りのバックエンドで再実行します。
 
 ## 運用構成との接続
 

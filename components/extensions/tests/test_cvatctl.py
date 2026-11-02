@@ -166,3 +166,41 @@ def test_sam31_missing_weights_fail_before_startup(manager):
     manager.run = lambda *a, **k: pytest.fail("Must reject missing weights before changing containers")
     with pytest.raises(ValueError, match="SAM31_CHECKPOINT_HOST"):
         manager.up()
+
+
+@pytest.mark.parametrize("command", ["config", "doctor"])
+def test_all_inference_families_report_configuration_without_exposing_secrets(
+    cli, manager, monkeypatch, capsys, command,
+):
+    model = {"services": {
+        "cvat_server": {"image": "test/server"}, "cvat_ui": {"image": "test/ui"},
+        "cvat_worker_import": {"image": "test/server"},
+        "nuclio": {"image": "quay.io/nuclio/dashboard:1.16.3-amd64"},
+    }}
+    monkeypatch.setattr(manager, "configuration", lambda: model)
+    monkeypatch.setattr(manager, "nuctl_check", lambda model: "1.16.3")
+    monkeypatch.setattr(cli, "Manager", lambda *args: manager)
+    monkeypatch.setattr(sys, "argv", ["cvatctl", "--env-file", str(manager.env_file),
+        "--state-dir", str(manager.state), command])
+    cli.main()
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert result["sam2_model"] == manager.values["SAM2_MODEL"]
+    assert result["sam31_checkpoint_source"] == manager.values["SAM31_CHECKPOINT_HOST"]
+    assert result["sam31_gpu_device"] == manager.values["SAM31_GPU_DEVICE"]
+    assert result["ultrasam_gpu_device"] == manager.values["ULTRASAM_GPU_DEVICE"]
+    assert result["sam31_redis_volume"] != result["sam2_redis_volume"]
+    assert set(result["sam31_images"]) == {"pth-sam31-interactor", "pth-sam31-tracker"}
+    assert result["state_directory"] == str(manager.state)
+    assert result["backend_services"] == ["cvat_server", "cvat_worker_import"]
+    for secret in ("HF_TOKEN", "SAM2_REDIS_PASSWORD", "SAM31_REDIS_PASSWORD"):
+        assert manager.values[secret] not in output
+
+
+def test_summary_rejects_unversioned_dashboard_image(cli, manager, monkeypatch):
+    monkeypatch.setattr(manager, "configuration", lambda: {"services": {
+        "cvat_server": {"image": "test/server"}, "cvat_ui": {"image": "test/ui"},
+        "nuclio": {"image": "quay.io/nuclio/dashboard:latest"},
+    }})
+    with pytest.raises(cli.OperationError, match="Cannot determine the Nuclio version"):
+        cli.configuration_summary(manager)

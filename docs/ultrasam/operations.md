@@ -32,7 +32,7 @@ ULTRASAM_GPU_DEVICEは1個のGPU番号またはUUIDです。関数のCUDA_VISIBL
 
 ## ビルドと実行環境の記録
 
-現在の定義は[共通生成処理](../../components/extensions/functions.py)と[ビルド設定](../../components/ultrasam/build.json)です。古いnuclio/function-gpu.yamlを編集する手順は使用しません。
+関数定義は[共通生成処理](../../components/extensions/functions.py)が[ビルド設定](../../components/ultrasam/build.json)から生成します。個別の関数YAMLを併設せず、このビルド設定を更新します。
 
 公式ソースはff3157b1fca8b1d963d9138372768e1fecad71e9に固定します。Python 3.10、CUDA 11.8、PyTorch 2.0.0と、固定したOpenMMLab依存関係を使用します。NVRTC本体と開発用リンクを同じ11.8.89-1で導入し、CUDAライブラリの場所をldconfigへ登録します。MMCV 2.1.0、MMEngine 0.10.7、MMDetection 3.2.0、MMPretrain 1.2.0の読み込みと、重みのキーと形状も検査します。
 
@@ -52,9 +52,9 @@ CPU試験は専用環境で実行します。モデル重みとOpenMMLabは不�
 
 ```bash
 python3.10 -m venv /srv/cvat-test-envs/ultrasam
-/srv/cvat-test-envs/ultrasam/bin/python -m pip install -r serverless/pytorch/camma/ultrasam/tests/requirements.txt
+/srv/cvat-test-envs/ultrasam/bin/python -m pip install -r components/ultrasam/tests/requirements.txt
 /srv/cvat-test-envs/ultrasam/bin/python -m pip install 'torch==2.0.0+cpu' --index-url https://download.pytorch.org/whl/cpu
-/srv/cvat-test-envs/ultrasam/bin/python -m pytest -q serverless/pytorch/camma/ultrasam/tests
+/srv/cvat-test-envs/ultrasam/bin/python -m pytest -q components/ultrasam/tests
 ```
 
 実GPU試験では他の利用者の推論を止め、配備した関数コンテナを確認します。
@@ -62,7 +62,7 @@ python3.10 -m venv /srv/cvat-test-envs/ultrasam
 ```bash
 docker ps --filter label=nuclio.io/function-name=pth-ultrasam-interactor --format '{{.ID}} {{.Names}}'
 ULTRASAM_CONTAINER=CONFIRMED_CONTAINER_ID
-docker cp serverless/pytorch/camma/ultrasam/tests/gpu_smoke.py "${ULTRASAM_CONTAINER}:/opt/nuclio/gpu_smoke.py"
+docker cp components/ultrasam/tests/gpu_smoke.py "${ULTRASAM_CONTAINER}:/opt/nuclio/gpu_smoke.py"
 docker exec "$ULTRASAM_CONTAINER" python /opt/nuclio/ultrasam_runtime.py --mode cuda
 docker exec "$ULTRASAM_CONTAINER" python /opt/nuclio/gpu_smoke.py
 ```

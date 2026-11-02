@@ -1,14 +1,14 @@
-# DicomTagに基づく物理長の表示
+# 折れ線の長さをmmで表示する
 
 [アノテーション操作](README.md) / [拡張機能の管理](../extensions/management.md)
 
-この拡張は、画像のTagアノテーション `DicomTag` に保存された `PixelSpacing` を使い、
-polylineの長さをmmで表示します。参照元はそのフレームの `DicomTag` だけです。
-タスク共通値や専用の設定画面はありません。
+画像上に描いた折れ線の長さを、画素数ではなくmmで確認する機能です。DICOMから保存した画素間隔を使います。
+
+このフォークでは、DICOMの識別情報や撮影条件を画像単位で保存するタグを **DicomTag** と呼びます。「DicomTag」の `PixelSpacing` 属性が隣接画素の間隔です。この機能は表示中のフレームに保存された値だけを参照し、CVATの折れ線 `polyline` の長さを計算します。
 
 ## 参照する属性と単位
 
-DICOM取り込みは、標準タグのKeywordを属性名として保存します。
+DICOM取り込みは、標準の属性名であるKeywordをCVATの属性名として保存します。
 `PixelSpacing (0028,0030)` は `DicomTag` のText属性 `PixelSpacing` です。
 値は `0.30\0.25` のような、バックスラッシュで区切った2個の数値です。
 
@@ -68,7 +68,7 @@ ITGformat HDR spacing = 0.25 0.3 1
 Tagは標準のアノテーションとして保存するため、バックアップも標準の処理を使用します。
 この拡張専用のDBテーブル、API、バックアップファイルは追加しません。
 
-## 有効化と無効化
+## 管理者向けの設定
 
 [共通の更新手順](../extensions/update.md)に従い、既存の選択を保持して
 `.env` の `CVAT_EXTENSIONS` に `physical_measurements` を追加します。
@@ -80,7 +80,7 @@ CVAT_EXTENSIONS=itgformat,physical_measurements
 
 `cvatctl` が `plugins/physical-measurements` をUIのビルドへ追加します。
 ITGformatの出力変更はサーバーと出力ワーカーへ反映します。
-この変更によるDB移行、追加サービス、GPU、Nuclioは不要です。
+この機能のためのDB移行、追加サービス、GPU、Nuclioは不要です。
 
 ```sh
 bash components/extensions/cvatctl config
@@ -98,7 +98,7 @@ bash components/extensions/cvatctl check
 
 対象は2D画像と動画のpolylineです。画像全体で一定のX方向とY方向の間隔を前提とします。
 描画途中の長さ表示、3D、音声、超音波の領域ごとの校正は対象外です。
-PR11が抽出しないSequence内の値や、別のDICOM属性から間隔を推測しません。
+DICOM取り込みの対象外であるSequence内の値や、別のDICOM属性から間隔を推測しません。
 画像自体を事前に拡大縮小した場合は、Tagの値も変換後の画素に対応している必要があります。
 
 計算と表示の接続は `cvat-ui/plugins/physical-measurements/` に置いています。
@@ -109,7 +109,8 @@ Canvasへの変更は、既存の図形ラベルへ文字列を追加する任�
 
 ```sh
 node --test cvat-ui/plugins/physical-measurements/tests/*.test.cjs
-python3 -m pytest -q tests/itgformat components/extensions/tests/test_client_plugins.py
+python3 -m pytest -q components/itgformat/tests
+python3 -m pytest -q components/extensions/tests/test_client_plugins.py
 ```
 
 実環境では、異なるXとYの値、Tagがない画像、フレームごとの値の変更、Tag編集とUndo、

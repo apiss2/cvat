@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Compile against the narrow v2.75.0 plugin contract, not the complete CVAT application.
+// Compile against the public fields used by this plugin, not the complete CVAT application.
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-registry-ts-'));
@@ -7,7 +7,7 @@ try {
     const source = path.resolve(__dirname, '../src/ts');
     fs.writeFileSync(path.join(dir, 'fixture.d.ts'), `
         declare module 'components/plugins-entrypoint' {
-            interface Model {id:string|number;name:string;version:number}
+            interface Model {id:string|number;name:string}
             interface Args {
                 core:{lambda:{list():Promise<{models:Model[],count:number}>}};
                 store:{getState():{auth:{user:{id:number}|null}}};

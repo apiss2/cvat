@@ -20,32 +20,32 @@ SAM2 = ROOT / "serverless/pytorch/facebookresearch/sam2/nuclio"
 
 
 @pytest.fixture(params=["sam2", "sam31"])
-def runtime(request, monkeypatch, tmp_path):
+def runtime(request, monkeypatch):
     feature = request.param
+    if feature == "sam31":
+        modules = request.getfixturevalue("sam31_runtime")
+        yield SimpleNamespace(**vars(modules), feature=feature)
+        return
     names = ("protocol", "geometry", "temporal_video", "state_codec", "redis_store", "redis_tracker", "tracker")
     for name in names:
         monkeypatch.delitem(sys.modules, name, raising=False)
-    if feature == "sam31":
-        monkeypatch.syspath_prepend(str(ROOT))
-        from components.extensions.functions import stage_sources
-        stage_sources(tmp_path, "sam31", ROOT)
-        monkeypatch.syspath_prepend(str(tmp_path))
-    else:
-        # SAM2's numerical predictor is not exercised: only the persisted Snapshot contract.
-        @dataclass
-        class Snapshot:
-            index: int
-            width: int
-            height: int
-            objects: list
-        temporal = ModuleType("temporal_video"); temporal.Snapshot = Snapshot
-        monkeypatch.setitem(sys.modules, "temporal_video", temporal)
-        monkeypatch.syspath_prepend(str(SAM2))
-    modules = {name: importlib.import_module(name) for name in names[:5]}
-    tracker = importlib.import_module("tracker" if feature == "sam31" else "redis_tracker")
-    yield SimpleNamespace(**modules, tracker=tracker, feature=feature)
-    for name in names:
-        monkeypatch.delitem(sys.modules, name, raising=False)
+    # SAM2's numerical predictor is not exercised: only the persisted Snapshot contract.
+    @dataclass
+    class Snapshot:
+        index: int
+        width: int
+        height: int
+        objects: list
+    temporal = ModuleType("temporal_video"); temporal.Snapshot = Snapshot
+    monkeypatch.setitem(sys.modules, "temporal_video", temporal)
+    monkeypatch.syspath_prepend(str(SAM2))
+    try:
+        modules = {name: importlib.import_module(name) for name in names[:5]}
+        tracker = importlib.import_module("redis_tracker")
+        yield SimpleNamespace(**modules, tracker=tracker, feature=feature)
+    finally:
+        for name in names:
+            sys.modules.pop(name, None)
 
 
 def snapshot(runtime, count, index=0):

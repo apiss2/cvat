@@ -1,10 +1,12 @@
-# cvatctlによる増分バックアップ
+# 更新前の増分バックアップ
 
 [共通運用](README.md) / [手動のバックアップと復元](backup-restore.md)
 
-`cvatctl backup`は、停止したCVATの永続データをresticへ保存します。初回は全内容を読み取り、次回から変更のないファイルの再読み込みと同一内容の再保存を省きます。各世代は独立した復元点として選択でき、差分ファイルを順番に適用する必要はありません。
+このページでは、CVATを更新する前にデータを保存し、必要な世代を取り出す手順を説明します。**増分バックアップ** は、初回に全内容を保存し、次回から変更のないファイルの再読み込みと同一内容の再保存を省く方式です。
 
-この機能は更新前の物理バックアップです。稼働中のデータベースをそのままコピーする機能や、PostgreSQLのメジャー版を移行する機能ではありません。元の版へ復旧できるよう、[検証した実イメージの保管](update.md#検証したイメージを保存する)も継続してください。
+共通管理コマンドの `cvatctl backup` は、停止したCVATのデータを暗号化して保存します。保存処理にはバックアップ用ソフトウェアresticを使用します。「増分バックアップ」の各世代は独立した復元点として選べるため、差分ファイルを順番に適用する必要はありません。
+
+この機能は、データベースを停止し、そのファイルを保存する物理バックアップです。PostgreSQLのメジャー版を変える場合は、[別途の移行手順](backup-restore.md#postgresqlのメジャー版が異なる場合)を使用します。元の版へ復旧できるよう、[検証した実イメージの保管](update.md#検証したイメージを保存する)も継続してください。
 
 ## 初回の設定
 
@@ -30,9 +32,7 @@ CVATCTL=./components/extensions/cvatctl
 }
 ```
 
-`.env`や`CVAT_EXTENSIONS`へ設定を追加する必要はありません。常駐サービス、UIプラグイン、GPUは追加しません。`config`、`doctor`、`build`、`up`、`down`、`status`、`check`の既存処理は変更しません。バックアップの保存対象は`backup plan`、保存データの検査は`backup check`で確認します。
-
-通常コマンドは既存の`entrypoint.py`で拡張カタログを登録してから実行します。`backup plan`と`backup create`も同じカタログを登録するため、`dicom_import`、`physical_measurements`、`task_context`を同時に有効化した構成で使用できます。
+バックアップの設定は `.env` や機能選択から独立しています。常駐サービスとGPUは不要です。保存対象は `backup plan`、保存済みデータの整合性は `backup check` で確認します。
 
 ## 更新前に取得する
 
@@ -71,7 +71,9 @@ DICOM取り込みで保存した画像と動画、`DicomTag`、タスク用と�
 
 復元用の情報には、解決済みCompose、cvatctlの稼働記録、Composeコンテナの情報、設定ファイル、Gitコミット、変更差分、元の保存先と復元先の対応表を含めます。Gitコミットと設定ファイルはバックアップ実行時のチェックアウトと設定を記録します。先にソースや設定を変更した場合、それだけで旧稼働版を表すとは限らないため、稼働記録のイメージIDと解決済みComposeを照合してください。これらには秘密情報が含まれますが、restic内では暗号化して保存します。
 
-Dockerイメージの実体、未追跡のソースファイル、オブジェクトストレージなどの外部データは自動保存しません。Unixソケットとtmpfsも対象外です。外部DB、別ホストのモデル管理、外部Compose secrets/configs、匿名ボリューム、非標準のDockerボリュームドライバーは自動処理せず、中止します。外部表領域などを追加した独自DB構成は、この手順の対象外です。[手動のバックアップと復元](backup-restore.md)に従って別途保存してください。
+Dockerイメージの実体、未追跡のソースファイル、オブジェクトストレージなどの外部データは自動保存しません。Unixソケットとtmpfsも対象外です。外部DB、別ホストのモデル管理、外部Compose secrets/configs、下記の診断用ログを除く匿名ボリューム、非標準のDockerボリュームドライバーは自動処理せず、中止します。外部表領域などを追加した独自DB構成は、この手順の対象外です。[手動のバックアップと復元](backup-restore.md)に従って別途保存してください。
+
+例外として、ClickHouseのイメージが宣言した診断用ログ `/var/log/clickhouse-server` にDockerが自動作成するボリュームは、宣言と実マウントを照合したうえで対象から外します。データ本体の `/var/lib/clickhouse` は保存対象です。宣言のない追加マウントや保存先の変更は引き続きエラーにします。
 
 Docker以外のホストプロセスや別サーバーによる書き込みまでは検出できません。対象領域はCVAT専用にし、保守中に他の処理から変更しないでください。同じディスク内のバックアップだけでは、そのディスク自体の故障には備えられません。
 
@@ -130,14 +132,14 @@ Docker以外のホストプロセスや別サーバーによる書き込みま�
 Dockerを使用しない単体テストは次のコマンドで実行します。
 
 ```bash
-python -m unittest discover -s components/extensions/tests -p 'test_backup*.py' -v
+python -m pytest -q components/extensions/tests/test_backup*.py
 ```
 
 Dockerを使う試験は明示的に有効化します。ランダムな固有名を持つ試験用コンテナとボリュームだけを作成して削除し、実際のPostgreSQLの停止バックアップ、2回目の追加データ量、古い世代からの復元、格納データの検査を確認します。本番CVATの起動や推論、既存ボリュームの削除は行いません。
 
 ```bash
-CVAT_BACKUP_DOCKER_TEST=1 python -m unittest discover \
-  -s components/extensions/tests -p 'test_backup_docker.py' -v
+CVAT_BACKUP_DOCKER_TEST=1 python -m pytest -v \
+  components/extensions/tests/test_backup_docker.py
 ```
 
 運用環境での受入試験では、拡張を無効にした構成と、実際に使用するSAM系機能およびローカルモデル管理を含む構成の両方で`backup plan`を確認します。Dockerのない開発環境で単体テストが成功したことを、DB復元や実際の全拡張の動作を確認したこととは区別してください。

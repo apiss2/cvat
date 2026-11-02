@@ -63,6 +63,27 @@ class StateCodec:
         if not 2 <= size <= min(65536, len(data) - 8):
             raise ValueError("Invalid tensor header size")
         header = json.loads(data[8:8 + size], object_pairs_hook=unique_json)
+        metadata = self._metadata(header)
+        if not 5 <= len(header) <= 512:
+            raise ValueError("Invalid tensor count")
+        groups, total = {}, 0
+        for name, info in header.items():
+            kind, frame, field, nbytes = self._tensor(name, info, metadata["index"], len(data) - 8 - size)
+            groups.setdefault((kind, frame), set()).add(field)
+            total += nbytes
+            if total > self.max_bytes:
+                raise ValueError("Tensor allocation exceeds state limit")
+        if groups.get(("c", 0)) != set(MEMORY_FIELDS):
+            raise ValueError("Missing seed memory")
+        if metadata["index"] and groups.get(("n", metadata["index"])) != set(MEMORY_FIELDS):
+            raise ValueError("Missing latest memory")
+        for fields in groups.values():
+            if fields not in ({"obj_ptr"}, set(MEMORY_FIELDS)):
+                raise ValueError("Incomplete temporal memory")
+        return metadata
+
+    def _metadata(self, header):
+        """Validate the model identity and logical video dimensions."""
         metadata = json.loads(header.pop("__metadata__")["state"], object_pairs_hook=unique_json)
         if set(metadata) != {"schema", "identity", "index", "width", "height", "count"}:
             raise ValueError("Invalid state metadata")
@@ -74,37 +95,28 @@ class StateCodec:
                 and metadata["width"] > 0 and metadata["height"] > 0
                 and metadata["width"] * metadata["height"] <= MAX_PIXELS):
             raise ValueError("Invalid metadata bounds")
-        if not 5 <= len(header) <= 512:
-            raise ValueError("Invalid tensor count")
-        groups, total = {}, 0
-        for name, info in header.items():
-            match = NAME.fullmatch(name)
-            if not match:
-                raise ValueError("Invalid tensor name")
-            kind, frame, field = match.groups()
-            frame = int(frame)
-            if frame > metadata["index"] or (kind == "c" and frame != 0) or (kind == "n" and frame == 0):
-                raise ValueError("Invalid memory frame")
-            groups.setdefault((kind, frame), set()).add(field)
-            shape, dtype = info["shape"], info["dtype"]
-            ranks = (3,) if field in ("obj_ptr", "image_features", "image_pos_enc") else (4, 5)
-            if dtype not in DTYPES or len(shape) not in ranks or any(type(dim) is not int or not 1 <= dim <= 16384 for dim in shape):
-                raise ValueError("Invalid tensor shape or dtype")
-            total += math.prod(shape) * DTYPES[dtype]
-            if total > self.max_bytes:
-                raise ValueError("Tensor allocation exceeds state limit")
-            start, stop = info["data_offsets"]
-            if (type(start) is not int or type(stop) is not int or start < 0
-                    or stop - start != math.prod(shape) * DTYPES[dtype] or stop > len(data) - 8 - size):
-                raise ValueError("Invalid tensor offsets")
-        if groups.get(("c", 0)) != set(MEMORY_FIELDS):
-            raise ValueError("Missing seed memory")
-        if metadata["index"] and groups.get(("n", metadata["index"])) != set(MEMORY_FIELDS):
-            raise ValueError("Missing latest memory")
-        for fields in groups.values():
-            if fields not in ({"obj_ptr"}, set(MEMORY_FIELDS)):
-                raise ValueError("Incomplete temporal memory")
         return metadata
+
+    @staticmethod
+    def _tensor(name, info, index, data_size):
+        """Check one memory descriptor before safetensors can allocate a tensor."""
+        match = NAME.fullmatch(name)
+        if not match:
+            raise ValueError("Invalid tensor name")
+        kind, frame, field = match.groups()
+        frame = int(frame)
+        if frame > index or (kind == "c" and frame != 0) or (kind == "n" and frame == 0):
+            raise ValueError("Invalid memory frame")
+        shape, dtype = info["shape"], info["dtype"]
+        ranks = (3,) if field in ("obj_ptr", "image_features", "image_pos_enc") else (4, 5)
+        if dtype not in DTYPES or len(shape) not in ranks or any(type(dim) is not int or not 1 <= dim <= 16384 for dim in shape):
+            raise ValueError("Invalid tensor shape or dtype")
+        nbytes = math.prod(shape) * DTYPES[dtype]
+        start, stop = info["data_offsets"]
+        if (type(start) is not int or type(stop) is not int or start < 0
+                or stop - start != nbytes or stop > data_size):
+            raise ValueError("Invalid tensor offsets")
+        return kind, frame, field, nbytes
 
     def decode(self, data):
         try:

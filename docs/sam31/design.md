@@ -24,14 +24,11 @@ tracker.pyとstate_codec.pyはSAM3.1専用です。共通Redis処理をSAM31の�
 
 ## 自動試験
 
-チェックアウトのルートから、試験用のPython環境とJavaScript依存関係を使って実行します。
+チェックアウトのルートから、試験用のPython環境とJavaScript依存関係を使って実行します。共通管理とSAM3.1は、それぞれの依存関係を準備した別プロセスで実行します。
 
 ```bash
-python -m pytest --noconftest -q components/extensions/tests \
-  components/sam31/tests/test_runtime.py \
-  components/sam31/tests/test_review_limits.py \
-  components/sam31/tests/test_image_parity.py \
-  components/sam31/tests/test_mask_seeds.py
+python -m pytest -q components/extensions/tests
+python -m pytest -q components/sam31/tests
 node cvat-ui/plugins/sam2/tests/run-tests.cjs
 ```
 

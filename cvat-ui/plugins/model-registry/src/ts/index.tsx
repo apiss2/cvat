@@ -3,7 +3,7 @@ import type { ComponentBuilder, PluginEntryPoint } from 'components/plugins-entr
 import { createRefresher } from './refresh';
 
 const builder: ComponentBuilder = ({ core, store, dispatch, actionCreators }) => {
-    // The v2.75 header menu calls this factory to obtain an Ant Design menu item.
+    // The header menu calls this factory to obtain an Ant Design menu item.
     const menu = (() => ({
         key: 'model-registry',
         label: 'モデル管理',
@@ -15,8 +15,9 @@ const builder: ComponentBuilder = ({ core, store, dispatch, actionCreators }) =>
         identity,
         visible: () => !document.hidden,
         load: async () => (await core.lambda.list()).models,
-        // Registry revisions have immutable IDs. Do not replace model instances on every poll.
-        fingerprint: (models) => JSON.stringify(models.map((model) => [model.id, model.name, model.version])
+        // Registry updates and rollbacks change the revision ID. Use public model fields
+        // and preserve existing instances while the catalog stays unchanged.
+        fingerprint: (models) => JSON.stringify(models.map((model) => [model.id, model.name])
             .sort((left, right) => String(left[0]).localeCompare(String(right[0])))),
         commit: (models) => dispatch(actionCreators.getModelsSuccess(models, models.length)),
         failed: (error) => console.warn('Model list refresh failed; keeping the current list', error),

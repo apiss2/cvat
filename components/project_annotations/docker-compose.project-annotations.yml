@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+services:
+  cvat_server:
+    environment:
+      CVAT_PROJECT_ANNOTATIONS_ENABLED: '1'
+  cvat_worker_import:
+    environment:
+      CVAT_PROJECT_ANNOTATIONS_ENABLED: '1'

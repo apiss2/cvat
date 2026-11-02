@@ -293,3 +293,197 @@ def test_purge_does_not_create_a_database_for_an_incorrect_data_directory(tmp_pa
     with pytest.raises(ValueError, match='Registry database does not exist'):
         ctl.purge_deleted(tmp_path, 'a' * 20)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('running_service', ['manager', 'worker'])
+def test_purge_refuses_a_running_manager_or_orphaned_worker(tmp_path, monkeypatch, running_service):
+    home = tmp_path / 'state'
+    assert command(home, 'init', '--public-url', PUBLIC, '--instance', 'review-test').returncode == 0
+    labels = {
+        'manager': 'label=com.docker.compose.project=mr-review-test',
+        'worker': 'label=org.cvat-model-registry.instance=review-test',
+    }
+    checked = []
+
+    def containers(args, **kwargs):
+        assert args[:3] == ['docker', 'ps', '-q']
+        checked.append(args[-1])
+        return 'running-container\n' if args[-1] == labels[running_service] else ''
+
+    purged = []
+    monkeypatch.setattr(ctl.subprocess, 'check_output', containers)
+    monkeypatch.setattr(ctl, 'purge_deleted', lambda *args: purged.append(args))
+    monkeypatch.setattr(sys, 'argv', [
+        'registryctl', 'purge-deleted', '--home', str(home),
+        '--model-id', 'a' * 20, '--confirm',
+    ])
+    with pytest.raises(SystemExit) as error:
+        ctl.main()
+    assert error.value.code == 2
+    assert labels[running_service] in checked
+    assert purged == []
+
+
+@pytest.fixture
+def registry_home(tmp_path):
+    home = tmp_path / 'state'
+    ctl.main(['init', '--home', str(home), '--public-url', PUBLIC, '--instance', 'review-test'])
+    return home
+
+
+@pytest.mark.parametrize('selected', ['all', 'gateway', 'manager', 'worker'])
+@pytest.mark.parametrize('gpu', ['', '0'])
+def test_build_selects_only_requested_images_and_worker_device(registry_home, monkeypatch, selected, gpu):
+    file = registry_home / 'registry.env'
+    values = ctl.read_env(file)
+    values['MR_GPU_DEVICE'] = gpu
+    values['MR_WORKER_IMAGE'] = 'review-worker:gpu' if gpu else 'review-worker:cpu'
+    ctl.atomic(file, '\n'.join(f'{key}={value}' for key, value in values.items()) + '\n')
+    monkeypatch.setenv('MR_WORKER_IMAGE', 'unrelated:latest')
+    monkeypatch.setenv('COMPOSE_PROJECT_NAME', 'unrelated')
+    recorded = []
+    monkeypatch.setattr(ctl, 'run', lambda *args, env=None: recorded.append((list(args), env)))
+
+    ctl.main(['build', '--home', str(registry_home), '--target', selected])
+
+    targets = ['gateway', 'manager', 'worker'] if selected == 'all' else [selected]
+    assert len(recorded) == len(targets)
+    for (args, environment), target in zip(recorded, targets):
+        if target == 'worker':
+            dockerfile = 'Dockerfile.worker.gpu' if gpu else 'Dockerfile.worker'
+            expected = ['docker', 'build', '-f', str(ROOT / dockerfile),
+                        '-t', values['MR_WORKER_IMAGE'], str(ROOT)]
+        else:
+            expected = ['docker', 'build', '-f', str(ROOT / 'Dockerfile'), '--target', target,
+                        '-t', values[f'MR_{target.upper()}_IMAGE'], str(ROOT)]
+        assert args == expected
+        assert environment['MR_WORKER_IMAGE'] == values['MR_WORKER_IMAGE']
+        assert 'COMPOSE_PROJECT_NAME' not in environment
+
+
+@pytest.mark.parametrize('workers', ['', 'worker-one\nworker-two\n'])
+def test_down_removes_only_instance_workers_after_compose_stops(registry_home, monkeypatch, workers):
+    actions = []
+    monkeypatch.setattr(ctl, 'run', lambda *args, env=None: actions.append(('run', list(args))))
+
+    def containers(args, **kwargs):
+        actions.append(('query', args))
+        return workers
+
+    monkeypatch.setattr(ctl.subprocess, 'check_output', containers)
+    ctl.main(['down', '--home', str(registry_home)])
+    assert actions[0][0] == 'run'
+    assert actions[0][1][-3:] == ['down', '--timeout', '120']
+    assert actions[1] == ('query', [
+        'docker', 'ps', '-aq', '--filter', 'label=org.cvat-model-registry.instance=review-test',
+    ])
+    if workers:
+        assert actions[2:] == [('run', ['docker', 'rm', '-f', 'worker-one', 'worker-two'])]
+    else:
+        assert len(actions) == 2
+
+
+@pytest.mark.parametrize('failed_phase', ['compose', 'worker-query'])
+def test_down_stops_at_docker_errors(registry_home, monkeypatch, failed_phase):
+    actions = []
+
+    def run(*args, env=None):
+        actions.append('compose')
+        assert 'rm' not in args
+        if failed_phase == 'compose':
+            raise subprocess.CalledProcessError(1, args)
+
+    def containers(args, **kwargs):
+        actions.append('worker-query')
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(ctl, 'run', run)
+    monkeypatch.setattr(ctl.subprocess, 'check_output', containers)
+    with pytest.raises(subprocess.CalledProcessError):
+        ctl.main(['down', '--home', str(registry_home)])
+    assert actions == (['compose'] if failed_phase == 'compose' else ['compose', 'worker-query'])
+
+
+@pytest.mark.parametrize('action, suffix', [('status', ['ps']), ('logs', ['logs', '--tail', '200'])])
+def test_read_only_commands_use_recorded_deployment(registry_home, monkeypatch, action, suffix):
+    recorded = []
+    monkeypatch.setattr(ctl, 'run', lambda *args, env=None: recorded.append(list(args)))
+    ctl.main([action, '--home', str(registry_home)])
+    assert len(recorded) == 1
+    args = recorded[0]
+    assert args[:2] == ['docker', 'compose']
+    assert args[args.index('-p') + 1] == 'mr-review-test'
+    assert args[-len(suffix):] == suffix
+
+
+@pytest.mark.parametrize('options', [[], ['--confirm'], ['--model-id', 'a' * 20],
+                                    ['--model-id', '../elsewhere', '--confirm']])
+def test_purge_validates_explicit_target_before_docker(registry_home, monkeypatch, options):
+    def unexpected(*args, **kwargs):
+        pytest.fail('Invalid purge must not inspect Docker or remove files')
+
+    monkeypatch.setattr(ctl.subprocess, 'check_output', unexpected)
+    monkeypatch.setattr(ctl, 'purge_deleted', unexpected)
+    with pytest.raises(SystemExit) as error:
+        ctl.main(['purge-deleted', '--home', str(registry_home), *options])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize('failure_at', [1, 2])
+def test_purge_refuses_cleanup_when_container_state_is_unknown(registry_home, monkeypatch, failure_at):
+    queries = []
+    purged = []
+
+    def containers(args, **kwargs):
+        queries.append(args)
+        if len(queries) == failure_at:
+            raise subprocess.CalledProcessError(1, args)
+        return ''
+
+    monkeypatch.setattr(ctl.subprocess, 'check_output', containers)
+    monkeypatch.setattr(ctl, 'purge_deleted', lambda *args: purged.append(args))
+    with pytest.raises(subprocess.CalledProcessError):
+        ctl.main(['purge-deleted', '--home', str(registry_home), '--model-id', 'a' * 20, '--confirm'])
+    assert len(queries) == failure_at
+    assert purged == []
+
+
+def test_purge_uses_explicit_configuration_and_preserves_deleted_audit(registry_home, tmp_path, monkeypatch):
+    from registry.store import Store
+
+    data = registry_home / 'data'
+    store = Store(data / 'registry.sqlite3')
+    model_id = 'c' * 20
+    store.create_model(model_id, 'alice')
+    store.delete(model_id, None)
+    package = data / 'packages' / model_id
+    package.mkdir(parents=True)
+    (package / 'model.onnx').write_bytes(b'failed cleanup')
+    checked = []
+
+    def containers(args, **kwargs):
+        checked.append(args[-1])
+        return ''
+
+    monkeypatch.setattr(ctl.subprocess, 'check_output', containers)
+    unrelated = tmp_path / 'other-home'
+    ctl.main(['purge-deleted', '--env-file', str(registry_home / 'registry.env'),
+              '--home', str(unrelated), '--model-id', model_id, '--confirm'])
+    assert checked == ['label=com.docker.compose.project=mr-review-test',
+                       'label=org.cvat-model-registry.instance=review-test']
+    assert not package.exists()
+    assert not unrelated.exists()
+    assert store.model(model_id)['owner'] == 'alice'
+    assert store.model(model_id)['deleted'] == 1
+    assert [event['stage'] for event in store.events(model_id)] == ['delete', 'cleanup']
+
+
+@pytest.mark.parametrize('options', [
+    ['--instance', 'Uppercase'], ['--instance', '../invalid'], ['--gpu-device', '0,1'],
+])
+def test_init_rejects_invalid_instance_or_device_before_creating_storage(tmp_path, options):
+    home = tmp_path / 'absent'
+    with pytest.raises(SystemExit) as error:
+        ctl.main(['init', '--home', str(home), '--public-url', PUBLIC, *options])
+    assert error.value.code == 2
+    assert not home.exists()

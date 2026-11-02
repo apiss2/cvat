@@ -188,6 +188,7 @@ COPY --parents \
     backend_entrypoint.sh \
     components/analytics/clickhouse/init.py \
     components/dicom_import \
+    components/project_annotations \
     manage.py \
     rqscheduler.py \
     wait_for_deps.sh \

@@ -6,7 +6,7 @@
 
 ## 自動試験
 
-リポジトリのJavaScript依存関係と、[Python試験用の依存関係](../../components/model_registry/requirements-test.txt)を準備します。実行場所はチェックアウトのルートです。
+リポジトリのJavaScript依存関係と、[Python試験用の依存関係](../../components/model_registry/tests/requirements.txt)を準備します。実行場所はチェックアウトのルートです。
 
 ```bash
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_api.py components/model_registry/tests/test_deletion.py components/model_registry/tests/test_runtime.py components/model_registry/tests/test_cli.py -q
@@ -20,6 +20,8 @@ node --check components/model_registry/static/app.js
 Classificationの試験は出力と独立した応答検査、旧出力形式、内部パッケージ、ワーカーのHTTP処理を確認します。通常のONNXセッションは代替実装を使い、onnxとonnxruntimeがある場合だけIdentityモデルの実行試験も動きます。部分更新の試験は経路と候補の組み立てを確認しますが、認証やサービスを代替しています。
 
 削除の試験は公開済みと未公開のモデル、所有者と管理者、全利用者の一覧からの除外を確認します。実ファイルを使い、推論、版の切り替え、更新のコピー・展開・検証、実行待ちの登録と削除を重ね、候補ファイルの残留や再公開を防ぐことも確認します。ワーカー停止・清掃の失敗、再試行、再起動、削除・清掃ログと最小限の記録の保持を含みます。CVAT認証とDockerは代替実装です。JavaScriptの試験は実際の登録、更新、削除のハンドラーをDOMの代替実装で呼び出します。実ブラウザーの描画や実CVAT認証の確認ではありません。接続試験用の作例は[examples](../../components/model_registry/examples/)にあり、学習済み認識モデルではありません。generate.pyで重み、画像、内部パッケージ検査用ZIPを再生成できますが、登録画面には個別ファイルを指定します。
+
+管理コマンドの試験では、選択したイメージとCPU/GPU構成、記録した設定による操作、停止後の対象インスタンスのワーカー清掃、復旧時の停止確認も検証します。管理コンテナだけが停止してワーカーが残る場合や、Dockerの応答を取得できない場合に、モデルのファイル清掃へ進まないことを確認します。
 
 ## 公開前の受入確認
 
@@ -45,7 +47,7 @@ Classificationの試験は出力と独立した応答検査、旧出力形式、
 専用の試験用CVATアカウントで次を実行します。パスワードは実行時に入力し、引数に書きません。
 
 ```bash
-python3 components/model_registry/tools/smoke_registry.py \
+python3 components/model_registry/tests/smoke_registry.py \
   --url https://cvat.example.internal/model-registry/ \
   --username ACTUAL_CVAT_TEST_USERNAME --run
 ```
@@ -54,4 +56,4 @@ python3 components/model_registry/tools/smoke_registry.py \
 
 CVATの標準ログインAPIで取得したCookieを使用し、パスワードやトークンを管理サーバーへ渡さず、Cookieをファイルへ保存しません。終了時の標準ログアウトは同じアカウントの既存RESTトークンも無効にする場合があります。日常業務や連携に使うアカウントで実行しないでください。
 
-[CVAT側の確認スクリプト](../../components/model_registry/tools/verify_in_cvat.py)は、CVATサーバーと自動アノテーション用ワーカーのPythonで実行します。必要に応じて--require-sam2と--require-registry-modelを指定します。これは設定と関数一覧の確認であり、実推論やブラウザー操作の代わりにはなりません。
+[CVAT側の確認スクリプト](../../components/model_registry/tests/verify_in_cvat.py)は、CVATサーバーと自動アノテーション用ワーカーのPythonで実行します。必要に応じて--require-sam2と--require-registry-modelを指定します。これは設定と関数一覧の確認であり、実推論やブラウザー操作の代わりにはなりません。
