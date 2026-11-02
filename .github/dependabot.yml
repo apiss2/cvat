@@ -23,7 +23,7 @@ updates:
     directory: "/utils/dataset_manifest"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     exclude-paths:
       - "*.txt"
 
@@ -33,7 +33,7 @@ updates:
     directory: "/cvat/requirements"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     groups:
       xml-libraries:
         patterns:
