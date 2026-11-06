@@ -869,6 +869,25 @@ def test_dicom_native_cleanup_preserves_active_uploads_and_queued_jobs(
     assert not session.directory.exists()
 
 
+@pytest.mark.parametrize("damage", ["lock", "metadata"])
+def test_dicom_native_cleanup_removes_damaged_stale_sessions(project, user, dicom_enabled, damage):
+    import os
+    import time
+    from cvat.apps.dataset_manager.cron import InstanceTmpDirectoriesCleaner
+
+    _upload_id, session = dicom_session(project, user, b"")
+    if damage == "lock":
+        (session.directory / ".lock").unlink()
+    else:
+        session.state_path.write_text("{", encoding="utf-8")
+    cleaner = InstanceTmpDirectoriesCleaner()
+    assert cleaner._remove_if_outdated(session.directory) is False
+    expired = time.time() - 7 * 86400
+    os.utime(session.directory, (expired, expired))
+    assert cleaner._remove_if_outdated(session.directory) is True
+    assert not session.directory.exists()
+
+
 @pytest.mark.parametrize("frame_count", [1, 4])
 def test_dicom_staged_worker_reads_uploaded_files_and_creates_real_task(
     project,

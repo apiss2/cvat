@@ -312,7 +312,10 @@ def cleanup_stale_upload(path: Path, *, retention_seconds: float):
 
             try:
                 data = _read_json(path / "session.json")
-            except MissingUpload:
+            except UploadError:
+                # Missing or unreadable metadata cannot describe a queued job.
+                data = {}
+            if not isinstance(data, dict):
                 data = {}
             if data.get("state") in ("submitting", "queued") and data.get("rq_id"):
                 job = DicomFolderImporter.get_queue().fetch_job(data["rq_id"])
@@ -325,3 +328,7 @@ def cleanup_stale_upload(path: Path, *, retention_seconds: float):
             return True
     except BlockingIOError:
         return False
+    except MissingUpload:
+        # No lock file: start() was interrupted before creating the session.
+        # Nothing can hold it, so the native access-time rule applies.
+        return None
