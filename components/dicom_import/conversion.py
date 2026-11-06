@@ -22,6 +22,48 @@ from .tag_names import attribute_name
 BINARY_VRS = {"SQ", "OB", "OD", "OF", "OL", "OV", "OW", "UN"}
 MAX_VALUE_LENGTH = 4096
 MAX_DECODED_BYTES = 1024**3
+MAX_ENCODED_BYTES = 1024**3
+
+
+def _check_source_size(path: Path) -> None:
+    # Undefined-length encapsulated PixelData has no trustworthy declared size.
+    # Bounding the whole source before reading it also bounds that payload.
+    if path.stat().st_size > MAX_ENCODED_BYTES:
+        raise DicomImportError("Encoded DICOM exceeds the 1 GiB per-instance limit")
+
+
+def _read_dicom(path: Path, *, headers: bool = False):
+    from pydicom import dcmread
+
+    if not headers:
+        _check_source_size(path)
+    return dcmread(path, force=True, defer_size="1 KB", stop_before_pixels=headers)
+
+
+def _check_pixel_data_size(ds) -> None:
+    # Small declared dimensions do not bound the deferred encoded value. Check
+    # its length without accessing .PixelData or triggering a deferred read.
+    for tag in (0x7FE00008, 0x7FE00009, 0x7FE00010):
+        try:
+            element = ds.get_item(tag, keep_deferred=True)
+        except KeyError:
+            continue
+        if element is None:
+            continue
+        length = getattr(element, "length", None)
+        if length == 0xFFFFFFFF:
+            source = getattr(ds, "filename", None)
+            if isinstance(source, (str, Path)):
+                _check_source_size(Path(source))
+        elif length is not None and length > MAX_ENCODED_BYTES:
+            raise DicomImportError("Encoded DICOM pixel data exceeds the 1 GiB per-instance limit")
+        value = getattr(element, "value", None)
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            size = value.nbytes if isinstance(value, memoryview) else len(value)
+            if size > MAX_ENCODED_BYTES:
+                raise DicomImportError(
+                    "Encoded DICOM pixel data exceeds the 1 GiB per-instance limit"
+                )
 
 
 def component(value: object, name: str) -> str:
@@ -122,6 +164,7 @@ def metadata(ds) -> dict[str, str]:
 
 
 def decode_pixels(ds) -> tuple[np.ndarray, bool]:
+    _check_pixel_data_size(ds)
     if getattr(ds, "PhotometricInterpretation", None) == "PALETTE COLOR":
         # pixel_array contains palette indices. Encoding those directly would
         # silently turn a color image into an unrelated greyscale image.
@@ -301,37 +344,47 @@ def prepare(
     *,
     reader=None,
     progress: Callable[[int, int], None] | None = None,
+    inspection_progress: Callable[[int, int], None] | None = None,
 ) -> Plan:
     if reader is None:
-        from pydicom import dcmread
-
-        reader = lambda path: dcmread(path, force=True, defer_size="1 KB")
+        reader = _read_dicom
+        header_reader = lambda path: _read_dicom(path, headers=True)
+    else:
+        header_reader = reader
     output.mkdir(parents=True, exist_ok=False)
     plan, tasks, hashes, folders = Plan(), {}, {}, {}
     candidates = []
     existing = set(existing_names)
     # Read headers first and sort by the final name, independent of archive order.
-    for path in sorted(files):
-        with path.open("rb") as stream:
-            header = stream.read(132)
-        if path.suffix.lower() not in (".dcm", ".dicom") and header[128:132] != b"DICM":
-            plan.ignored_files += 1
-            continue
-        ds = reader(path)
-        if not hasattr(ds, "Rows") or not hasattr(ds, "Columns"):
-            plan.ignored_files += 1
-            continue
-        frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
-        task_name, filename = names(ds, prefix, frames > 1)
-        study_uid = str(ds.StudyInstanceUID).strip()
-        if plan.study_uids.setdefault(task_name, study_uid) != study_uid:
-            plan.failed_tasks[task_name] = "Different studies produce the same task name"
-        if task_name in existing:
-            plan.skipped_tasks.add(task_name)
-            continue
-        # Retaining Dataset objects here also retains their decoded pixel cache
-        # later. Keep only paths so memory does not grow with every converted image.
-        candidates.append((task_name, filename, frames, path))
+    if inspection_progress:
+        inspection_progress(0, len(files))
+    for index, path in enumerate(sorted(files)):
+        try:
+            with path.open("rb") as stream:
+                header = stream.read(132)
+            if path.suffix.lower() not in (".dcm", ".dicom") and header[128:132] != b"DICM":
+                plan.ignored_files += 1
+                continue
+            ds = header_reader(path)
+            if not hasattr(ds, "Rows") or not hasattr(ds, "Columns"):
+                plan.ignored_files += 1
+                continue
+            frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
+            task_name, filename = names(ds, prefix, frames > 1)
+            study_uid = str(ds.StudyInstanceUID).strip()
+            if plan.study_uids.setdefault(task_name, study_uid) != study_uid:
+                plan.failed_tasks[task_name] = "Different studies produce the same task name"
+            if task_name in existing:
+                plan.skipped_tasks.add(task_name)
+                continue
+            # Retaining Dataset objects here also retains their decoded pixel cache
+            # later. Keep only paths so memory does not grow with every converted image.
+            candidates.append((task_name, filename, frames, path))
+        finally:
+            if inspection_progress:
+                inspection_progress(index + 1, len(files))
+    if progress:
+        progress(0, len(candidates))
     for index, (task_name, filename, frames, path) in enumerate(
         sorted(candidates, key=lambda x: x[:2])
     ):

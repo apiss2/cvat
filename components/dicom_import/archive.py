@@ -9,19 +9,21 @@ import stat
 import tarfile
 import zipfile
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 from . import DicomImportError
 from .conversion import component
+from .settings import limits
 
 MANIFEST = "_cvat_dicom_import.json"
 
 
 @dataclass
 class Budget:
-    bytes_left: int = 20 * 1024**3
-    files_left: int = 100000
+    bytes_left: int = field(default_factory=lambda: limits()["max_expanded_bytes"])
+    files_left: int = field(default_factory=lambda: limits()["max_upload_files"])
 
 
 def relative_path(name: str) -> Path:
@@ -102,9 +104,8 @@ def unpack(source, destination: Path, budget: Budget) -> list[Path]:
     return paths
 
 
-def read_upload(source, destination: Path) -> tuple[str, list[Path]]:
-    """A native project upload is one ZIP envelope with prefix and source files."""
-    budget = Budget()
+def _read_envelope(source, destination: Path, budget: Budget) -> tuple[str, list[Path]]:
+    """Read the legacy envelope used by native requests already in the queue."""
     outer = destination / "upload"
     paths = unpack(source, outer, budget)
     manifest = outer / MANIFEST
@@ -127,7 +128,35 @@ def read_upload(source, destination: Path) -> tuple[str, list[Path]]:
         component(prefix, "data-source prefix")
     except (ValueError, KeyError, UnicodeError) as exc:
         raise DicomImportError("Invalid DICOM import manifest") from exc
-    files, queue, counter = [], deque((path, 0) for path in paths if path != manifest), 0
+    return prefix, [path for path in paths if path != manifest]
+
+
+def read_upload(
+    source,
+    destination: Path,
+    *,
+    user_id: int | None = None,
+    project_id: int | None = None,
+    organization_id: int | None = None,
+    scan_files: Callable[[list[Path]], None] | None = None,
+) -> tuple[str, list[Path]]:
+    """Use staged files in place; only archive contents consume extraction space."""
+    budget = Budget()
+    source_name = getattr(source, "name", source)
+    if isinstance(source_name, (str, Path)) and Path(source_name).name == "import.json":
+        from .storage import read_staged_upload
+
+        prefix, paths = read_staged_upload(
+            Path(source_name),
+            user_id=user_id,
+            project_id=project_id,
+            organization_id=organization_id,
+        )
+    else:
+        prefix, paths = _read_envelope(source, destination, budget)
+    if scan_files:
+        scan_files(paths)
+    files, queue, counter = [], deque((path, 0) for path in paths), 0
     while queue:
         path, depth = queue.popleft()
         if path.name.lower().endswith((".zip", ".tar", ".tar.gz", ".tgz")):
@@ -135,6 +164,8 @@ def read_upload(source, destination: Path) -> tuple[str, list[Path]]:
                 raise DicomImportError("Archive nesting exceeds three levels")
             counter += 1
             children = unpack(path, destination / f"archive-{counter}", budget)
+            if scan_files:
+                scan_files(children)
             queue.extend((child, depth + 1) for child in children)
         else:
             files.append(path)

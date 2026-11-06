@@ -131,6 +131,15 @@ class InstanceTmpDirectoriesCleaner(_BaseCronCleaner, _BaseSingleFileCleaner):
 
     task_description: ClassVar[str] = "project/task/job temporary directories cleanup"
 
+    def _remove_if_outdated(self, path: Path) -> bool:
+        if path.name.startswith("dicom-upload-"):
+            from components.dicom_import.upload import cleanup_stale_upload
+
+            removed = cleanup_stale_upload(path, retention_seconds=self.RETENTION.total_seconds())
+            if removed is not None:
+                return removed
+        return super()._remove_if_outdated(path)
+
     @property
     def owned_path_globs(self) -> Iterator[str]:
         for root in (settings.PROJECTS_ROOT, settings.TASKS_ROOT, settings.JOBS_ROOT):

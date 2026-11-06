@@ -165,6 +165,8 @@ from cvat.utils import django_database as db_utils
 from cvat.utils.paths import join_untrusted_path, problem_with_untrusted_path
 from utils.dataset_manifest import ImageManifestManager
 
+from components.dicom_import.upload import DicomChunkParser
+
 from . import models
 from .log import ServerLogManager
 
@@ -482,7 +484,7 @@ class ProjectViewSet(
         methods=["GET", "POST", "OPTIONS"],
         serializer_class=None,
         url_path=r"dataset/?$",
-        parser_classes=_UPLOAD_PARSER_CLASSES,
+        parser_classes=_UPLOAD_PARSER_CLASSES + [DicomChunkParser],
     )
     def dataset(self, request: ExtendedRequest, pk: int):
         self._object = self.get_object()  # force call of check_object_permissions()
@@ -502,6 +504,11 @@ class ProjectViewSet(
             return get_410_response_for_export_api(
                 "/api/projects/id/dataset/export?save_images=True"
             )
+
+        if "dicom_upload" in request.query_params:
+            from components.dicom_import.upload import handle_upload
+
+            return handle_upload(request, self._object)
 
         return self.upload_data(request, append_url_name="append-dataset-chunk")
 

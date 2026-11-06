@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: MIT
 """Run real DICOM decoding when pydicom is installed. Synthetic data only."""
 
+import struct
+
 import numpy as np
 import pytest
 
 pydicom = pytest.importorskip("pydicom")
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
-from pydicom.uid import ExplicitVRLittleEndian, SecondaryCaptureImageStorage
+from pydicom.uid import ExplicitVRLittleEndian, RLELossless, SecondaryCaptureImageStorage
 
 from components.dicom_import import DicomImportError
+from components.dicom_import import conversion
 from components.dicom_import.conversion import decode_pixels, prepare
 
 
@@ -75,3 +78,71 @@ def test_palette_indices_are_never_saved_as_greyscale(tmp_path):
     assert not ds.pixel_array.any()
     with pytest.raises(DicomImportError, match="PALETTE COLOR"):
         decode_pixels(ds)
+
+
+def test_large_declared_pixel_value_is_rejected_before_deferred_read(tmp_path, monkeypatch):
+    path = save(tmp_path / "declared-large.dcm", 1, np.zeros((2, 2), dtype=np.uint16))
+    ds = pydicom.dcmread(path)
+    del ds.PixelData
+    ds.save_as(path, enforce_file_format=True)
+    with path.open("ab") as stream:
+        stream.write(struct.pack("<HH2sHI", 0x7FE0, 0x0010, b"OW", 0, 3 * 1024**3))
+        stream.write(b"\0" * 8)
+    ds = pydicom.dcmread(path, defer_size="1 KB")
+    assert ds.get_item(0x7FE00010, keep_deferred=True).length == 3 * 1024**3
+    monkeypatch.setattr(
+        "pydicom.filereader.read_deferred_data_element",
+        lambda *_args, **_kwargs: pytest.fail("Oversized PixelData must not be materialized"),
+    )
+    with pytest.raises(DicomImportError, match="Encoded DICOM pixel data exceeds"):
+        decode_pixels(ds)
+
+
+def test_oversized_source_is_task_scoped_and_never_fully_read(tmp_path, monkeypatch):
+    bad = save(tmp_path / "large.dcm", 1, np.zeros((2, 2), dtype=np.uint16))
+    good = save(tmp_path / "small.dcm", 2, np.zeros((2, 2), dtype=np.uint16), study="1.2.999")
+    with bad.open("r+b") as stream:
+        stream.truncate(2 * 1024**3)  # Sparse input, not a multi-gigabyte test allocation.
+    read = pydicom.dcmread
+
+    def guarded_read(path, **kwargs):
+        if path == bad:
+            assert kwargs.get("stop_before_pixels") is True
+        return read(path, **kwargs)
+
+    monkeypatch.setattr(pydicom, "dcmread", guarded_read)
+    plan = prepare([bad, good], tmp_path / "output", "GRD")
+    assert [task.name for task in plan.tasks] == ["GRD_SYNTHETIC_20260102_12999"]
+    assert plan.failed_tasks == {
+        "GRD_SYNTHETIC_20260102_12300": "Encoded DICOM exceeds the 1 GiB per-instance limit"
+    }
+
+
+def test_normal_undefined_length_compressed_pixels_remain_supported(tmp_path):
+    pixels = np.arange(24, dtype=np.uint16).reshape(4, 6)
+    path = save(tmp_path / "compressed.dcm", 1, pixels)
+    ds = pydicom.dcmread(path)
+    ds.compress(RLELossless)
+    ds.save_as(path, enforce_file_format=True)
+    deferred = pydicom.dcmread(path, defer_size=1)
+    assert deferred.get_item(0x7FE00010, keep_deferred=True).length == 0xFFFFFFFF
+    decoded, checked = decode_pixels(deferred)
+    assert not checked and np.array_equal(decoded, pixels)
+    assert "PixelData" not in conversion._read_dicom(path, headers=True)
+    plan = prepare([path], tmp_path / "output", "GRD")
+    assert len(plan.tasks) == 1 and plan.tasks[0].frames == 1
+
+
+def test_undefined_length_pixels_are_bounded_by_source_file_size(tmp_path, monkeypatch):
+    path = save(tmp_path / "compressed.dcm", 1, np.zeros((4, 6), dtype=np.uint16))
+    ds = pydicom.dcmread(path)
+    ds.compress(RLELossless)
+    ds.save_as(path, enforce_file_format=True)
+    deferred = pydicom.dcmread(path, defer_size=1)
+    monkeypatch.setattr(conversion, "MAX_ENCODED_BYTES", path.stat().st_size - 1)
+    monkeypatch.setattr(
+        "pydicom.filereader.read_deferred_data_element",
+        lambda *_args, **_kwargs: pytest.fail("Oversized PixelData must not be materialized"),
+    )
+    with pytest.raises(DicomImportError, match="Encoded DICOM exceeds"):
+        decode_pixels(deferred)

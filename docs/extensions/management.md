@@ -85,6 +85,8 @@ DICOMの属性名の変更は、長さの表示とITGformatの参照処理にも
 
 機能内部の細かな動作ごとに、新たな設定名を追加する必要はありません。例えば、DICOM取り込みの接頭辞処理と部分失敗の通知は `dicom_import` に、モデルの部分更新と削除時の清掃は `model_registry` に含まれます。入力形式とデータの変更範囲は各機能の操作手順で説明します。
 
+DICOMの分割転送も既存の `dicom_import` で管理します。容量と実行時間は[設定例](../../components/extensions/config.example.env)の `CVAT_DICOM_MAX_UPLOAD_BYTES`、`CVAT_DICOM_MAX_UPLOAD_FILES`、`CVAT_DICOM_MAX_EXPANDED_BYTES`、`CVAT_DICOM_IMPORT_TIMEOUT` で設定し、サーバーと取り込みワーカーへ同じ値を渡します。追加サービス、保存ボリューム、GPUは要求しません。設定を変更した場合も、停止と再起動の手順で反映します。
+
 ## 確認コマンドの範囲
 
 | コマンド | 確認または実行する内容 |
@@ -97,6 +99,8 @@ DICOMの属性名の変更は、長さの表示とITGformatの参照処理にも
 | `quality` | 開発用のPython試験を計測し、独自コードのカバレッジ、複雑度、CRAPスコアを集計します。[品質計測の手順](../development.md#独自コードの品質を計測する)を参照してください。 |
 
 これらのコマンドは推論やアノテーション取り込みを開始せず、ガイドの内容も変更しません。実際の画像を使う推論、画面操作、保存までの確認は、各機能の受入確認として別途行います。
+
+DICOMを有効にすると、`config` と `doctor` は容量と実行時間の適用値も表示し、Composeで設定が失われた場合は失敗します。`build` と `up` は共通サーバーとUIを対象とし、`status`、`down`、`check` は記録済みの構成とイメージを使います。機能を無効にしても、保存データを削除しません。
 
 ## 機能を追加するときの手順
 
@@ -124,6 +128,7 @@ python3 -m pytest -q components/extensions/tests/test_operations.py \
   components/extensions/tests/test_functions.py \
   components/extensions/tests/test_client_plugins.py
 python3 -m pytest -q components/project_annotations/tests/test_project_annotations_management.py
+python3 -m pytest -q components/dicom_import/tests/test_deployment.py
 ```
 
 この試験は、構成生成、選択変更、既存機能との併用、ビルド対象、記録済み構成による停止、再起動方針と保存先の維持を確認します。同じRedisボリュームへの二重書き込みの拒否とイメージ不一致の検出も対象です。Dockerの応答や一部の初期化は代替実装を使用するため、実配備とブラウザーでの確認は各機能の手順で別途実施してください。

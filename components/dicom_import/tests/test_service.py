@@ -7,6 +7,7 @@ accidentally supply a method that Data/Task/Job do not implement.
 
 import ast
 import importlib.util
+import shutil
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -229,7 +230,7 @@ def test_project_dimension_is_read_from_tasks_not_a_nonexistent_model_field(serv
 def test_permissions_are_rechecked_after_conversion_and_lock(service, monkeypatch, tmp_path):
     access = service.ProjectPermission.create_base_perm.return_value.check_access
     access.side_effect = [SimpleNamespace(allow=True), SimpleNamespace(allow=False)]
-    monkeypatch.setattr(service, "read_upload", lambda *_: ("SYNTHETIC", []))
+    monkeypatch.setattr(service, "read_upload", lambda *_args, **_kwargs: ("SYNTHETIC", []))
     monkeypatch.setattr(service, "prepare", lambda *_args, **_kwargs: Plan())
     ensure = MagicMock()
     monkeypatch.setattr(service, "ensure_label", ensure)
@@ -273,7 +274,7 @@ def test_all_duplicate_tasks_fail_after_rechecking_under_lock(
         skipped_tasks={"study"} if preexisting else set(),
         study_uids={"study": "1.2.34567890"},
     )
-    monkeypatch.setattr(service, "read_upload", lambda *_: ("SYNTHETIC", []))
+    monkeypatch.setattr(service, "read_upload", lambda *_args, **_kwargs: ("SYNTHETIC", []))
     monkeypatch.setattr(service, "prepare", lambda *_args, **_kwargs: plan)
     ensure = MagicMock()
     monkeypatch.setattr(service, "ensure_label", ensure)
@@ -303,7 +304,7 @@ def test_invalid_queue_identity_is_refused(service, kind):
 
 def test_final_status_failure_cleans_new_media(service, monkeypatch, tmp_path):
     prepared = PreparedTask("study", True, [tmp_path / "movie.mp4"], {"movie.mp4": {}}, 1)
-    monkeypatch.setattr(service, "read_upload", lambda *_: ("SYNTHETIC", []))
+    monkeypatch.setattr(service, "read_upload", lambda *_args, **_kwargs: ("SYNTHETIC", []))
     monkeypatch.setattr(service, "prepare", lambda *_args, **_kwargs: Plan(tasks=[prepared]))
     label = SimpleNamespace(id=2, attributespec_set=MagicMock())
     label.attributespec_set.values_list.return_value = []
@@ -331,7 +332,7 @@ def test_final_status_failure_cleans_new_media(service, monkeypatch, tmp_path):
 
 
 def prepare_import(service, monkeypatch, tmp_path, plan):
-    monkeypatch.setattr(service, "read_upload", lambda *_: ("SYNTHETIC", []))
+    monkeypatch.setattr(service, "read_upload", lambda *_args, **_kwargs: ("SYNTHETIC", []))
     monkeypatch.setattr(service, "prepare", lambda *_args, **_kwargs: plan)
     label = SimpleNamespace(id=2, attributespec_set=MagicMock())
     label.attributespec_set.values_list.return_value = []
@@ -457,3 +458,99 @@ def test_successful_import_has_no_warning(service, monkeypatch, tmp_path):
     monkeypatch.setattr(service, "create_task", lambda *_: SimpleNamespace(id=10))
     service.import_project(None, tmp_path, current_project)
     assert service.test_meta.status.startswith("DICOM: 1 tasks created; 0 tasks failed")
+
+
+def test_progress_throttles_intermediate_writes_but_always_reports_phase_boundaries(
+    service, monkeypatch
+):
+    clock = [0.0]
+    monkeypatch.setattr(service, "monotonic", lambda: clock[0])
+    records = []
+    service.test_meta.save.side_effect = lambda: records.append(
+        (service.test_meta.status, service.test_meta.progress)
+    )
+    reporter = service.ImportProgress(service.test_meta)
+    for count in range(1000):
+        reporter.update("Inspecting DICOM headers", count, 1000, 0, 0.1)
+    assert records == [("Inspecting DICOM headers: 0/1000", 0.0)]
+    clock[0] = 0.5
+    reporter.update("Inspecting DICOM headers", 999, 1000, 0, 0.1)
+    reporter.update("Inspecting DICOM headers", 1000, 1000, 0, 0.1)
+    reporter.update("Converting DICOM", 0, 1000, 0.1, 0.6)
+    reporter.update("Converting DICOM", 1000, 1000, 0.1, 0.6)
+    reporter.update("Registering DICOM tasks", 1, 1, 0.7, 0.29)
+    assert [record[0] for record in records] == [
+        "Inspecting DICOM headers: 0/1000",
+        "Inspecting DICOM headers: 999/1000",
+        "Inspecting DICOM headers: 1000/1000",
+        "Converting DICOM: 0/1000",
+        "Converting DICOM: 1000/1000",
+        "Registering DICOM tasks: 1/1",
+    ]
+    assert records[-1][1] == pytest.approx(0.99)
+    assert all(progress < 1.0 for _, progress in records)
+
+
+def test_worker_checks_identity_and_scans_staged_files_in_bounded_batches(
+    service, monkeypatch, tmp_path
+):
+    current_project = prepare_import(
+        service, monkeypatch, tmp_path, Plan(tasks=[movie("good", tmp_path)])
+    )
+    paths = [tmp_path / "staged" / "files" / f"{index}.dcm" for index in range(300)]
+
+    def read_upload(source, directory, **kwargs):
+        assert kwargs["user_id"] == 7
+        assert kwargs["project_id"] == 3
+        assert kwargs["organization_id"] is None
+        kwargs["scan_files"](paths)
+        return "SYNTHETIC", paths
+
+    monkeypatch.setattr(service, "read_upload", read_upload)
+    monkeypatch.setattr(service, "create_task", lambda *_: SimpleNamespace(id=10))
+    service.import_project(None, tmp_path, current_project)
+    batches = [call.args for call in service.av_scan_paths.call_args_list]
+    assert list(map(len, batches)) == [128, 128, 44]
+    assert [path for batch in batches for path in batch] == list(map(str, paths))
+
+
+@pytest.mark.parametrize("first_fails", [False, True])
+def test_converted_media_are_released_after_each_registration_attempt(
+    service, monkeypatch, tmp_path, first_fails
+):
+    converted = tmp_path / "converted"
+    originals = []
+    tasks = []
+    for index in range(2):
+        path = converted / str(index) / "movie.mp4"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"synthetic media")
+        originals.append(path)
+        tasks.append(PreparedTask(str(index), True, [path], {path.name: {}}, 1))
+    current_project = prepare_import(service, monkeypatch, tmp_path, Plan(tasks=tasks))
+    stored = tmp_path / "data"
+    stored.mkdir()
+
+    def create_task(prepared, *_):
+        if prepared.name == "0" and first_fails:
+            raise service.ValidationError("Task validation failed")
+        if prepared.name == "1":
+            assert not originals[0].exists()
+        shutil.copyfile(prepared.media[0], stored / f"{prepared.name}.mp4")
+        return SimpleNamespace(id=10)
+
+    monkeypatch.setattr(service, "create_task", create_task)
+    service.import_project(None, tmp_path, current_project)
+    assert not any(path.exists() for path in originals)
+    assert (stored / "1.mp4").read_bytes() == b"synthetic media"
+    assert (stored / "0.mp4").exists() is not first_fails
+    assert all(not task.media and not task.tags for task in tasks)
+
+
+def test_converted_media_cleanup_cannot_delete_another_storage_root(service, tmp_path):
+    permanent = tmp_path / "data" / "42" / "movie.mp4"
+    permanent.parent.mkdir(parents=True)
+    permanent.write_bytes(b"keep")
+    prepared = PreparedTask("study", True, [permanent], {}, 1)
+    service.discard_converted_media(prepared, tmp_path / "converted")
+    assert permanent.read_bytes() == b"keep"

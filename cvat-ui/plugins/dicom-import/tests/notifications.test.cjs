@@ -170,14 +170,25 @@ test('listener setup failure is asynchronous and never rejects submission', asyn
     assert.equal(current.notifications[0].description, 'Could not obtain status');
 });
 
-test('a dialog callback error preserves the accepted request and distinguishes result confirmation', async () => {
+function dialogHarness({ start, accepted = () => {} } = {}) {
     let mounted;
     const values = [];
-    let stateIndex = 0;
+    const effects = [];
+    const listeners = new Map();
+    let stateIndex = 0, effectIndex = 0, disposed = 0;
     const selected = new File(['dicom'], 'study.dcm');
     const React = {
         createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
         useRef: () => ({ current: null }),
+        useMemo: (calculate) => calculate(),
+        useEffect: (effect, dependencies) => {
+            const index = effectIndex++;
+            const previous = effects[index];
+            if (!previous || previous.dependencies.some((value, position) => value !== dependencies[position])) {
+                previous?.cleanup?.();
+                effects[index] = { dependencies, cleanup: effect() };
+            }
+        },
         useState: (initial) => {
             const index = stateIndex++;
             if (!(index in values)) values[index] = index === 0 ? [selected] : index === 1 ? 'GRD' : initial;
@@ -190,29 +201,130 @@ test('a dialog callback error preserves the accepted request and distinguishes r
     antd.Typography = { Text: 'Text' };
     const dialog = load('dialog.tsx', {
         react: React,
-        'react-dom/client': { createRoot: () => ({ render: (node) => { mounted = node; }, unmount: () => {} }) },
+        'react-dom/client': { createRoot: () => ({ render: (node) => { mounted = node; },
+            unmount: () => { for (const effect of effects) effect?.cleanup?.(); } }) },
         '@ant-design/icons': {}, antd,
-        './archive': { pack: async () => new File(['zip'], 'dicom.zip') },
         './selection': {},
-    }, { document: { createElement: () => ({ remove: () => {} }), body: { appendChild: () => {} } } });
-    dialog.openDialog({ signal: new AbortController().signal, available: async () => {},
-        start: async () => 'accepted-request', dispose: () => {} }, 'Study', () => {},
-    () => { throw new Error('monitoring setup failed'); });
-    const tree = mounted.type();
-    const submit = tree.props.footer.children.find((node) => node.props.type === 'primary').props.onClick;
-    await submit(); await tick();
-    assert.equal(values[5], true);
-    assert.equal(values[8], 'accepted-request');
-    assert.match(values[7], /^登録は受け付けましたが/);
-    assert.equal(values[4], false);
-    stateIndex = 0;
-    const nodes = [];
-    function visit(node) {
-        if (Array.isArray(node)) node.forEach(visit);
-        else if (node && typeof node === 'object') { nodes.push(node); visit(node.children); }
-    }
-    visit(mounted.type());
+    }, { document: { createElement: () => ({ remove: () => {} }), body: { appendChild: () => {} } },
+        window: { addEventListener: (name, listener) => listeners.set(name, listener),
+            removeEventListener: (name, listener) => { if (listeners.get(name) === listener) listeners.delete(name); } } });
+    const defaultStart = async (files, prefix, progress) => {
+        assert.deepEqual(files, [selected]);
+        assert.equal(prefix, 'GRD');
+        progress({ stage: 'accepted', transferredBytes: 5, confirmedBytes: 5, totalBytes: 5, completedFiles: 1, totalFiles: 1 });
+        return 'accepted-request';
+    };
+    const handle = dialog.openDialog({ signal: new AbortController().signal, available: async () => {},
+        start: start || defaultStart, dispose: () => { disposed++; } }, 'Study', () => {}, accepted);
+    const render = () => {
+        stateIndex = 0; effectIndex = 0;
+        const tree = mounted.type();
+        const nodes = [];
+        function visit(node) {
+            if (Array.isArray(node)) node.forEach(visit);
+            else if (node && typeof node === 'object') { nodes.push(node); visit(node.children); visit(node.props?.footer); }
+        }
+        visit(tree);
+        return { tree, nodes };
+    };
+    return { values, listeners, render, handle, selected,
+        get disposed() { return disposed; },
+        submit: () => render().nodes.find((node) => node.type === 'Button' && node.props.type === 'primary').props.onClick() };
+}
+
+test('a dialog callback error preserves the accepted request and distinguishes result confirmation', async () => {
+    const current = dialogHarness({ accepted: () => { throw new Error('monitoring setup failed'); } });
+    await current.submit(); await tick();
+    assert.equal(current.values[5], true);
+    assert.equal(current.values[8], 'accepted-request');
+    assert.match(current.values[7], /^登録は受け付けましたが/);
+    assert.equal(current.values[4], false);
+    const { nodes } = current.render();
     assert.equal(nodes.some((node) => node.type === 'a'), false);
     assert.equal(nodes.find((node) => node.type === 'Alert' && node.props.type === 'success').props.description,
-        'ダイアログを閉じた後、画面上部のRequestsから進捗を確認できます。');
+        '変換とタスク作成はサーバーで続行します。この画面を閉じても処理は続き、画面上部のRequestsから進捗を確認できます。');
+});
+
+test('dialog reports acknowledged bytes, separates acceptance and protects navigation until receipt', async () => {
+    const finish = deferred();
+    let publish;
+    const current = dialogHarness({ start: async (_files, _prefix, progress) => {
+        publish = progress;
+        progress({ stage: 'uploading', transferredBytes: 200, confirmedBytes: 0,
+            totalBytes: 200, completedFiles: 0, totalFiles: 1 });
+        await finish.promise;
+        return 'accepted-request';
+    } });
+    const pending = current.submit();
+    await tick();
+    let { tree, nodes } = current.render();
+    assert.equal(nodes.find((node) => node.type === 'Progress').props.percent, 0);
+    assert.equal(tree.props.closable, false);
+    assert.equal(tree.props.keyboard, false);
+    assert.equal(current.listeners.has('beforeunload'), true);
+    const event = { prevented: false, preventDefault() { this.prevented = true; } };
+    current.listeners.get('beforeunload')(event);
+    assert.equal(event.prevented, true);
+    assert.equal(event.returnValue, '');
+    publish({ stage: 'uploading', transferredBytes: 200, confirmedBytes: 100,
+        totalBytes: 200, completedFiles: 0, totalFiles: 1 });
+    nodes = current.render().nodes;
+    assert.equal(nodes.find((node) => node.type === 'Progress').props.percent, 50);
+    publish({ stage: 'uploading', transferredBytes: 200, confirmedBytes: 200,
+        totalBytes: 200, completedFiles: 1, totalFiles: 1 });
+    assert.ok(current.render().nodes.find((node) => node.type === 'Progress').props.percent < 100);
+    publish({ stage: 'accepting', transferredBytes: 200, confirmedBytes: 200,
+        totalBytes: 200, completedFiles: 1, totalFiles: 1 });
+    nodes = current.render().nodes;
+    assert.equal(nodes.some((node) => node.type === 'Progress'), false);
+    assert.equal(nodes.some((node) => node.type === 'Alert' && node.props.type === 'success'), false);
+    assert.equal(current.listeners.has('beforeunload'), true);
+    finish.resolve();
+    await pending;
+    nodes = current.render().nodes;
+    assert.equal(nodes.some((node) => node.type === 'Alert' && node.props.type === 'success'), true);
+    assert.equal(current.listeners.has('beforeunload'), false);
+});
+
+test('a failed transfer can be resumed while selected files and prefix remain locked', async () => {
+    let count = 0;
+    const current = dialogHarness({ start: async (files, prefix, progress) => {
+        assert.deepEqual(files, [current.selected]);
+        assert.equal(prefix, 'GRD');
+        progress({ stage: 'uploading', transferredBytes: 3, confirmedBytes: 3,
+            totalBytes: 5, completedFiles: 0, totalFiles: 1 });
+        if (!count++) throw new Error('転送が中断しました。');
+        return 'accepted-request';
+    } });
+    await current.submit();
+    const nodes = current.render().nodes;
+    const button = nodes.find((node) => node.type === 'Button' && node.props.type === 'primary');
+    assert.equal(button.props.disabled, false);
+    assert.ok(button.children.includes('転送を再開'));
+    assert.equal(nodes.find((node) => node.type === 'Input').props.disabled, true);
+    assert.equal(nodes.filter((node) => node.type === 'input').every((node) => node.props.disabled), true);
+    await current.submit();
+    assert.equal(current.values[8], 'accepted-request');
+});
+
+test('explicit stop closes the dialog, disposes transfer and removes its navigation guard', async () => {
+    const finish = deferred();
+    const current = dialogHarness({ start: async (_files, _prefix, progress) => {
+        progress({ stage: 'uploading', transferredBytes: 0, confirmedBytes: 0,
+            totalBytes: 5, completedFiles: 0, totalFiles: 1 });
+        await finish.promise;
+        throw new Error('Aborted');
+    } });
+    const pending = current.submit();
+    await tick();
+    const nodes = current.render().nodes;
+    const close = nodes.find((node) => node.type === 'Button' && node.props.danger);
+    assert.ok(close.children.includes('転送を中止して閉じる'));
+    close.props.onClick();
+    assert.equal(current.disposed, 1);
+    assert.equal(current.listeners.has('beforeunload'), false);
+    finish.resolve();
+    await pending;
+    current.handle.dispose();
+    assert.equal(current.disposed, 1);
 });

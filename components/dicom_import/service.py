@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Native project importer: no new API, database table, queue or service."""
+"""DICOM conversion and registration using the native import queue and models."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import shutil
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from time import monotonic
 
 import rq
 from django.conf import settings
@@ -41,6 +42,38 @@ from .conversion import prepare
 from .registration import LABEL_NAME, image_frames, missing_attributes, tag_batches
 
 logger = logging.getLogger(__name__)
+
+
+class ImportProgress:
+    """Keep phase boundaries visible without one Redis write per input file."""
+
+    def __init__(self, meta):
+        self.meta = meta
+        self.phase = None
+        self.saved_at = 0.0
+
+    def update(self, phase, done, total, start, span):
+        now = monotonic()
+        if phase != self.phase or done == total or now - self.saved_at >= 0.5:
+            self.meta.status = f"{phase}: {done}/{total}"
+            fraction = done / total if total else 1.0
+            self.meta.progress = float(start + span * fraction)
+            self.meta.save()
+            self.phase, self.saved_at = phase, now
+
+
+def discard_converted_media(prepared, converted_directory):
+    """CVAT owns a separate copy after registration; release scratch media promptly."""
+    for folder in {path.parent for path in prepared.media}:
+        # Conversion creates one immediate child directory per task. Never delete
+        # another storage root if this internal contract is changed accidentally.
+        if folder.parent == converted_directory:
+            try:
+                shutil.rmtree(folder)
+            except OSError:
+                logger.warning("Could not remove a temporary DICOM conversion directory")
+    prepared.media.clear()
+    prepared.tags.clear()
 
 
 @contextmanager
@@ -211,17 +244,44 @@ def import_project(source, temporary_directory, project):
         raise DicomImportError("DICOM import requires the native import queue")
     meta = ImportRQMeta.for_job(job)
     import_user(meta, project)
-    prefix, files = read_upload(source, Path(temporary_directory))
-    av_scan_paths(str(Path(temporary_directory)))
+    meta.status = "Preparing DICOM input"
+    meta.progress = 0.0
+    meta.save()
+    reporter = ImportProgress(meta)
+
+    def scan_files(paths):
+        reporter.update("Checking DICOM input files", 0, len(paths), 0, 0)
+        # Do not pass a directory: the common clamscan helper is not recursive.
+        # Batches also avoid the operating system's command-line length limit.
+        for start in range(0, len(paths), 128):
+            batch = paths[start : start + 128]
+            av_scan_paths(*(str(path) for path in batch))
+            reporter.update("Checking DICOM input files", start + len(batch), len(paths), 0, 0)
+
+    prefix, files = read_upload(
+        source,
+        Path(temporary_directory),
+        user_id=meta.user.id,
+        project_id=project.id,
+        organization_id=project.organization_id,
+        scan_files=scan_files,
+    )
     existing = project.tasks.values_list("name", flat=True)
 
     def progress(done, total):
-        meta.status = f"Converting DICOM: {done}/{total}"
-        meta.progress = float(done / max(total, 1) * 0.7)
-        meta.save()
+        reporter.update("Converting DICOM", done, total, 0.1, 0.6)
 
+    def inspection_progress(done, total):
+        reporter.update("Inspecting DICOM headers", done, total, 0, 0.1)
+
+    converted_directory = Path(temporary_directory) / "converted"
     plan = prepare(
-        files, Path(temporary_directory) / "converted", prefix, existing, progress=progress
+        files,
+        converted_directory,
+        prefix,
+        existing,
+        progress=progress,
+        inspection_progress=inspection_progress,
     )
     # Serialize this importer per project, then recheck names after conversion and waiting.
     project = models.Project.objects.select_for_update().get(pk=project.id)
@@ -234,6 +294,7 @@ def import_project(source, temporary_directory, project):
     for task in plan.tasks:
         if task.name in existing:
             plan.skipped_tasks.add(task.name)
+            discard_converted_media(task, converted_directory)
         else:
             tasks.append(task)
     duplicates = plan.skipped_tasks
@@ -245,6 +306,7 @@ def import_project(source, temporary_directory, project):
         names = {name for task in tasks for values in task.tags.values() for name in values}
         label = ensure_label(project, names)
         ids = dict(label.attributespec_set.values_list("name", "id"))
+        reporter.update("Registering DICOM tasks", 0, len(tasks), 0.7, 0.29)
         for index, prepared in enumerate(tasks):
             try:
                 # A failed task rolls back its rows and newly allocated media together.
@@ -271,9 +333,9 @@ def import_project(source, temporary_directory, project):
                 failed.add(prepared.name)
             else:
                 created += 1
-            meta.status = f"Registering DICOM tasks: {index + 1}/{len(tasks)}"
-            meta.progress = float(0.7 + 0.3 * (index + 1) / len(tasks))
-            meta.save()
+            finally:
+                discard_converted_media(prepared, converted_directory)
+            reporter.update("Registering DICOM tasks", index + 1, len(tasks), 0.7, 0.29)
         meta.status = result_message(plan, created, duplicates, failed, conflicts)
         if not created:
             raise DicomImportError(meta.status)
