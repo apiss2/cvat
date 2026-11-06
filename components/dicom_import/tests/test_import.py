@@ -4,11 +4,13 @@
 import io
 import json
 import stat
+import sys
 import tarfile
 import weakref
 import zipfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock
 
 import cv2
 import numpy as np
@@ -369,6 +371,31 @@ def test_one_bad_image_discards_its_whole_task_but_keeps_other_tasks(tmp_path):
     assert progress[-1] == (4, 4)
 
 
+def test_header_progress_counts_ignored_and_already_imported_files(tmp_path):
+    inputs = files(tmp_path, 2)
+    ignored = tmp_path / "notes.txt"
+    ignored.write_text("Not an image")
+    inputs.append(ignored)
+    data = {
+        inputs[0]: dataset(fail_decode=True),
+        inputs[1]: dataset(StudyInstanceUID="1.2.999"),
+    }
+    inspected, converted = [], []
+    plan = c.prepare(
+        inputs,
+        tmp_path / "output",
+        "GRD",
+        ["GRD_SYNTHETIC_20260102_12300"],
+        reader=data.__getitem__,
+        inspection_progress=lambda done, total: inspected.append((done, total)),
+        progress=lambda done, total: converted.append((done, total)),
+    )
+    assert inspected == [(0, 3), (1, 3), (2, 3), (3, 3)]
+    assert converted == [(0, 1), (1, 1)]
+    assert plan.ignored_files == 1 and len(plan.skipped_tasks) == 1
+    assert len(plan.tasks) == 1
+
+
 @pytest.mark.parametrize("exception", [RuntimeError, AttributeError, cv2.error])
 def test_decoder_exception_is_task_scoped_and_does_not_leak_its_message(
     tmp_path, monkeypatch, exception
@@ -436,6 +463,62 @@ def test_nested_archive_and_prefix(tmp_path):
     nested = zip_bytes([("folder/a.dcm", b"synthetic")]).getvalue()
     prefix, items = read_upload(envelope([("data.zip", nested)]), tmp_path)
     assert prefix == "GRD" and len(items) == 1 and items[0].read_bytes() == b"synthetic"
+
+
+def staged_source(tmp_path, monkeypatch, paths):
+    """Storage validation has its own tests; check the worker's handoff here."""
+    source = tmp_path / "staged" / "import.json"
+    source.parent.mkdir()
+    source.write_text("Server-created descriptor")
+    storage = ModuleType("components.dicom_import.storage")
+    storage.read_staged_upload = MagicMock(return_value=("GRD", paths))
+    monkeypatch.setitem(sys.modules, storage.__name__, storage)
+    return source, storage.read_staged_upload
+
+
+def test_staged_raw_files_are_not_copied_or_charged_as_extraction(tmp_path, monkeypatch):
+    raw = tmp_path / "large.dcm"
+    with raw.open("wb") as stream:
+        stream.truncate(60 * 1024**3)
+    source, read_staged_upload = staged_source(tmp_path, monkeypatch, [raw])
+    monkeypatch.setenv("CVAT_DICOM_MAX_EXPANDED_BYTES", "1")
+    scanned = []
+    destination = tmp_path / "work"
+    with source.open("rb") as stream:
+        prefix, paths = read_upload(
+            stream,
+            destination,
+            user_id=7,
+            project_id=3,
+            organization_id=11,
+            scan_files=lambda batch: scanned.extend(batch),
+        )
+    assert prefix == "GRD" and paths == [raw]
+    assert scanned == [raw] and not destination.exists()
+    read_staged_upload.assert_called_once_with(source, user_id=7, project_id=3, organization_id=11)
+
+
+def test_staged_archives_obey_expansion_budget(tmp_path, monkeypatch):
+    archive = tmp_path / "input.zip"
+    archive.write_bytes(zip_bytes([("a.dcm", b"synthetic")]).getvalue())
+    source, _ = staged_source(tmp_path, monkeypatch, [archive])
+    monkeypatch.setenv("CVAT_DICOM_MAX_EXPANDED_BYTES", "8")
+    scanned = []
+    with source.open("rb") as stream, pytest.raises(DicomImportError, match="byte limit"):
+        read_upload(stream, tmp_path / "work", scan_files=lambda batch: scanned.extend(batch))
+    assert scanned == [archive]
+
+
+def test_scanner_receives_archive_and_nested_files_before_header_parsing(tmp_path):
+    nested = zip_bytes([("folder/a.dcm", b"synthetic")]).getvalue()
+    scanned = []
+    _, items = read_upload(
+        envelope([("data.zip", nested)]),
+        tmp_path,
+        scan_files=lambda batch: scanned.append(list(batch)),
+    )
+    assert [[path.name for path in batch] for batch in scanned] == [["data.zip"], ["a.dcm"]]
+    assert scanned[-1] == items
 
 
 @pytest.mark.parametrize(

@@ -33,6 +33,8 @@ from registryctl import (
 from storage import default_home, prepare_storage, storage_paths
 
 sys.path.insert(0, str(ROOT))
+from components.dicom_import.settings import DEFAULTS as DICOM_DEFAULTS
+from components.dicom_import.settings import limits as dicom_limits
 from components.extensions import functions as gpu_functions
 from components.extensions.functions import FUNCTIONS, OWNERS
 
@@ -78,6 +80,7 @@ COMPOSE_FILES = (
 SERVERLESS_EXTENSIONS = {"sam2", "ultrasam", "sam31", "model_registry", "selective_ai"}
 DEFAULTS = {
     **gpu_functions.DEFAULTS,
+    **DICOM_DEFAULTS,
     "CVAT_HOST": "localhost",
     "COMPOSE_PROJECT_NAME": "cvat",
     "NUCLIO_NAMESPACE": "nuclio",
@@ -137,6 +140,11 @@ def settings(path: Path, root: Path = ROOT) -> dict[str, str]:
     values = DEFAULTS | load_env(path)
     selected = enabled_extensions(values)
     values["CVAT_EXTENSIONS"] = ",".join(selected)
+    if "dicom_import" in selected:
+        try:
+            dicom_limits(values)
+        except ValueError as exc:
+            raise OperationError(str(exc)) from exc
     values["CVAT_MODEL_REGISTRY_ENABLED"] = "1" if "model_registry" in selected else "0"
     plugins = [
         p
@@ -331,6 +339,16 @@ def validate_model(model: dict[str, Any], env: dict[str, str]) -> None:
     for feature, plugin in EXTENSION_PLUGINS.items():
         if feature in selected and plugin not in plugins:
             raise OperationError(f"{feature}: CLIENT_PLUGINS argument lost")
+    if "dicom_import" in selected:
+        expected = {
+            "CVAT_DICOM_IMPORT_ENABLED": "1",
+            **{key: env[key] for key in DICOM_DEFAULTS},
+        }
+        for service_name in ("cvat_server", "cvat_worker_import"):
+            actual = services[service_name].get("environment", {})
+            for key, value in expected.items():
+                if str(actual.get(key, "")) != value:
+                    raise OperationError(f"{service_name}: DICOM setting {key} is missing or differs")
     registry_enabled = "model_registry" in selected
     if registry_enabled:
         if "plugins/model-registry" not in plugins:
@@ -1416,6 +1434,8 @@ def configuration_summary(manager: Manager, *, doctor: bool = False) -> dict[str
         ],
         "state_directory": str(manager.state),
     }
+    if "dicom_import" in manager.extensions:
+        summary["dicom_import_limits"] = dicom_limits(manager.values)
     if "sam2" in manager.extensions:
         summary["sam2_redis_volume"] = manager.values["SAM2_REDIS_VOLUME"]
         summary["sam2_model"] = manager.values["SAM2_MODEL"]

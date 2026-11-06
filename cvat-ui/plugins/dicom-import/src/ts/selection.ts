@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: MIT
-import { safePath } from './archive';
+const encoder = new TextEncoder();
+
+export function safePath(name: string): string {
+    // eslint-disable-next-line no-control-regex -- Reject control characters in uploaded paths.
+    if (!name || /^[A-Za-z]:/.test(name) || name.startsWith('/') || /[\\\x00-\x1f]/.test(name) ||
+        name.split('/').some((part) => ['', '.', '..'].includes(part))) throw new Error('安全でないファイル名です。');
+    if (encoder.encode(name).length > 1024) throw new Error('ファイル名が長すぎます。');
+    return name;
+}
 
 function checked(signal: AbortSignal): void {
     if (signal.aborted) throw new Error('操作を中止しました。');
@@ -9,7 +17,6 @@ function collector(signal: AbortSignal): {
     files: File[]; add: (file: File, path?: string) => Promise<void>;
 } {
     const files: File[] = [];
-    let bytes = 0;
     return {
         files,
         add: async (file, path): Promise<void> => {
@@ -21,9 +28,7 @@ function collector(signal: AbortSignal): {
                 if (signature[0] !== 68 || signature[1] !== 73 || signature[2] !== 67 || signature[3] !== 77) return;
             }
             const relativePath = safePath(path || file.webkitRelativePath || file.name);
-            if (files.length >= 50000) throw new Error('1～50,000ファイルを選択してください。');
-            bytes += file.size;
-            if (bytes > 2 * 1024 ** 3) throw new Error('1回のアップロードは2 GiBまでです。');
+            if (!Number.isSafeInteger(file.size) || file.size < 0) throw new Error('ファイルサイズが不正です。');
             if (path && path !== file.webkitRelativePath) {
                 const selected = new File([file], file.name, { type: file.type, lastModified: file.lastModified });
                 Object.defineProperty(selected, 'webkitRelativePath', { value: relativePath });

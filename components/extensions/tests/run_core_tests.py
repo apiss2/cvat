@@ -559,3 +559,386 @@ def test_request_messages_keep_dicom_completion_and_existing_status_behavior(
         with patch.object(job, "get_status", wraps=job.get_status) as get_status:
             assert serializer.get_message(job) == expected
         get_status.assert_called_once_with(refresh=False)
+
+
+@pytest.fixture
+def dicom_enabled(monkeypatch):
+    from cvat.apps.redis_handler.apps import initialize_mappings
+
+    # App startup is isolated above; initialize the real request-ID registry
+    # without starting its external services.
+    initialize_mappings()
+    monkeypatch.setenv("CVAT_DICOM_IMPORT_ENABLED", "1")
+    monkeypatch.setattr(IMPORT_FORMATS["DICOM 1.0"], "ENABLED", True)
+
+
+def dicom_request(project, user, operation, body=None, **query):
+    import json
+
+    path = (
+        reverse("project-dataset", kwargs={"pk": project.pk})
+        + "?"
+        + urlencode(
+            {"format": "DICOM 1.0", "location": "local", "dicom_upload": operation, **query}
+        )
+    )
+    raw = operation == "chunk"
+    return dispatch(
+        "post",
+        path,
+        user,
+        data=body if raw else json.dumps(body or {}).encode(),
+        content_type="application/octet-stream" if raw else "application/json",
+    )
+
+
+def dicom_session(project, user, payload=b"synthetic DICOM", *, upload_id=None):
+    from components.dicom_import.storage import UploadSession
+
+    upload_id = upload_id or str(uuid4())
+    response = dicom_request(
+        project,
+        user,
+        "start",
+        {
+            "upload_id": upload_id,
+            "prefix": "synthetic",
+            "file_count": 1,
+            "total_bytes": len(payload),
+        },
+    )
+    assert response.status_code == 201, response.data
+    response = dicom_request(
+        project,
+        user,
+        "files",
+        {
+            "upload_id": upload_id,
+            "start_index": 0,
+            "files": [{"path": "nested/test.dcm", "size": len(payload)}],
+        },
+    )
+    assert response.status_code == 200, response.data
+    session = UploadSession.for_project(
+        project.get_tmp_dirname(),
+        upload_id,
+        user_id=user.pk,
+        project_id=project.pk,
+        organization_id=project.organization_id,
+    )
+    return upload_id, session
+
+
+def test_dicom_folder_route_streams_raw_chunks_and_uses_native_request_metadata(
+    project,
+    user,
+    queue,
+    policy,
+    dicom_enabled,
+    monkeypatch,
+):
+    from django.http import HttpRequest
+    from components.dicom_import.upload import import_staged_dataset
+
+    monkeypatch.setenv("CVAT_DICOM_IMPORT_TIMEOUT", "12345")
+    payload = b"synthetic DICOM payload"
+    upload_id, session = dicom_session(project, user, payload)
+    # The raw-body parser must leave the stream unread until the permission has
+    # been checked; a request.body access would materialize the complete chunk.
+    monkeypatch.setattr(
+        HttpRequest, "body", property(lambda request: pytest.fail("request.body must not be used"))
+    )
+    for offset, content in ((0, payload[:8]), (8, payload[8:]), (8, payload[8:])):
+        response = dicom_request(
+            project, user, "chunk", content, upload_id=upload_id, file_index=0, offset=offset
+        )
+        assert response.status_code == 200, response.data
+        assert response.data == {"offset": offset + len(content)}
+    assert (session.directory / "files" / "00000000.dcm").read_bytes() == payload
+    assert queue.count == 0
+    response = dicom_request(project, user, "finish", {"upload_id": upload_id})
+    assert response.status_code == 202, response.data
+    job = queue.fetch_job(response.data["rq_id"])
+    assert job.func is import_staged_dataset
+    assert job.args == (str(session.directory / "import.json"), project.pk, "DICOM 1.0", True)
+    assert job.timeout == 12345
+    assert not job.retries_left
+    assert job.meta["project_id"] == project.pk
+    assert job.meta["user"]["id"] == user.pk
+    assert job.meta["request_manager_cls"] == "components.dicom_import.upload.DicomFolderImporter"
+    assert all(p.scope == ProjectPermission.Scopes.IMPORT_DATASET for p in policy.permissions)
+    parsed, _ = ImportRequestId.parse(job.id)
+    assert parsed.target == "project" and parsed.subresource == "dataset"
+    assert parsed.id is not None and parsed.user_id == user.pk
+
+
+@pytest.mark.parametrize("rejection", ["anonymous", "denied", "disabled"])
+def test_dicom_folder_start_rejections_do_not_create_upload_files(
+    project,
+    user,
+    queue,
+    policy,
+    dicom_enabled,
+    monkeypatch,
+    rejection,
+):
+    if rejection == "denied":
+        policy.allow = False
+    if rejection == "disabled":
+        monkeypatch.setenv("CVAT_DICOM_IMPORT_ENABLED", "0")
+    response = dicom_request(
+        project,
+        None if rejection == "anonymous" else user,
+        "start",
+        {
+            "upload_id": str(uuid4()),
+            "prefix": "synthetic",
+            "file_count": 1,
+            "total_bytes": 4,
+        },
+    )
+    assert response.status_code == {"anonymous": 401, "denied": 403, "disabled": 404}[rejection]
+    assert not list(project.get_tmp_dirname().glob("dicom-upload-*"))
+    assert queue.count == 0
+
+
+@pytest.mark.parametrize("operation", ["chunk", "finish", "cancel", "status"])
+def test_dicom_session_owner_is_checked_even_with_project_access(
+    project,
+    user,
+    queue,
+    dicom_enabled,
+    operation,
+):
+    upload_id, session = dicom_session(project, user, b"data")
+    other = User.objects.create(username="other-dicom-uploader", is_active=True)
+    response = (
+        dicom_request(
+            project, other, operation, b"data", upload_id=upload_id, file_index=0, offset=0
+        )
+        if operation == "chunk"
+        else dicom_request(project, other, operation, {"upload_id": upload_id})
+    )
+    assert response.status_code == 404
+    assert session.read()["state"] == "uploading"
+    assert queue.count == 0
+
+
+def test_dicom_import_permission_is_rechecked_before_writing_each_chunk(
+    project, user, queue, policy, dicom_enabled
+):
+    upload_id, session = dicom_session(project, user, b"data")
+    policy.allow = False
+    response = dicom_request(
+        project, user, "chunk", b"data", upload_id=upload_id, file_index=0, offset=0
+    )
+    assert response.status_code == 403
+    assert list((session.directory / "files").iterdir()) == []
+    assert queue.count == 0
+
+
+def test_dicom_incomplete_upload_cannot_be_queued_and_zero_byte_files_can(
+    project, user, queue, dicom_enabled
+):
+    upload_id, session = dicom_session(project, user, b"data")
+    response = dicom_request(project, user, "finish", {"upload_id": upload_id})
+    assert response.status_code == 409
+    assert queue.count == 0
+    empty_id, empty_session = dicom_session(project, user, b"")
+    response = dicom_request(project, user, "finish", {"upload_id": empty_id})
+    assert response.status_code == 202
+    assert (empty_session.directory / "files" / "00000000.dcm").stat().st_size == 0
+    assert session.read()["state"] == "uploading"
+
+
+def test_dicom_finish_is_idempotent_after_lost_response_and_native_job_expiry(
+    project,
+    user,
+    queue,
+    dicom_enabled,
+    monkeypatch,
+):
+    from components.dicom_import.upload import DicomFolderImporter, _terminal_cleanup
+
+    upload_id, session = dicom_session(project, user, b"")
+    original = DicomFolderImporter.enqueue_job
+
+    def lose_response(self):
+        original(self)
+        raise ConnectionError("synthetic response loss")
+
+    monkeypatch.setattr(DicomFolderImporter, "enqueue_job", lose_response)
+    with pytest.raises(ConnectionError, match="synthetic response loss"):
+        dicom_request(project, user, "finish", {"upload_id": upload_id})
+    assert queue.count == 1
+    assert session.read()["state"] == "submitting"
+    monkeypatch.setattr(DicomFolderImporter, "enqueue_job", original)
+    response = dicom_request(project, user, "status", {"upload_id": upload_id})
+    request_id = response.data["rq_id"]
+    assert response.status_code == 200 and response.data["state"] == "queued"
+    assert dicom_request(project, user, "finish", {"upload_id": upload_id}).data == {
+        "rq_id": request_id
+    }
+    assert queue.count == 1
+    job = queue.fetch_job(request_id)
+    job.set_status(JobStatus.FINISHED)
+    _terminal_cleanup(session, "finished")
+    assert not (session.directory / "files").exists()
+    # A new session in the same project has a different immutable request ID.
+    next_id, _ = dicom_session(project, user, b"")
+    next_response = dicom_request(project, user, "finish", {"upload_id": next_id})
+    assert next_response.status_code == 202
+    assert next_response.data["rq_id"] != request_id
+    job.delete()
+    before = queue.count
+    assert dicom_request(project, user, "finish", {"upload_id": upload_id}).data == {
+        "rq_id": request_id
+    }
+    assert queue.count == before
+    assert queue.fetch_job(request_id) is None
+
+
+def test_dicom_uncertain_finish_can_recover_when_enqueue_never_happened(
+    project,
+    user,
+    queue,
+    dicom_enabled,
+    monkeypatch,
+):
+    from components.dicom_import.upload import DicomFolderImporter
+
+    upload_id, session = dicom_session(project, user, b"")
+    original = DicomFolderImporter.enqueue_job
+    monkeypatch.setattr(
+        DicomFolderImporter,
+        "enqueue_job",
+        lambda self: (_ for _ in ()).throw(ConnectionError("before enqueue")),
+    )
+    with pytest.raises(ConnectionError):
+        dicom_request(project, user, "finish", {"upload_id": upload_id})
+    assert queue.count == 0
+    response = dicom_request(project, user, "status", {"upload_id": upload_id})
+    assert response.data["state"] == "uploading" and "rq_id" not in response.data
+    monkeypatch.setattr(DicomFolderImporter, "enqueue_job", original)
+    assert dicom_request(project, user, "finish", {"upload_id": upload_id}).status_code == 202
+    assert queue.count == 1
+
+
+def test_dicom_cancel_removes_unsubmitted_data_but_preserves_accepted_imports(
+    project, user, queue, dicom_enabled
+):
+    upload_id, session = dicom_session(project, user, b"data")
+    assert (
+        dicom_request(
+            project, user, "chunk", b"data", upload_id=upload_id, file_index=0, offset=0
+        ).status_code
+        == 200
+    )
+    assert dicom_request(project, user, "cancel", {"upload_id": upload_id}).status_code == 204
+    assert not (session.directory / "files").exists()
+    assert session.read()["state"] == "cancelled"
+    assert dicom_request(project, user, "finish", {"upload_id": upload_id}).status_code == 409
+    next_id, accepted = dicom_session(project, user, b"")
+    assert dicom_request(project, user, "finish", {"upload_id": next_id}).status_code == 202
+    assert dicom_request(project, user, "cancel", {"upload_id": next_id}).status_code == 409
+    assert (accepted.directory / "files").exists()
+
+
+def test_dicom_native_cleanup_preserves_active_uploads_and_queued_jobs(
+    project, user, queue, dicom_enabled
+):
+    import os
+    import time
+    from components.dicom_import.storage import session_lock
+    from cvat.apps.dataset_manager.cron import InstanceTmpDirectoriesCleaner
+
+    upload_id, session = dicom_session(project, user, b"")
+    expired = time.time() - 7 * 86400
+    cleaner = InstanceTmpDirectoriesCleaner()
+    os.utime(session.directory, (expired, expired))
+    with session_lock(session.directory, shared=True):
+        assert cleaner._remove_if_outdated(session.directory) is False
+    response = dicom_request(project, user, "finish", {"upload_id": upload_id})
+    os.utime(session.directory, (expired, expired))
+    assert cleaner._remove_if_outdated(session.directory) is False
+    assert session.directory.exists()
+    job = queue.fetch_job(response.data["rq_id"])
+    job.set_status(JobStatus.FAILED)
+    os.utime(session.directory, (expired, expired))
+    assert cleaner._remove_if_outdated(session.directory) is True
+    assert not session.directory.exists()
+
+
+@pytest.mark.parametrize("damage", ["lock", "metadata"])
+def test_dicom_native_cleanup_removes_damaged_stale_sessions(project, user, dicom_enabled, damage):
+    import os
+    import time
+    from cvat.apps.dataset_manager.cron import InstanceTmpDirectoriesCleaner
+
+    _upload_id, session = dicom_session(project, user, b"")
+    if damage == "lock":
+        (session.directory / ".lock").unlink()
+    else:
+        session.state_path.write_text("{", encoding="utf-8")
+    cleaner = InstanceTmpDirectoriesCleaner()
+    assert cleaner._remove_if_outdated(session.directory) is False
+    expired = time.time() - 7 * 86400
+    os.utime(session.directory, (expired, expired))
+    assert cleaner._remove_if_outdated(session.directory) is True
+    assert not session.directory.exists()
+
+
+@pytest.mark.parametrize("frame_count", [1, 4])
+def test_dicom_staged_worker_reads_uploaded_files_and_creates_real_task(
+    project,
+    user,
+    queue,
+    dicom_enabled,
+    tmp_path,
+    monkeypatch,
+    frame_count,
+):
+    import numpy as np
+    from django.core.cache import caches
+
+    from components.dicom_import.tests.test_integration import save_dicom
+    from components.dicom_import.upload import import_staged_dataset
+    from cvat.apps.engine.cache import MediaCache
+
+    # Keep the real preview generation; replace only its external cache/lock.
+    caches["default"].clear()
+    monkeypatch.setattr(MediaCache, "_cache", staticmethod(lambda: caches["default"]))
+    monkeypatch.setattr("cvat.apps.engine.cache.get_rq_lock_for_job", lambda *args: nullcontext())
+
+    shape = (16, 16) if frame_count == 1 else (frame_count, 16, 16)
+    source = save_dicom(
+        tmp_path / "synthetic.dcm", 1, np.arange(frame_count * 256, dtype=np.uint16).reshape(shape)
+    )
+    payload = source.read_bytes()
+    upload_id, session = dicom_session(project, user, payload)
+    response = dicom_request(
+        project, user, "chunk", payload, upload_id=upload_id, file_index=0, offset=0
+    )
+    assert response.status_code == 200
+    accepted = dicom_request(project, user, "finish", {"upload_id": upload_id})
+    job = queue.fetch_job(accepted.data["rq_id"])
+    monkeypatch.setattr(rq, "get_current_job", lambda: job)
+    import_staged_dataset(*job.args)
+    task = project.tasks.get()
+    assert task.data.size == frame_count
+    assert task.data.images.count() == (1 if frame_count == 1 else 0)
+    if frame_count > 1:
+        assert (task.data.video.width, task.data.video.height) == (16, 16)
+    assert task.data.get_upload_dirname().exists()
+    assert (
+        models.LabeledImage.objects.filter(job__segment__task=task, label__name="DicomTag").count()
+        == frame_count
+    )
+    assert session.read()["state"] == "finished"
+    assert not (session.directory / "files").exists()
+    assert not (session.directory / "batches").exists()
+    assert dicom_request(project, user, "finish", {"upload_id": upload_id}).data == accepted.data
+    paths = [task.data.get_data_dirname(), task.get_dirname()]
+    paths.extend(job.get_dirname() for job in models.Job.objects.filter(segment__task=task))
+    for path in paths:
+        shutil.rmtree(path, ignore_errors=True)

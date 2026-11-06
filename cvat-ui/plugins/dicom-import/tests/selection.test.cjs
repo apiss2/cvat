@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MIT
-// Run with DICOM_TEST_BUILD pointing to tsc's CommonJS output for selection.ts/archive.ts.
+// Run with DICOM_TEST_BUILD pointing to tsc's CommonJS output for selection.ts/api.ts.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { join, resolve } = require('node:path');
-const { collectFiles, collectDroppedFiles } = require(join(
+const { collectFiles, collectDroppedFiles, safePath } = require(join(
     resolve(process.env.DICOM_TEST_BUILD || '.dicom-test-build'), 'selection.js',
 ));
-const { pack } = require(join(resolve(process.env.DICOM_TEST_BUILD || '.dicom-test-build'), 'archive.js'));
 
 function fileEntry(name, data = 'dicom') {
     return {
@@ -68,8 +67,6 @@ test('dropped directories are recursively searched and equal basenames retain di
     ]);
     assert.equal(await selected[0].text(), 'one');
     assert.equal(await selected[1].text(), 'two');
-    const archive = Buffer.from(await (await pack(selected, 'GRD', signal())).arrayBuffer());
-    for (const file of selected) assert.ok(archive.includes(Buffer.from(file.webkitRelativePath)));
 });
 
 test('all directory batches are read, including more than 100 files', async () => {
@@ -157,16 +154,28 @@ test('folder and file access errors are surfaced without a partial selection', a
     await assert.rejects(collectDroppedFiles(transfer(file), signal()), /Missing file/);
 });
 
-test('size and file-count limits are applied during collection', async () => {
-    const oversized = { name: 'large.dcm', size: 2 * 1024 ** 3 + 1 };
-    await assert.rejects(collectFiles([oversized], signal()), /2 GiB/);
+test('large inputs are collected without the former ZIP size and file-count limits', async () => {
+    const large = { name: 'large.dcm', size: 200 * 1024 ** 3,
+        slice() { throw new Error('A named DICOM need not be read during selection'); } };
+    assert.deepEqual(await collectFiles([large], signal()), [large]);
     const file = new File([], 'a.dcm');
-    await assert.rejects(collectFiles(Array(50001).fill(file), signal()), /50,000/);
+    assert.equal((await collectFiles(Array(50001).fill(file), signal())).length, 50001);
+    for (const size of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity]) {
+        await assert.rejects(collectFiles([{ name: 'bad.dcm', size }], signal()), /サイズ/);
+    }
 });
 
-test('unsafe relative paths are rejected before packaging', async () => {
+test('unsafe relative paths are rejected before transfer', async () => {
     const file = new File(['dicom'], 'a.dcm');
     Object.defineProperty(file, 'webkitRelativePath', { value: '../a.dcm' });
     await assert.rejects(collectFiles([file], signal()), /安全でない/);
     await assert.rejects(collectDroppedFiles(transfer(directory('..', [fileEntry('a.dcm')])), signal()), /安全でない/);
+});
+
+test('safe paths preserve UTF-8 and reject traversal, drive paths, empty components and controls', () => {
+    assert.equal(safePath('検査/画像.dcm'), '検査/画像.dcm');
+    for (const value of ['../a', '/a', 'C:/a', 'a\\b', 'a//b', './a', 'a\0b', '', 'a/']) {
+        assert.throws(() => safePath(value));
+    }
+    assert.throws(() => safePath('検'.repeat(342)), /長すぎ/);
 });
