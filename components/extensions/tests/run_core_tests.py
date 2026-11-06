@@ -869,6 +869,7 @@ def test_dicom_native_cleanup_preserves_active_uploads_and_queued_jobs(
     assert not session.directory.exists()
 
 
+@pytest.mark.parametrize("frame_count", [1, 4])
 def test_dicom_staged_worker_reads_uploaded_files_and_creates_real_task(
     project,
     user,
@@ -876,6 +877,7 @@ def test_dicom_staged_worker_reads_uploaded_files_and_creates_real_task(
     dicom_enabled,
     tmp_path,
     monkeypatch,
+    frame_count,
 ):
     import numpy as np
     from django.core.cache import caches
@@ -889,8 +891,9 @@ def test_dicom_staged_worker_reads_uploaded_files_and_creates_real_task(
     monkeypatch.setattr(MediaCache, "_cache", staticmethod(lambda: caches["default"]))
     monkeypatch.setattr("cvat.apps.engine.cache.get_rq_lock_for_job", lambda *args: nullcontext())
 
+    shape = (16, 16) if frame_count == 1 else (frame_count, 16, 16)
     source = save_dicom(
-        tmp_path / "synthetic.dcm", 1, np.arange(256, dtype=np.uint16).reshape(16, 16)
+        tmp_path / "synthetic.dcm", 1, np.arange(frame_count * 256, dtype=np.uint16).reshape(shape)
     )
     payload = source.read_bytes()
     upload_id, session = dicom_session(project, user, payload)
@@ -903,16 +906,20 @@ def test_dicom_staged_worker_reads_uploaded_files_and_creates_real_task(
     monkeypatch.setattr(rq, "get_current_job", lambda: job)
     import_staged_dataset(*job.args)
     task = project.tasks.get()
-    assert task.data.size == 1
-    assert task.data.images.count() == 1
+    assert task.data.size == frame_count
+    assert task.data.images.count() == (1 if frame_count == 1 else 0)
+    if frame_count > 1:
+        assert (task.data.video.width, task.data.video.height) == (16, 16)
     assert task.data.get_upload_dirname().exists()
     assert (
         models.LabeledImage.objects.filter(job__segment__task=task, label__name="DicomTag").count()
-        == 1
+        == frame_count
     )
     assert session.read()["state"] == "finished"
     assert not (session.directory / "files").exists()
     assert not (session.directory / "batches").exists()
     assert dicom_request(project, user, "finish", {"upload_id": upload_id}).data == accepted.data
-    for path in (task.data.get_data_dirname(), task.get_dirname()):
+    paths = [task.data.get_data_dirname(), task.get_dirname()]
+    paths.extend(job.get_dirname() for job in models.Job.objects.filter(segment__task=task))
+    for path in paths:
         shutil.rmtree(path, ignore_errors=True)

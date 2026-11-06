@@ -30,8 +30,11 @@ def test_large_folders_fit_default_limits_and_environment_override(monkeypatch):
     assert defaults["max_upload_bytes"] >= 200 * 1024**3
     assert defaults["max_expanded_bytes"] >= 200 * 1024**3
     assert defaults["max_upload_files"] == 100000
+    assert defaults["max_frame_bytes"] == 1024**3
     monkeypatch.setenv("CVAT_DICOM_MAX_UPLOAD_BYTES", str(250 * 1024**3))
     assert limits()["max_upload_bytes"] == 250 * 1024**3
+    monkeypatch.setenv("CVAT_DICOM_MAX_FRAME_BYTES", str(2 * 1024**3))
+    assert limits()["max_frame_bytes"] == 2 * 1024**3
 
 
 @pytest.fixture
@@ -87,22 +90,27 @@ def deployment(cli, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("doctor", [False, True])
 def test_config_and_doctor_show_effective_limits(cli, deployment, doctor):
-    manager, model = deployment(extra="CVAT_DICOM_MAX_UPLOAD_BYTES=268435456000\n")
+    manager, model = deployment(
+        extra="CVAT_DICOM_MAX_UPLOAD_BYTES=268435456000\nCVAT_DICOM_MAX_FRAME_BYTES=2147483648\n"
+    )
     manager.configuration = lambda: model
     summary = cli.configuration_summary(manager, doctor=doctor)
     assert summary["dicom_import_limits"]["max_upload_bytes"] == 250 * 1024**3
+    assert summary["dicom_import_limits"]["max_frame_bytes"] == 2 * 1024**3
     assert summary["client_plugins"] == ["plugins/dicom-import"]
     for name in ("cvat_server", "cvat_worker_import"):
         assert (
             model["services"][name]["environment"]["CVAT_DICOM_MAX_UPLOAD_BYTES"] == "268435456000"
         )
+        assert model["services"][name]["environment"]["CVAT_DICOM_MAX_FRAME_BYTES"] == "2147483648"
     assert manager.function_environment() == {}
 
 
 @pytest.mark.parametrize("service", ["cvat_server", "cvat_worker_import"])
-def test_configuration_rejects_lost_dicom_setting(cli, deployment, service):
+@pytest.mark.parametrize("setting", ["CVAT_DICOM_MAX_UPLOAD_BYTES", "CVAT_DICOM_MAX_FRAME_BYTES"])
+def test_configuration_rejects_lost_dicom_setting(cli, deployment, service, setting):
     manager, model = deployment()
-    del model["services"][service]["environment"]["CVAT_DICOM_MAX_UPLOAD_BYTES"]
+    del model["services"][service]["environment"][setting]
     with pytest.raises(cli.OperationError, match="DICOM setting"):
         cli.validate_model(model, manager.env)
 

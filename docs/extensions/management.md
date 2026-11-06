@@ -85,7 +85,7 @@ DICOMの属性名の変更は、長さの表示とITGformatの参照処理にも
 
 機能内部の細かな動作ごとに、新たな設定名を追加する必要はありません。例えば、DICOM取り込みの接頭辞処理と部分失敗の通知は `dicom_import` に、モデルの部分更新と削除時の清掃は `model_registry` に含まれます。入力形式とデータの変更範囲は各機能の操作手順で説明します。
 
-DICOMの分割転送も既存の `dicom_import` で管理します。容量と実行時間は[設定例](../../components/extensions/config.example.env)の `CVAT_DICOM_MAX_UPLOAD_BYTES`、`CVAT_DICOM_MAX_UPLOAD_FILES`、`CVAT_DICOM_MAX_EXPANDED_BYTES`、`CVAT_DICOM_IMPORT_TIMEOUT` で設定し、サーバーと取り込みワーカーへ同じ値を渡します。追加サービス、保存ボリューム、GPUは要求しません。設定を変更した場合も、停止と再起動の手順で反映します。
+DICOMの分割転送とフレーム単位の変換も既存の `dicom_import` で管理します。容量と実行時間は[設定例](../../components/extensions/config.example.env)の `CVAT_DICOM_MAX_UPLOAD_BYTES`、`CVAT_DICOM_MAX_UPLOAD_FILES`、`CVAT_DICOM_MAX_EXPANDED_BYTES`、`CVAT_DICOM_MAX_FRAME_BYTES`、`CVAT_DICOM_IMPORT_TIMEOUT` で設定し、サーバーと取り込みワーカーへ同じ値を渡します。`CVAT_DICOM_MAX_FRAME_BYTES` は復号後の1フレームに適用し、動画全体やDICOMファイル全体には適用しません。追加サービス、保存ボリューム、GPUは要求しません。設定を変更した場合も、停止と再起動の手順で反映します。
 
 ## 確認コマンドの範囲
 
