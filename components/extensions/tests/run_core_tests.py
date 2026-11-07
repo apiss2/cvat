@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import shutil
 import sys
 import zipfile
@@ -359,6 +360,144 @@ def test_task_guide_format_remains_available_through_dataset_import(project, use
     assert job.meta["request_manager_cls"] == "cvat.apps.engine.background.DatasetImporter"
 
 
+def enqueue_task_guides(project, user, queue, format_name, members):
+    contents = io.BytesIO()
+    with zipfile.ZipFile(contents, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, text in members.items():
+            archive.writestr(name, text)
+    path = reverse("project-dataset", kwargs={"pk": project.pk})
+    response = dispatch(
+        "post",
+        path + "?" + urlencode({"format": format_name}),
+        user,
+        data={"dataset_file": SimpleUploadedFile("guides.zip", contents.getvalue())},
+    )
+    assert response.status_code == 202, response.data
+    job = queue.fetch_job(response.data["rq_id"])
+    assert job.func is import_dataset_as_project
+    return job
+
+
+@pytest.mark.parametrize(
+    "format_name",
+    [
+        "Task Guide JSON 1.0",
+        "Task Guide Markdown Zip 1.0",
+        "Task Guide DICOM Report Import 1.0",
+    ],
+)
+def test_task_guides_save_large_bodies_through_the_native_import_job(
+    project, user, queue, monkeypatch, format_name
+):
+    tasks = [
+        models.Task.objects.create(project=project, owner=user, name=name)
+        for name in ("scan-one", "scan-two")
+    ]
+    original = models.AnnotationGuide.objects.create(task=tasks[0], markdown="Manual notes\n")
+    project_guide = models.AnnotationGuide.objects.create(project=project, markdown="Project notes")
+    old_dates = [project.updated_date, *(task.updated_date for task in tasks)]
+    text = "x" * 1_000_001
+    is_report = format_name == "Task Guide DICOM Report Import 1.0"
+    if is_report:
+        label = models.Label.objects.create(project=project, name="DicomTag", type="tag")
+        spec = models.AttributeSpec.objects.create(
+            label=label, name="StudyInstanceUID", input_type="text", mutable=False
+        )
+        for task in tasks:
+            data = models.Data.objects.create(
+                size=1,
+                start_frame=0,
+                stop_frame=0,
+                chunk_size=1,
+                image_quality=100,
+                original_chunk_type="imageset",
+                compressed_chunk_type="imageset",
+            )
+            task.data = data
+            task.mode = "annotation"
+            task.save(update_fields=["data", "mode"])
+            models.Image.objects.create(data=data, frame=0, path="scan.png", width=1, height=1)
+            segment = models.Segment.objects.create(task=task, start_frame=0, stop_frame=0)
+            tag = models.LabeledImage.objects.create(
+                job=models.Job.objects.create(segment=segment), label=label, frame=0
+            )
+            models.LabeledImageAttributeVal.objects.create(
+                image=tag, job_id=tag.job_id, spec=spec, value="1.2.3"
+            )
+        members = {
+            "reports.json": json.dumps(
+                [{"input": {"study_uid": "1.2.3"}, "result": {"findings": text}}]
+            )
+        }
+    elif format_name == "Task Guide JSON 1.0":
+        members = {"guides.json": json.dumps({task.name: text for task in tasks})}
+    else:
+        members = {f"{task.name}.md": text for task in tasks}
+    job = enqueue_task_guides(project, user, queue, format_name, members)
+    monkeypatch.setattr(rq, "get_current_job", lambda: job)
+    job.func(*job.args, **job.kwargs)
+    guides = list(models.AnnotationGuide.objects.filter(task__in=tasks).order_by("task_id"))
+    assert len(guides) == 2
+    assert guides[0].pk == original.pk
+    if is_report:
+        assert guides[0].markdown.startswith("Manual notes\n")
+        for guide in guides:
+            assert text in guide.markdown
+            assert guide.markdown.count("<!-- cvat:study-report:start -->") == 1
+    else:
+        assert [guide.markdown for guide in guides] == [text, text]
+    project_guide.refresh_from_db()
+    assert project_guide.markdown == "Project notes"
+    for instance in (project, *tasks):
+        instance.refresh_from_db()
+    changed_dates = [project.updated_date, *(task.updated_date for task in tasks)]
+    assert all(after > before for before, after in zip(old_dates, changed_dates))
+    assert "1 created, 1 updated, 0 unchanged" in job.meta["status"]
+
+    # Reimport uses the native save path without touching already identical guides.
+    guide_dates = [guide.updated_date for guide in guides]
+    job.func(*job.args, **job.kwargs)
+    for instance in (project, *tasks, *guides):
+        instance.refresh_from_db()
+    assert [project.updated_date, *(task.updated_date for task in tasks)] == changed_dates
+    assert [guide.updated_date for guide in guides] == guide_dates
+    assert "0 created, 0 updated, 2 unchanged" in job.meta["status"]
+
+
+@pytest.mark.parametrize("failure", ["late_input", "second_save"])
+def test_task_guide_native_job_keeps_all_guides_and_dates_on_failure(
+    project, user, queue, monkeypatch, failure
+):
+    from cvat.apps.dataset_manager.bindings import CvatImportError
+
+    first = models.Task.objects.create(project=project, owner=user, name="first")
+    second = models.Task.objects.create(project=project, owner=user, name="second")
+    guide = models.AnnotationGuide.objects.create(task=first, markdown="Keep this guide")
+    before = [instance.updated_date for instance in (project, first, second, guide)]
+    payload = '{"first":"Replacement","second":"New guide"}'
+    if failure == "late_input":
+        payload = payload[:-1] + ',"first":"Conflicting duplicate"}'
+    else:
+        save = models.AnnotationGuide.save
+
+        def fail_after_second_save(instance, *args, **kwargs):
+            save(instance, *args, **kwargs)
+            if instance.task_id == second.pk:
+                raise RuntimeError("Injected failure after the second guide save")
+
+        monkeypatch.setattr(models.AnnotationGuide, "save", fail_after_second_save)
+    job = enqueue_task_guides(project, user, queue, "Task Guide JSON 1.0", {"guides.json": payload})
+    monkeypatch.setattr(rq, "get_current_job", lambda: job)
+    expected = CvatImportError if failure == "late_input" else RuntimeError
+    with pytest.raises(expected):
+        job.func(*job.args, **job.kwargs)
+    for instance in (project, first, second, guide):
+        instance.refresh_from_db()
+    assert guide.markdown == "Keep this guide"
+    assert not models.AnnotationGuide.objects.filter(task=second).exists()
+    assert [instance.updated_date for instance in (project, first, second, guide)] == before
+
+
 def test_project_backup_still_uses_the_native_backup_importer(user, queue):
     from cvat.apps.engine import backup
 
@@ -638,6 +777,7 @@ def test_dicom_folder_route_streams_raw_chunks_and_uses_native_request_metadata(
     monkeypatch,
 ):
     from django.http import HttpRequest
+
     from components.dicom_import.upload import import_staged_dataset
 
     monkeypatch.setenv("CVAT_DICOM_IMPORT_TIMEOUT", "12345")
@@ -645,15 +785,18 @@ def test_dicom_folder_route_streams_raw_chunks_and_uses_native_request_metadata(
     upload_id, session = dicom_session(project, user, payload)
     # The raw-body parser must leave the stream unread until the permission has
     # been checked; a request.body access would materialize the complete chunk.
-    monkeypatch.setattr(
-        HttpRequest, "body", property(lambda request: pytest.fail("request.body must not be used"))
-    )
-    for offset, content in ((0, payload[:8]), (8, payload[8:]), (8, payload[8:])):
-        response = dicom_request(
-            project, user, "chunk", content, upload_id=upload_id, file_index=0, offset=offset
+    with monkeypatch.context() as raw_chunks:
+        raw_chunks.setattr(
+            HttpRequest,
+            "body",
+            property(lambda request: pytest.fail("request.body must not be used")),
         )
-        assert response.status_code == 200, response.data
-        assert response.data == {"offset": offset + len(content)}
+        for offset, content in ((0, payload[:8]), (8, payload[8:]), (8, payload[8:])):
+            response = dicom_request(
+                project, user, "chunk", content, upload_id=upload_id, file_index=0, offset=offset
+            )
+            assert response.status_code == 200, response.data
+            assert response.data == {"offset": offset + len(content)}
     assert (session.directory / "files" / "00000000.dcm").read_bytes() == payload
     assert queue.count == 0
     response = dicom_request(project, user, "finish", {"upload_id": upload_id})
@@ -849,6 +992,7 @@ def test_dicom_native_cleanup_preserves_active_uploads_and_queued_jobs(
 ):
     import os
     import time
+
     from components.dicom_import.storage import session_lock
     from cvat.apps.dataset_manager.cron import InstanceTmpDirectoriesCleaner
 
@@ -873,6 +1017,7 @@ def test_dicom_native_cleanup_preserves_active_uploads_and_queued_jobs(
 def test_dicom_native_cleanup_removes_damaged_stale_sessions(project, user, dicom_enabled, damage):
     import os
     import time
+
     from cvat.apps.dataset_manager.cron import InstanceTmpDirectoriesCleaner
 
     _upload_id, session = dicom_session(project, user, b"")

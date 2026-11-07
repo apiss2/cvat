@@ -2,6 +2,7 @@
 """Run without CVAT services: python -m pytest -q components/task_guide/tests"""
 
 import ast
+import errno
 import importlib.util
 import io
 import json
@@ -11,14 +12,16 @@ import shutil
 import stat
 import sys
 import tempfile
-import pytest
+import tracemalloc
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import UUID
-from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 FORMATS = ROOT / "cvat/apps/dataset_manager/formats"
@@ -102,6 +105,67 @@ def named_zip(mapping):
 
 def report_zip(records):
     return zip_stream([("reports.json", stream(records).read())])
+
+
+def write_json_zip(path, chunks, *, compression=ZIP_DEFLATED):
+    """Generate actual large archives without assembling the JSON document in memory."""
+    with ZipFile(path, "w", compression=compression) as archive:
+        with archive.open("guides.json", "w") as member:
+            for chunk in chunks:
+                member.write(chunk)
+    return path
+
+
+def named_json_chunks(entries):
+    yield b"{"
+    for row, (name, markdown) in enumerate(entries):
+        if row:
+            yield b","
+        yield json.dumps(name, ensure_ascii=False).encode("utf-8")
+        yield b":"
+        yield json.dumps(markdown, ensure_ascii=False).encode("utf-8")
+    yield b"}"
+
+
+def report_json_chunks(rows):
+    yield b'{"records":['
+    for row, value in enumerate(rows):
+        if row:
+            yield b","
+        yield json.dumps(value, ensure_ascii=False).encode("utf-8")
+    yield b"]}"
+
+
+class BoundedReader:
+    """Reject whole-payload reads while allowing zipfile's bounded end-of-file lookup."""
+
+    def __init__(self, source, *, allow_tail=False):
+        self.source = source
+        self.allow_tail = allow_tail
+        self.bytes_read = 0
+
+    def read(self, size=-1):
+        limit = 128 * 1024
+        if size is None or size < 0:
+            assert self.allow_tail, "ZIP members must be read in bounded chunks"
+            position = self.source.tell()
+            self.source.seek(0, io.SEEK_END)
+            size = self.source.tell() - position
+            self.source.seek(position)
+        assert 0 <= size <= limit, f"Read requested {size} bytes at once"
+        data = self.source.read(size)
+        self.bytes_read += len(data)
+        return data
+
+    def __getattr__(self, name):
+        return getattr(self.source, name)
+
+    def __enter__(self):
+        self.source.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self.source.__exit__(*args)
 
 
 def image(task_id=1, uid="1.2.3", patient="P1", date="20250101", prefix="site"):
@@ -335,20 +399,12 @@ class TestReport:
         r = {"input": {"uid": "1.2.3"}, "result": {}, "input_text": "Original report"}
         assert "## 参考生データ\nOriginal report" in reports(r)[0].markdown
 
-    def test_reference_validation_and_guide_size_limit(self, subtests):
+    def test_reference_validation(self, subtests):
         for value in (123, True, ["text"], {"text": "report"}, "bad\x00text"):
             r = record()
             r["input_text"] = value
             with subtests.test(value=value), pytest.raises(core.GuideImportError):
                 reports(r)
-        r = record()
-        base_size = len(reports(r)[0].markdown)
-        r["input_text"] = "reference"
-        with (
-            patch.object(core, "MAX_GUIDE_CHARS", base_size),
-            pytest.raises(core.GuideImportError, match="size limit"),
-        ):
-            reports(r)
 
     def test_two_sample_formats_from_json_zip(self, subtests):
         fixtures = Path(__file__).resolve().parent / "fixtures"
@@ -359,9 +415,8 @@ class TestReport:
             with subtests.test(filename=filename):
                 raw = (fixtures / filename).read_bytes()
                 rows = json.loads(raw)["records"]
-                parsed, duplicates = core.read_reports(
-                    io.BytesIO(core.read_json_zip(zip_stream([(filename, raw)])))
-                )
+                with core.open_json_zip(zip_stream([(filename, raw)])) as member:
+                    parsed, duplicates = core.read_reports(member)
                 assert duplicates == 0
                 assert [r.date for r in parsed] == dates
                 assert [r.study_uid[-8:] for r in parsed] == suffixes
@@ -403,13 +458,12 @@ class TestReport:
         )
         assert len(core.read_reports(io.BytesIO(json.dumps([record()]).encode()))[0]) == 1
 
-    def test_limits(self):
-        with patch.object(core, "MAX_FILE_BYTES", 5), pytest.raises(core.GuideImportError):
-            reports(record())
-        with patch.object(core, "MAX_RECORDS", 1), pytest.raises(core.GuideImportError):
-            reports(record(), record())
-        with patch.object(core, "MAX_GUIDE_CHARS", 5), pytest.raises(core.GuideImportError):
-            reports(record())
+    def test_generated_report_can_exceed_one_million_characters(self):
+        r = record()
+        r["result"]["findings_ja"] = "x" * 1_000_001
+        report = reports(r)[0]
+        assert len(report.markdown) > 1_000_000
+        assert "## 所見\n" + r["result"]["findings_ja"] + "\n\n## 診断" in report.markdown
 
     def test_unsupported_selected_value_is_not_silently_dropped(self):
         for value in ({"nested": "value"}, True, "\x00"):
@@ -546,7 +600,8 @@ class TestJsonZip:
     def test_one_json_file_in_a_directory_is_read_without_changing_content(self):
         raw = named_stream({"task": "# Markdown\n"}).read()
         source = zip_stream([("guides/", ""), ("guides/data.JSON", raw)])
-        assert core.read_json_zip(source) == raw
+        with core.open_json_zip(source) as member:
+            assert member.read() == raw
 
     @pytest.mark.parametrize(
         "members",
@@ -559,7 +614,8 @@ class TestJsonZip:
     )
     def test_json_archive_requires_exactly_one_json_file(self, members):
         with pytest.raises(core.GuideImportError, match="exactly one JSON"):
-            core.read_json_zip(zip_stream(members))
+            with core.open_json_zip(zip_stream(members)):
+                pass
 
     @pytest.mark.parametrize(
         "members",
@@ -571,11 +627,22 @@ class TestJsonZip:
     )
     def test_json_archive_rejects_extra_files_and_unsafe_paths(self, members):
         with pytest.raises(core.GuideImportError):
-            core.read_json_zip(zip_stream(members))
+            with core.open_json_zip(zip_stream(members)):
+                pass
 
     def test_raw_json_is_not_an_accepted_upload(self):
         with pytest.raises(core.GuideImportError, match="ZIP"):
-            core.read_json_zip(named_stream({"task": "text"}))
+            with core.open_json_zip(named_stream({"task": "text"})):
+                pass
+
+    def test_json_archive_can_contain_more_than_fifty_thousand_directory_entries(self, tmp_path):
+        path = tmp_path / "many-entries.zip"
+        with ZipFile(path, "w") as archive:
+            for index in range(50_000):
+                archive.writestr(f"directory-{index}/", b"")
+            archive.writestr("guides.json", b'{"task":"Markdown"}')
+        with path.open("rb") as source, core.open_json_zip(source) as member:
+            assert list(core.iter_named_json(member)) == [core.NamedGuide(1, "task", "Markdown")]
 
 
 class TestNamedGuide:
@@ -607,14 +674,11 @@ class TestNamedGuide:
             with subtests.test(raw=raw), pytest.raises(core.GuideImportError):
                 core.read_named_json(io.BytesIO(raw))
 
-    def test_json_size_and_entry_limits(self):
-        for constant, limit, mapping in (
-            ("MAX_FILE_BYTES", 5, {"task": "text"}),
-            ("MAX_RECORDS", 1, {"a": "text", "b": "text"}),
-            ("MAX_GUIDE_CHARS", 3, {"task": "text"}),
-        ):
-            with patch.object(core, constant, limit), pytest.raises(core.GuideImportError):
-                core.read_named_json(named_stream(mapping))
+    def test_json_preserves_markdown_over_one_million_characters(self):
+        markdown = "# Large guide\r\n" + "x" * 1_000_001 + "\n最後\n"
+        assert core.read_named_json(named_stream({"task": markdown})) == [
+            core.NamedGuide(1, "task", markdown)
+        ]
 
     def test_name_matching_is_exact_and_reports_unmatched_positions(self):
         guides = core.read_named_json(named_stream({"task A": "a", "task B": "b", "TASK A": "c"}))
@@ -673,18 +737,11 @@ class TestNamedGuide:
         with pytest.raises(core.GuideImportError, match="Invalid"):
             core.read_markdown_zip(io.BytesIO(b"not a zip"))
 
-    def test_zip_size_entry_and_total_uncompressed_limits(self):
-        with patch.object(core, "MAX_FILE_BYTES", 5), pytest.raises(core.GuideImportError):
-            core.read_markdown_zip(zip_stream([("task.md", "text")]))
-        with patch.object(core, "MAX_RECORDS", 1), pytest.raises(core.GuideImportError):
-            core.read_markdown_zip(zip_stream([("a.md", "a"), ("b.md", "b")]))
-        with patch.object(core, "MAX_GUIDE_CHARS", 3), pytest.raises(core.GuideImportError):
-            core.read_markdown_zip(zip_stream([("task.md", "text")]))
-        with (
-            patch.object(core, "MAX_FILE_BYTES", 1024),
-            pytest.raises(core.GuideImportError, match="Uncompressed"),
-        ):
-            core.read_markdown_zip(zip_stream([("a.md", "a" * 600), ("b.md", "b" * 600)]))
+    def test_zip_preserves_markdown_over_one_million_characters(self):
+        markdown = "# Large guide\r\n" + "x" * 1_000_001 + "\n最後\n"
+        assert core.read_markdown_zip(zip_stream([("task.md", markdown)])) == [
+            core.NamedGuide(1, "task", markdown)
+        ]
 
 
 class TestMerge:
@@ -716,9 +773,12 @@ class TestMerge:
         with pytest.raises(core.GuideImportError):
             core.merge_markdown(md, "new")
 
-    def test_size_and_invalid_unicode(self):
-        with patch.object(core, "MAX_GUIDE_CHARS", 1), pytest.raises(core.GuideImportError):
-            core.merge_markdown("", "new")
+    def test_merged_guide_can_exceed_one_million_characters(self):
+        manual = "manual\n" + "x" * 1_000_001
+        merged = core.merge_markdown(manual, "new")
+        assert merged == manual + f"\n\n{core.START}\nnew\n{core.END}\n"
+
+    def test_invalid_unicode(self):
         with pytest.raises(core.GuideImportError):
             core.merge_markdown("", "\ud800")
 
@@ -760,8 +820,18 @@ class TestAdapter:
         )
         self.guide_manager = MagicMock()
         self.existing = []
-        self.guide_manager.select_for_update.return_value.filter.return_value.order_by.side_effect = (
-            lambda *a: self.existing
+
+        def guide_iterator(*, chunk_size):
+            for guide in sorted(self.existing, key=lambda guide: guide.task_id):
+                if not hasattr(guide, "id"):
+                    guide.id = 1000 + guide.task_id
+                yield guide
+
+        self.guide_manager.select_for_update.return_value.filter.return_value.order_by.return_value.iterator.side_effect = (
+            guide_iterator
+        )
+        self.guide_manager.only.return_value.get.side_effect = lambda *, pk: next(
+            guide for guide in self.existing if guide.id == pk
         )
         self.permission = MagicMock()
         self.permission.Scopes = SimpleNamespace(CREATE="create", UPDATE="update")
@@ -866,7 +936,7 @@ class TestAdapter:
                 importer(io.BytesIO(), "unused", object())
         self.guide_manager.create.assert_not_called()
 
-    def test_registered_formats_route_their_actual_payloads(self, subtests):
+    def test_registered_formats_route_their_actual_payloads(self, subtests, tmp_path):
         instance = self.project_data()
         instance.db_project = self.project
         for importer, payload in (
@@ -879,11 +949,15 @@ class TestAdapter:
         ):
             with subtests.test(importer=importer.__name__):
                 self.guide_manager.create.reset_mock()
-                importer(payload, "unused", instance)
+                with patch(
+                    "components.task_guide.staging.TemporaryFile", wraps=tempfile.TemporaryFile
+                ) as temporary:
+                    importer(payload, tmp_path, instance)
+                assert temporary.call_args.kwargs["dir"] == tmp_path
                 assert self.guide_manager.create.called
         assert self.guide_manager.create.call_count == 2
 
-    def test_registered_formats_report_invalid_input_without_writes(self, subtests):
+    def test_registered_formats_report_invalid_input_without_writes(self, subtests, tmp_path):
         instance = self.project_data()
         instance.db_project = self.project
         for importer, raw in (
@@ -892,12 +966,12 @@ class TestAdapter:
             (self.adapter.import_task_guides_dicom_report, b"{}"),
         ):
             with subtests.test(importer=importer.__name__), pytest.raises(self.error):
-                importer(io.BytesIO(raw), "unused", instance)
+                importer(io.BytesIO(raw), tmp_path, instance)
         self.guide_manager.create.assert_not_called()
         self.meta.save.assert_not_called()
         self.assert_no_timestamps_changed()
 
-    def test_json_formats_validate_the_contents_of_the_uploaded_archive(self, subtests):
+    def test_json_formats_validate_the_contents_of_the_uploaded_archive(self, subtests, tmp_path):
         instance = self.project_data()
         instance.db_project = self.project
         for importer, raw in (
@@ -906,8 +980,273 @@ class TestAdapter:
             (self.adapter.import_task_guides, b"\xff"),
         ):
             with subtests.test(importer=importer.__name__), pytest.raises(self.error):
-                importer(zip_stream([("data.json", raw)]), "unused", instance)
+                importer(zip_stream([("data.json", raw)]), tmp_path, instance)
         self.guide_manager.create.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    @pytest.mark.parametrize("compression", [ZIP_STORED, ZIP_DEFLATED])
+    def test_large_json_zip_import_uses_bounded_memory_and_matches_late_entries(
+        self, tmp_path, compression
+    ):
+        count = 520
+        body = "x" * (64 * 1024)
+
+        def markdown(row):
+            return f"# Guide {row}\r\n{body}\n最後 {row}\n"
+
+        def entries():
+            matched_names = {1: self.tasks[0].name, count: self.tasks[1].name}
+            for row in range(1, count + 1):
+                yield matched_names.get(row, f"unmatched-{row}"), markdown(row)
+
+        path = write_json_zip(
+            tmp_path / "large.zip", named_json_chunks(entries()), compression=compression
+        )
+        with ZipFile(path) as archive:
+            info = archive.getinfo("guides.json")
+            assert info.file_size > 32 * 1024 * 1024
+            if compression == ZIP_STORED:
+                assert info.compress_size > 32 * 1024 * 1024
+            else:
+                assert info.compress_size < 32 * 1024 * 1024
+
+        archive_open = ZipFile.open
+        members = []
+
+        def bounded_member(archive, name, mode="r", *args, **kwargs):
+            assert mode == "r"
+            member = BoundedReader(archive_open(archive, name, mode, *args, **kwargs))
+            members.append(member)
+            return member
+
+        with path.open("rb") as source, patch.object(ZipFile, "open", bounded_member):
+            bounded_source = BoundedReader(source, allow_tail=True)
+            tracemalloc.start()
+            try:
+                self.adapter.import_project_guides(
+                    bounded_source, self.project, input_format="json"
+                )
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+
+        # The input is over 32 MiB, but only individual guides and small indexes
+        # should be live. This allows ample overhead while detecting all-guide lists.
+        assert peak < 24 * 1024 * 1024
+        assert len(members) == 1
+        assert members[0].bytes_read == info.file_size
+        assert members[0].closed
+        assert self.guide_manager.create.call_count == 2
+        created = {
+            call.kwargs["task_id"]: call.kwargs["markdown"]
+            for call in self.guide_manager.create.call_args_list
+        }
+        assert created == {1: markdown(1), 2: markdown(count)}
+        assert f"{count - 2} unmatched records" in self.meta.status
+        assert "unmatched positions: 2, 3, 4" in self.meta.status
+        self.meta.save.assert_called_once_with()
+
+    @pytest.mark.parametrize("input_format", ["json", "dicom"])
+    def test_more_than_fifty_thousand_json_entries_match_first_and_last(
+        self, tmp_path, input_format
+    ):
+        count = 50_001
+        if input_format == "json":
+            self.tasks[0].name, self.tasks[1].name = "task-1", f"task-{count}"
+            chunks = named_json_chunks(
+                (f"task-{row}", f"guide {row}") for row in range(1, count + 1)
+            )
+        else:
+            self.values[:] = [
+                (1, core.STUDY_UID, "2.25.1"),
+                (2, core.STUDY_UID, f"2.25.{count}"),
+            ]
+            chunks = report_json_chunks(
+                {"input": {"uid": f"2.25.{row}"}, "result": {"findings": f"guide {row}"}}
+                for row in range(1, count + 1)
+            )
+        path = write_json_zip(tmp_path / "many-records.zip", chunks)
+        with path.open("rb") as source:
+            self.adapter.import_project_guides(source, self.project, input_format=input_format)
+        assert self.guide_manager.create.call_count == 2
+        created = {
+            call.kwargs["task_id"]: call.kwargs["markdown"]
+            for call in self.guide_manager.create.call_args_list
+        }
+        if input_format == "json":
+            assert created == {1: "guide 1", 2: f"guide {count}"}
+        else:
+            assert "## 所見\nguide 1\n" in created[1]
+            assert f"## 所見\nguide {count}\n" in created[2]
+        assert f"{count - 2} unmatched records, 0 duplicate records" in self.meta.status
+        assert "unmatched positions: 2, 3, 4" in self.meta.status
+        assert self.meta.status.endswith(", ...")
+
+    @pytest.mark.parametrize("input_format", ["json", "dicom"])
+    @pytest.mark.parametrize(
+        "invalid_end", ["trailing_document", "duplicate_key", "nonfinite", "unicode", "record"]
+    )
+    def test_late_invalid_json_prevents_all_guide_writes(self, tmp_path, input_format, invalid_end):
+        guide = SimpleNamespace(task_id=1, markdown="manual", save=MagicMock())
+        self.existing[:] = [guide]
+        if input_format == "dicom":
+            prefix = b'{"records":[' + json.dumps(record()).encode("utf-8")
+            suffix = {
+                "trailing_document": b"]} []",
+                "duplicate_key": b'], "records":[]}',
+                "nonfinite": b'], "metadata":{"number":1e999}}',
+                "unicode": b"]}\xff",
+                "record": b', {"input":{},"result":{}}]}',
+            }[invalid_end]
+            reader_name, expected_rows = "iter_reports", [1]
+        else:
+            prefix = json.dumps({task.name: "new guide" for task in self.tasks}).encode("utf-8")[
+                :-1
+            ]
+            suffix = {
+                "trailing_document": b"} []",
+                "duplicate_key": b","
+                + json.dumps(self.tasks[0].name).encode("utf-8")
+                + b':"duplicate"}',
+                "nonfinite": b', "later":1e999}',
+                "unicode": b"}\xff",
+                "record": b', "later":null}',
+            }[invalid_end]
+            reader_name, expected_rows = "iter_named_json", [1, 2]
+        padding = b" " * (64 * 1024)
+        path = write_json_zip(tmp_path / "late-invalid.zip", (prefix, padding, padding, suffix))
+        reader = getattr(core, reader_name)
+        yielded_rows = []
+
+        def observed_entries(source):
+            for entry in reader(source):
+                yielded_rows.append(entry.row)
+                yield entry
+
+        with (
+            path.open("rb") as source,
+            patch.object(self.adapter, reader_name, observed_entries),
+            pytest.raises(core.GuideImportError),
+        ):
+            self.adapter.import_project_guides(source, self.project, input_format=input_format)
+        assert yielded_rows == expected_rows
+        assert guide.markdown == "manual"
+        guide.save.assert_not_called()
+        self.guide_manager.create.assert_not_called()
+        self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    @pytest.mark.parametrize("input_format", ["json", "dicom"])
+    def test_late_zip_crc_failure_prevents_all_guide_writes(self, tmp_path, input_format):
+        guide = SimpleNamespace(task_id=1, markdown="manual", save=MagicMock())
+        self.existing[:] = [guide]
+        if input_format == "dicom":
+            chunks = report_json_chunks([record()])
+            reader_name, expected_rows = "iter_reports", [1]
+        else:
+            chunks = named_json_chunks((task.name, "new guide") for task in self.tasks)
+            reader_name, expected_rows = "iter_named_json", [1, 2]
+
+        def padded_chunks():
+            yield from chunks
+            for _ in range(3):
+                yield b" " * (64 * 1024)
+
+        path = write_json_zip(tmp_path / "late-crc.zip", padded_chunks(), compression=ZIP_STORED)
+        with ZipFile(path) as archive:
+            info = archive.getinfo("guides.json")
+        with path.open("r+b") as archive:
+            archive.seek(info.header_offset + 26)
+            name_size = int.from_bytes(archive.read(2), "little")
+            extra_size = int.from_bytes(archive.read(2), "little")
+            archive.seek(info.header_offset + 30 + name_size + extra_size + info.file_size - 1)
+            assert archive.read(1) == b" "
+            archive.seek(-1, io.SEEK_CUR)
+            # JSON stays valid; only ZIP integrity changes, after earlier records were yielded.
+            archive.write(b"\t")
+        reader = getattr(core, reader_name)
+        yielded_rows = []
+
+        def observed_entries(source):
+            for entry in reader(source):
+                yielded_rows.append(entry.row)
+                yield entry
+
+        with (
+            path.open("rb") as source,
+            patch.object(self.adapter, reader_name, observed_entries),
+            pytest.raises(core.GuideImportError, match="ZIP"),
+        ):
+            self.adapter.import_project_guides(source, self.project, input_format=input_format)
+        assert yielded_rows == expected_rows
+        assert guide.markdown == "manual"
+        guide.save.assert_not_called()
+        self.guide_manager.create.assert_not_called()
+        self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    @pytest.mark.parametrize("invalid_tail", [False, True])
+    def test_staged_text_file_is_closed_after_success_or_late_failure(self, invalid_tail):
+        files = []
+
+        def temporary_file(*args, **kwargs):
+            file = tempfile.TemporaryFile(*args, **kwargs)
+            files.append(file)
+            return file
+
+        payload = stream([record()]).getvalue() + (b" []" if invalid_tail else b"")
+        with (
+            patch("components.task_guide.staging.TemporaryFile", side_effect=temporary_file),
+            pytest.raises(core.GuideImportError) if invalid_tail else nullcontext(),
+        ):
+            self.adapter.import_project_guides(
+                zip_stream([("reports.json", payload)]), self.project
+            )
+        assert len(files) == 1
+        assert files[0].closed
+
+    @pytest.mark.parametrize("input_format", ["json", "dicom", "zip"])
+    def test_staging_disk_full_preserves_io_error_and_prevents_writes(self, input_format):
+        guide = SimpleNamespace(task_id=1, markdown="manual", save=MagicMock())
+        self.existing[:] = [guide]
+        if input_format == "json":
+            source = named_zip({task.name: f"guide {task.id}" for task in self.tasks})
+        elif input_format == "dicom":
+            source = report_zip([record(), record(uid="2.25.2")])
+        else:
+            source = zip_stream([(f"{task.name}.md", f"guide {task.id}") for task in self.tasks])
+        files = []
+
+        def temporary_file(*args, **kwargs):
+            file = tempfile.TemporaryFile(*args, **kwargs)
+            files.append(file)
+            return file
+
+        original_write = self.adapter.TextStore.write
+        failure = OSError(errno.ENOSPC, "No space left on device")
+        attempts = 0
+
+        def write(store, text):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                raise failure
+            return original_write(store, text)
+
+        with (
+            patch("components.task_guide.staging.TemporaryFile", side_effect=temporary_file),
+            patch.object(self.adapter.TextStore, "write", write),
+            pytest.raises(OSError) as error,
+        ):
+            self.adapter.import_project_guides(source, self.project, input_format=input_format)
+        assert error.value is failure
+        assert attempts == 2
+        assert len(files) == 1
+        assert files[0].closed
+        assert guide.markdown == "manual"
+        guide.save.assert_not_called()
+        self.guide_manager.create.assert_not_called()
+        self.meta.save.assert_not_called()
         self.assert_no_timestamps_changed()
 
     def test_generic_import_replaces_entire_markdown_and_preserves_exact_text(self):
@@ -1153,12 +1492,73 @@ class TestAdapter:
         assert "unmatched positions: 2" in self.meta.status
         assert "SECRET_PATIENT" not in self.meta.status
 
+    def test_duplicate_streamed_reports_keep_original_unmatched_positions(self):
+        unmatched = record(uid="1.2.4", patient="SECRET_PATIENT")
+        matched = record()
+        self.run_import([unmatched, matched, unmatched, record(uid="1.2.5"), matched])
+        assert self.guide_manager.create.call_count == 2
+        assert "2 unmatched records, 2 duplicate records" in self.meta.status
+        assert "unmatched positions: 1, 4" in self.meta.status
+        assert "SECRET_PATIENT" not in self.meta.status
+
+    @pytest.mark.parametrize("last_character", ["あ", "い"])
+    def test_duplicate_reports_compare_equal_length_text_beyond_the_first_chunk(
+        self, last_character
+    ):
+        first, last = record(), record()
+        prefix = "x" * (64 * 1024)
+        first["result"]["findings_ja"] = prefix + "あ"
+        last["result"]["findings_ja"] = prefix + last_character
+        if last_character == "あ":
+            self.run_import([first, first, last])
+            assert self.guide_manager.create.call_count == 2
+            assert "2 duplicate records" in self.meta.status
+        else:
+            with pytest.raises(core.GuideImportError, match="Record 3:.*record 1"):
+                self.run_import([first, first, last])
+            self.guide_manager.create.assert_not_called()
+            self.meta.save.assert_not_called()
+            self.assert_no_timestamps_changed()
+
+    @pytest.mark.parametrize("conflicting_uid, original_row", [("1.2.3", 1), ("1.2.4", 2)])
+    def test_conflicting_last_report_prevents_all_writes(self, conflicting_uid, original_row):
+        guide = SimpleNamespace(task_id=1, markdown="manual", save=MagicMock())
+        self.existing[:] = [guide]
+        changed = record(uid=conflicting_uid)
+        changed["result"]["findings_ja"] = "Different"
+        with pytest.raises(core.GuideImportError, match=rf"Record 3:.*record {original_row}"):
+            self.run_import([record(), record(uid="1.2.4"), changed])
+        assert guide.markdown == "manual"
+        guide.save.assert_not_called()
+        self.guide_manager.create.assert_not_called()
+        self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+
     def test_write_failure_does_not_report_success(self):
         self.guide_manager.create.side_effect = RuntimeError("write failed")
         with pytest.raises(RuntimeError, match="write failed"):
             self.run_import()
         self.meta.save.assert_not_called()
         self.assert_no_timestamps_changed()
+
+    def test_second_write_failure_exits_the_same_transaction_without_reporting_success(self):
+        failure = RuntimeError("second write failed")
+
+        def create(**attributes):
+            assert self.in_transaction
+            if attributes["task_id"] == 2:
+                raise failure
+
+        self.guide_manager.create.side_effect = create
+        with pytest.raises(RuntimeError, match="second write failed"):
+            self.run_import()
+        self.transaction.atomic.assert_called_once_with()
+        assert not self.in_transaction
+        assert self.guide_manager.create.call_count == 2
+        self.tasks[0].touch.assert_called_once_with()
+        self.tasks[1].touch.assert_not_called()
+        self.project.touch.assert_not_called()
+        self.meta.save.assert_not_called()
 
     def test_timestamp_failure_aborts_before_reporting_success(self):
         self.tasks[0].touch.side_effect = RuntimeError("timestamp write failed")

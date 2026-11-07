@@ -189,6 +189,7 @@ COPY --parents \
     components/analytics/clickhouse/init.py \
     components/dicom_import \
     components/project_annotations \
+    components/task_guide \
     manage.py \
     rqscheduler.py \
     wait_for_deps.sh \

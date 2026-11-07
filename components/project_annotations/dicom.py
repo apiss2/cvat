@@ -7,25 +7,25 @@ frame are one image; different static frames or tasks are different images.
 
 from __future__ import annotations
 
-import io
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import product
 
+from components.task_guide.streaming_json import JSONStreamError, read_json
 from cvat.apps.dataset_manager.formats.task_guide_core import (
     _UID,
-    MAX_RECORDS,
     GuideImportError,
     _date,
     _identifier,
-    _read_json,
-    read_json_zip,
+    open_json_zip,
 )
 
 from . import PROTECTED_LABEL, ProjectAnnotationImportError
 
+MAX_FILE_BYTES = 32 * 1024 * 1024
+MAX_RECORDS = 50_000
 MAX_GENERATED_TAGS = 250_000
 MAX_GENERATED_ATTRIBUTE_VALUES = 1_000_000
 MAX_ATTRIBUTE_CHARS = 4096
@@ -78,8 +78,9 @@ class DicomPlan:
 def read_records(source) -> list:
     """Read one bounded UTF-8 JSON file from a safe ZIP, retaining row errors."""
     try:
-        data = _read_json(io.BytesIO(read_json_zip(source)))
-    except GuideImportError as exc:
+        with open_json_zip(source, max_bytes=MAX_FILE_BYTES, max_members=MAX_RECORDS) as member:
+            data = read_json(member)
+    except (GuideImportError, JSONStreamError) as exc:
         raise DicomAnnotationError("Invalid or oversized DICOM annotation ZIP or JSON") from exc
     if not isinstance(data, dict) or set(data) != {"records"}:
         raise DicomAnnotationError("Expected a JSON object containing a records array")

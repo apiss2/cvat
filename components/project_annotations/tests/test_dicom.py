@@ -7,7 +7,7 @@ import json
 import stat
 from dataclasses import replace
 from unittest.mock import patch
-from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 import pytest
 
@@ -476,13 +476,21 @@ class TestInput:
         "content",
         (
             "[]",
+            "[{}]",
             '{"records":[]}',
             '{"records":{},"extra":1}',
             '{"records":[],"records":[{}]}',
+            '{"records":[{}, {"tags":[{"label":"first","label":"second"}]}]}',
+            '{"records":[{}, {"tags":[{"label":"first","labe\\u006c":"second"}]}]}',
             '{"records":[NaN]}',
+            '{"records":[{}, {"tags":[{"attributes":{"value":Infinity}}]}]}',
             '{"records":[1e999]}',
             '{"records":null}',
             '{"records":[{}],"extra":1}',
+            '{"extra":1,"records":[{}]}',
+            '{"records":[{}]} {}',
+            '{"records":[{}]} trailing',
+            b'{"records":[{}]}\xff',
         ),
     )
     def test_bad_json_structure_duplicate_keys_and_nonfinite_numbers_are_rejected(self, content):
@@ -498,6 +506,75 @@ class TestInput:
         stream.seek(0)
         with pytest.raises(dicom.DicomAnnotationError):
             dicom.read_records(stream)
+
+    @pytest.mark.parametrize(
+        "compression,payload_size,accepted",
+        (
+            (ZIP_STORED, 32 * 1024 * 1024, False),
+            (ZIP_DEFLATED, 32 * 1024 * 1024 + 1, False),
+            (ZIP_DEFLATED, 32 * 1024 * 1024, True),
+        ),
+        ids=("archive-over-limit", "expanded-over-limit", "expanded-at-limit"),
+    )
+    def test_annotation_byte_limits_remain_independent_of_task_guides(
+        self, tmp_path, compression, payload_size, accepted
+    ):
+        path = tmp_path / "annotations.zip"
+        document = b'{"records":[{}]}'
+        padding = b" " * (64 * 1024)
+        with ZipFile(path, "w", compression=compression) as zipped:
+            with zipped.open("sample.json", "w") as member:
+                member.write(document)
+                remaining = payload_size - len(document)
+                while remaining:
+                    piece = padding[:remaining]
+                    member.write(piece)
+                    remaining -= len(piece)
+        if compression == ZIP_STORED:
+            # The JSON fits, while the ZIP headers put the upload over 32 MiB.
+            assert path.stat().st_size > 32 * 1024 * 1024
+        else:
+            assert path.stat().st_size < 32 * 1024 * 1024
+        with path.open("rb") as source:
+            if accepted:
+                assert dicom.read_records(source) == [{}]
+            else:
+                with pytest.raises(dicom.DicomAnnotationError):
+                    dicom.read_records(source)
+
+    def test_annotation_zip_limit_still_counts_directory_entries(self, tmp_path):
+        path = tmp_path / "many-entries.zip"
+        with ZipFile(path, "w") as zipped:
+            for index in range(49_999):
+                zipped.writestr(f"folder-{index}/", b"")
+            zipped.writestr("sample.json", '{"records":[{}]}')
+        with path.open("rb") as source:
+            assert dicom.read_records(source) == [{}]
+        with ZipFile(path, "a") as zipped:
+            zipped.writestr("one-more/", b"")
+        with path.open("rb") as source, pytest.raises(dicom.DicomAnnotationError):
+            dicom.read_records(source)
+
+    @pytest.mark.parametrize("count", (50_000, 50_001))
+    def test_annotation_record_limit_is_preserved(self, count):
+        # Invalid rows remain available for the planner's per-record diagnostics.
+        source = archive(json.dumps({"records": [None] * count}))
+        if count == 50_000:
+            assert dicom.read_records(source) == [None] * count
+        else:
+            with pytest.raises(dicom.DicomAnnotationError):
+                dicom.read_records(source)
+
+    @pytest.mark.parametrize("count", (50_000, 50_001))
+    def test_annotation_tag_count_limit_is_preserved(self, count):
+        row = record(study="9.8.7")
+        row["tags"] = [{"label": "Finding"}] * count
+        result = plan(row)
+        assert result.unmatched == [1]
+        if count == 50_000:
+            assert not result.invalid_records
+        else:
+            assert "tags array" in result.invalid_records[1]
 
     @pytest.mark.parametrize(
         "name", ("../sample.json", "/sample.json", "C:/sample.json", "folder\\sample.json")
