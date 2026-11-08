@@ -100,6 +100,14 @@ python -m pytest -q components/extensions/tests/run_core_tests.py
 
 隔離したCVAT環境の準備は、[共通の補助コード](../components/extensions/tests/cvat_backend.py)へまとめています。アノテーション保存の[モデルを使う試験](../components/project_annotations/tests/run_orm_tests.py)もこれを再利用し、実行はそれぞれ別プロセスにします。
 
+公式のDB移行は、[移行用の試験](../components/extensions/tests/run_migration_tests.py)を同じ依存環境の別プロセスで実行します。この試験は現在のモデルから直接テーブルを作らず、`MigrationExecutor` で旧スキーマを作成して既存データを保存し、リポジトリ内の公式マイグレーションを適用します。更新時の品質評価の閾値と継承、親子関係の保持、逆移行時の数値のコピーとポリシー形式の閾値を数値へ変換できない場合の拒否を検証します。
+
+```bash
+python -m pytest -q components/extensions/tests/run_migration_tests.py
+```
+
+移行用の試験もSQLiteを使用します。本番のPostgreSQLや復元した実データの移行確認は、[更新手順](extensions/update.md#devで受入確認を行う)に従って別途実施してください。
+
 ## 独自コードの品質を計測する
 
 Pythonの計測は `cvatctl quality` で行います。カバレッジはテストが実行した行と分岐の割合、循環的複雑度は関数内の独立した処理経路の数を表します。CRAPスコアは複雑度と未実行の割合を組み合わせ、変更前に詳しく確認する関数を探すために使用します。
