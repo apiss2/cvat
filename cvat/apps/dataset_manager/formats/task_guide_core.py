@@ -1,22 +1,34 @@
 # SPDX-License-Identifier: MIT
 """Pure ZIP, JSON, identity and Markdown logic for the project task-guide importer."""
 
+from __future__ import annotations
+
+import codecs
 import html
-import io
-import json
 import math
 import re
 import stat
 import zlib
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
+from io import SEEK_END
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING, Iterator
 from zipfile import BadZipFile, ZipFile
 
-MAX_FILE_BYTES = 32 * 1024 * 1024
-MAX_RECORDS = 50_000
-MAX_GUIDE_CHARS = 1_000_000
+from components.task_guide.streaming_json import (
+    JSONStreamError,
+    iter_named_entries,
+    iter_report_records,
+)
+
+if TYPE_CHECKING:
+    from components.task_guide.staging import TextReference
+
+_READ_SIZE = 64 * 1024
+_SURROGATE = re.compile(r"[\ud800-\udfff]")
 START = "<!-- cvat:study-report:start -->"
 END = "<!-- cvat:study-report:end -->"
 STUDY_UID = "StudyInstanceUID"
@@ -36,14 +48,14 @@ class Report:
     study_uid: str
     patient_id: str
     date: str
-    markdown: str
+    markdown: str | TextReference
 
 
 @dataclass(frozen=True)
 class NamedGuide:
     row: int
     task_name: str
-    markdown: str
+    markdown: str | TextReference
 
 
 @dataclass
@@ -181,89 +193,57 @@ def render_markdown(source: dict, result: dict, *, input_text=None) -> str:
     if reference:
         sections.append("## 参考生データ\n" + _escape(reference).replace("\n", "  \n"))
     markdown = "\n\n".join(sections).rstrip() + "\n"
-    if len(markdown) > MAX_GUIDE_CHARS:
-        raise GuideImportError("Generated guide exceeds the size limit")
     return markdown
 
 
-def _unique_object(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise GuideImportError("Duplicate JSON object key")
-        result[key] = value
-    return result
-
-
-def _invalid_number(value):
-    raise GuideImportError("Nonfinite JSON number")
-
-
-def _finite_float(value):
-    number = float(value)
-    if not math.isfinite(number):
-        _invalid_number(value)
-    return number
-
-
-def _read_json(source):
-    raw = source.read(MAX_FILE_BYTES + 1)
-    if len(raw) > MAX_FILE_BYTES:
-        raise GuideImportError("JSON exceeds the 32 MiB limit")
+def iter_reports(source) -> Iterator[Report]:
+    """Yield validated reports; callers must exhaust the iterator before writing."""
     try:
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8-sig")
-        return json.loads(
-            raw,
-            object_pairs_hook=_unique_object,
-            parse_constant=_invalid_number,
-            parse_float=_finite_float,
-        )
-    except (UnicodeError, ValueError, RecursionError) as exc:
-        raise GuideImportError(
-            "Invalid UTF-8 JSON (including duplicate keys or nonfinite numbers)"
-        ) from exc
+        for row, record in enumerate(iter_report_records(source), 1):
+            try:
+                if not isinstance(record, dict):
+                    raise GuideImportError("Record must be an object")
+                data, result = record.get("input"), record.get("result")
+                if not isinstance(data, dict) or not isinstance(result, dict):
+                    raise GuideImportError("Record must contain input and result objects")
+                uid = _identifier(data, ("study_instance_uid", "study_uid", "uid"))
+                if not _UID.fullmatch(uid) or len(uid) > 64:
+                    raise GuideImportError("A full numeric StudyInstanceUID is required")
+                markdown = render_markdown(data, result, input_text=record.get("input_text"))
+                if _SURROGATE.search(markdown):
+                    raise GuideImportError("Guide contains invalid Unicode")
+                yield Report(
+                    row,
+                    uid,
+                    _identifier(data, ("patient_id", "pid")),
+                    _identifier(data, ("study_date", "date", "dt"), date=True),
+                    markdown,
+                )
+                del record, data, result, markdown
+            except GuideImportError as exc:
+                raise GuideImportError(f"Record {row}: {exc}") from exc
+    except JSONStreamError as exc:
+        raise GuideImportError(str(exc)) from exc
 
 
 def read_reports(source) -> tuple[list[Report], int]:
-    data = _read_json(source)
-    records = data.get("records") if isinstance(data, dict) else data
-    if not isinstance(records, list) or not 0 < len(records) <= MAX_RECORDS:
-        raise GuideImportError("Expected a nonempty records array, at most 50000 records")
+    """Collect and deduplicate reports for callers that need an in-memory result."""
     reports = {}
     duplicates = 0
-    for row, record in enumerate(records, 1):
-        try:
-            if not isinstance(record, dict):
-                raise GuideImportError("Record must be an object")
-            source, result = record.get("input"), record.get("result")
-            if not isinstance(source, dict) or not isinstance(result, dict):
-                raise GuideImportError("Record must contain input and result objects")
-            uid = _identifier(source, ("study_instance_uid", "study_uid", "uid"))
-            if not _UID.fullmatch(uid) or len(uid) > 64:
-                raise GuideImportError("A full numeric StudyInstanceUID is required")
-            report = Report(
-                row,
-                uid,
-                _identifier(source, ("patient_id", "pid")),
-                _identifier(source, ("study_date", "date", "dt"), date=True),
-                render_markdown(source, result, input_text=record.get("input_text")),
-            )
-            previous = reports.get(uid)
-            if previous:
-                if (previous.patient_id, previous.date, previous.markdown) != (
-                    report.patient_id,
-                    report.date,
-                    report.markdown,
-                ):
-                    raise GuideImportError(
-                        f"Conflicting reports for the study in record {previous.row}"
-                    )
-                duplicates += 1
-            else:
-                reports[uid] = report
-        except GuideImportError as exc:
-            raise GuideImportError(f"Record {row}: {exc}") from exc
+    for report in iter_reports(source):
+        previous = reports.get(report.study_uid)
+        if previous:
+            if (previous.patient_id, previous.date, previous.markdown) != (
+                report.patient_id,
+                report.date,
+                report.markdown,
+            ):
+                raise GuideImportError(
+                    f"Record {report.row}: Conflicting reports for the study in record {previous.row}"
+                )
+            duplicates += 1
+        else:
+            reports[report.study_uid] = report
     return list(reports.values()), duplicates
 
 
@@ -272,39 +252,48 @@ def _named_guide(row: int, name, markdown) -> NamedGuide:
         raise GuideImportError(f"Record {row}: task name must be a nonempty string")
     if not isinstance(markdown, str):
         raise GuideImportError(f"Record {row}: Markdown must be a string")
-    if len(markdown) > MAX_GUIDE_CHARS:
-        raise GuideImportError(f"Record {row}: guide exceeds the size limit")
     if "\x00" in name or "\x00" in markdown:
         raise GuideImportError(f"Record {row}: NUL is not allowed")
-    try:
-        name.encode("utf-8")
-        markdown.encode("utf-8")
-    except UnicodeError as exc:
-        raise GuideImportError(f"Record {row}: invalid Unicode") from exc
+    if _SURROGATE.search(name) or _SURROGATE.search(markdown):
+        raise GuideImportError(f"Record {row}: invalid Unicode")
     # Names and Markdown are intentionally not stripped, escaped or reformatted.
     return NamedGuide(row, name, markdown)
 
 
-def read_named_json(source) -> list[NamedGuide]:
-    data = _read_json(source)
-    if not isinstance(data, dict) or not 0 < len(data) <= MAX_RECORDS:
-        raise GuideImportError(
-            "Expected a nonempty task-name-to-Markdown object, at most 50000 entries"
-        )
-    return [_named_guide(row, name, text) for row, (name, text) in enumerate(data.items(), 1)]
-
-
-def _read_zip_files(source, extension: str) -> list[tuple[str, bytes]]:
-    raw = source.read(MAX_FILE_BYTES + 1)
-    if not isinstance(raw, bytes) or len(raw) > MAX_FILE_BYTES:
-        raise GuideImportError("ZIP exceeds the 32 MiB limit or is not binary")
-    files = []
-    total = 0
+def iter_named_json(source) -> Iterator[NamedGuide]:
+    """Yield exact task names and Markdown, validating the entire JSON on exhaustion."""
     try:
-        with ZipFile(io.BytesIO(raw)) as archive:
-            if len(archive.infolist()) > MAX_RECORDS:
-                raise GuideImportError("ZIP has more than 50000 entries")
-            for info in archive.infolist():
+        for row, (name, text) in enumerate(iter_named_entries(source), 1):
+            yield _named_guide(row, name, text)
+            del text
+    except JSONStreamError as exc:
+        raise GuideImportError(str(exc)) from exc
+
+
+def read_named_json(source) -> list[NamedGuide]:
+    return list(iter_named_json(source))
+
+
+@contextmanager
+def _open_zip(
+    source, extension: str, *, max_bytes: int | None = None, max_members: int | None = None
+):
+    """Open the seekable upload directly and validate all member metadata."""
+    try:
+        if max_bytes is not None:
+            position = source.tell()
+            source.seek(0, SEEK_END)
+            size = source.tell()
+            source.seek(position)
+            if size > max_bytes:
+                raise GuideImportError("ZIP exceeds the size limit")
+        with ZipFile(source) as archive:
+            entries = archive.infolist()
+            if max_members is not None and len(entries) > max_members:
+                raise GuideImportError("ZIP exceeds the entry limit")
+            files = []
+            total = 0
+            for info in entries:
                 path = PurePosixPath(info.filename)
                 # Read members directly; never extract archive paths to the filesystem.
                 if (
@@ -328,56 +317,88 @@ def _read_zip_files(source, extension: str) -> list[tuple[str, bytes]]:
                 if path.suffix.lower() != extension:
                     raise GuideImportError(f"ZIP files must have the {extension} extension")
                 total += info.file_size
-                if total > MAX_FILE_BYTES:
-                    raise GuideImportError("Uncompressed ZIP exceeds the 32 MiB limit")
-                with archive.open(info) as member:
-                    data = member.read(MAX_FILE_BYTES + 1)
-                if len(data) != info.file_size or len(data) > MAX_FILE_BYTES:
-                    raise GuideImportError("Invalid or oversized ZIP member")
-                files.append((path.name, data))
+                if max_bytes is not None and total > max_bytes:
+                    raise GuideImportError("Uncompressed ZIP exceeds the size limit")
+                files.append((path.name, info))
+            yield archive, files
     except GuideImportError:
         raise
     except (
         BadZipFile,
         EOFError,
         UnicodeError,
-        OSError,
         RuntimeError,
         ValueError,
+        TypeError,
         NotImplementedError,
         zlib.error,
     ) as exc:
         raise GuideImportError("Invalid ZIP archive") from exc
-    return files
 
 
-def read_json_zip(source) -> bytes:
-    files = _read_zip_files(source, ".json")
-    if len(files) != 1:
-        raise GuideImportError("ZIP must contain exactly one JSON file")
-    return files[0][1]
+@contextmanager
+def _open_zip_member(archive, info):
+    with archive.open(info) as member:
+        yield member
+        # Reaching EOF checks the CRC even when a caller has read only a prefix.
+        while member.read(_READ_SIZE):
+            pass
+        if member.tell() != info.file_size:
+            raise GuideImportError("Invalid or truncated ZIP member")
+
+
+@contextmanager
+def open_json_zip(source, *, max_bytes: int | None = None, max_members: int | None = None):
+    """Yield the sole JSON member, optionally bounding archive and expanded sizes.
+
+    Task guides impose no format-specific limits. Other importers can supply
+    their own byte and member limits while sharing the same ZIP validation.
+    """
+    with _open_zip(source, ".json", max_bytes=max_bytes, max_members=max_members) as (
+        archive,
+        files,
+    ):
+        if len(files) != 1:
+            raise GuideImportError("ZIP must contain exactly one JSON file")
+        with _open_zip_member(archive, files[0][1]) as member:
+            yield member
+
+
+def iter_markdown_zip(source) -> Iterator[NamedGuide]:
+    """Decode one Markdown member at a time; exhaust before saving any guide."""
+    with _open_zip(source, ".md") as (archive, files):
+        if not files:
+            raise GuideImportError("ZIP contains no Markdown files")
+        names = set()
+        for row, (filename, info) in enumerate(files, 1):
+            name = filename[:-3]
+            if name in names:
+                raise GuideImportError(
+                    "ZIP contains multiple Markdown files for the same task name"
+                )
+            names.add(name)
+            try:
+                with _open_zip_member(archive, info) as member:
+                    decoder = codecs.getincrementaldecoder("utf-8-sig")()
+                    chunks = []
+                    while data := member.read(_READ_SIZE):
+                        chunks.append(decoder.decode(data))
+                    chunks.append(decoder.decode(b"", final=True))
+                markdown = "".join(chunks)
+                del chunks
+            except UnicodeError as exc:
+                raise GuideImportError("Invalid UTF-8 Markdown") from exc
+            yield _named_guide(row, name, markdown)
+            del markdown
 
 
 def read_markdown_zip(source) -> list[NamedGuide]:
-    guides, names = [], set()
-    for filename, data in _read_zip_files(source, ".md"):
-        name = filename[:-3]
-        if name in names:
-            raise GuideImportError("ZIP contains multiple Markdown files for the same task name")
-        try:
-            markdown = data.decode("utf-8-sig")
-        except UnicodeError as exc:
-            raise GuideImportError("Invalid UTF-8 Markdown") from exc
-        guides.append(_named_guide(len(guides) + 1, name, markdown))
-        names.add(name)
-    if not guides:
-        raise GuideImportError("ZIP contains no Markdown files")
-    return guides
+    return list(iter_markdown_zip(source))
 
 
 def plan_named_updates(
     guides: list[NamedGuide], tasks: list[TaskIdentity]
-) -> tuple[dict[int, str], list[int]]:
+) -> tuple[dict[int, str | TextReference], list[int]]:
     by_name = {}
     for task in tasks:
         by_name.setdefault(task.name, []).append(task.id)
@@ -397,7 +418,7 @@ def plan_named_updates(
 
 def plan_updates(
     reports: list[Report], tasks: list[TaskIdentity]
-) -> tuple[dict[int, str], list[int]]:
+) -> tuple[dict[int, str | TextReference], list[int]]:
     """Apply one study report to all matching image/video tasks, never by short SOP suffix."""
     by_uid = {report.study_uid: report for report in reports}
     updates, matched = {}, set()
@@ -439,10 +460,6 @@ def merge_markdown(existing: str, generated: str) -> str:
         if start >= end:
             raise GuideImportError("Guide report markers are out of order")
         merged = existing[:start] + block + existing[end + len(END) :]
-    if len(merged) > MAX_GUIDE_CHARS:
-        raise GuideImportError("Combined guide exceeds the size limit")
-    try:
-        merged.encode("utf-8")
-    except UnicodeError as exc:
-        raise GuideImportError("Guide contains invalid Unicode") from exc
+    if _SURROGATE.search(merged):
+        raise GuideImportError("Guide contains invalid Unicode")
     return merged
