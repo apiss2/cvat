@@ -14,7 +14,7 @@ from importlib import import_module
 from pathlib import Path
 
 
-def configure_cvat(*, prefix: str):
+def configure_cvat(*, prefix: str, create_schema: bool = True):
     from django.apps import AppConfig
     from django.conf import settings
     from django.contrib.admin.apps import SimpleAdminConfig
@@ -97,7 +97,10 @@ def configure_cvat(*, prefix: str):
     from django.apps import apps
     from django.db import connection
 
-    with connection.schema_editor() as editor:
-        for model in apps.get_models():
-            editor.create_model(model)
+    # Migration suites start with an empty database and let MigrationExecutor
+    # create historical tables; other integration suites use the current models.
+    if create_schema:
+        with connection.schema_editor() as editor:
+            for model in apps.get_models():
+                editor.create_model(model)
     return runtime
