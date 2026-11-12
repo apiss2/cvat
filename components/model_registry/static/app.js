@@ -57,7 +57,7 @@ function kindChanged() {
     $('interactor-options').hidden = !prompting; $('sample-prompts-field').hidden = !prompting;
     for (const id of ['min-pos-points', 'min-neg-points', 'box-mode', 'sample-prompts']) $(id).disabled = !prompting;
     for (const id of ['min-distance', 'spacing-percent', 'min-area']) $(id).disabled = !segmentation;
-    $('label-help').textContent = prompting ? 'Promptingは対象1個のマスクを返します。モデルの説明用ラベルを1件だけ登録してください。実際のラベルはCVATで選びます。' : $('model-kind').value === 'tag' ? 'ClassificationのクラスIDとラベル名を登録します。分類結果は画像や動画の各フレームのタグになります。画像全体を分類する場合は、実行時にROIを指定しないでください。' : segmentation ? 'Segmentationのラベルをモデルの出力順に登録してください。この順番に従って、各領域にラベルを付けます。' : 'DetectionのクラスIDとラベル名を登録します。クラスIDはモデルの出力と一致させてください。';
+    $('label-help').textContent = prompting ? 'Promptingは対象1個のマスクを返します。モデルの説明用ラベルを1件だけ登録してください。実際のラベルはCVATで選びます。' : $('model-kind').value === 'polyline' ? 'Line detectionのクラスIDとラベル名を登録します。1枚の画像から任意の本数の線を出力でき、各線はCVATのポリラインになります。クラスIDはモデルの出力と一致させてください。' : $('model-kind').value === 'tag' ? 'ClassificationのクラスIDとラベル名を登録します。分類結果は画像や動画の各フレームのタグになります。画像全体を分類する場合は、実行時にROIを指定しないでください。' : segmentation ? 'Segmentationのラベルをモデルの出力順に登録してください。この順番に従って、各領域にラベルを付けます。' : 'DetectionのクラスIDとラベル名を登録します。クラスIDはモデルの出力と一致させてください。';
 }
 function labelRow(value = { id: 0, name: '' }) {
     const row = document.createElement('div'); row.className = 'label-row';
@@ -74,7 +74,7 @@ function resetForm(model = null) {
     $('form-title').textContent = model ? `モデルの更新: ${model.manifest?.name || model.id}` : 'モデルの新規登録';
     $('name').value = model?.manifest?.name || ''; $('description').value = model?.manifest?.description || ''; $('author-contact').value = model?.manifest?.author_contact || '';
     const labelType = model?.manifest?.labels?.[0]?.type;
-    $('model-kind').value = model?.manifest?.kind === 'interactor' ? 'interactor' : ['rectangle', 'tag'].includes(labelType) ? labelType : 'polygon';
+    $('model-kind').value = model?.manifest?.kind === 'interactor' ? 'interactor' : ['rectangle', 'polyline', 'tag'].includes(labelType) ? labelType : 'polygon';
     const interactor = model?.manifest?.interactor;
     $('min-pos-points').value = interactor?.min_pos_points ?? 1; $('min-neg-points').value = interactor?.min_neg_points ?? 0;
     $('box-mode').value = interactor?.startswith_box ? 'required' : interactor?.startswith_box_optional === false ? 'disabled' : 'optional';
@@ -194,7 +194,7 @@ function renderModels() {
         if (model.manifest?.description) { const description = document.createElement('span'); description.className = 'model-description'; description.textContent = model.manifest.description; name.append(description); }
         const kind = document.createElement('td'); const badge = document.createElement('span'); badge.className = 'model-type';
         const types = new Set((model.manifest?.labels || []).map((label) => label.type));
-        badge.textContent = model.manifest?.kind === 'interactor' ? 'Prompting' : types.size > 1 ? 'Mixed' : types.has('polygon') ? 'Segmentation' : types.has('rectangle') ? 'Detection' : types.has('tag') ? 'Classification' : '未設定'; kind.append(badge);
+        badge.textContent = model.manifest?.kind === 'interactor' ? 'Prompting' : types.size > 1 ? 'Mixed' : types.has('polygon') ? 'Segmentation' : types.has('rectangle') ? 'Detection' : types.has('polyline') ? 'Line detection' : types.has('tag') ? 'Classification' : '未設定'; kind.append(badge);
         const author = document.createElement('td'); const owner = document.createElement('span'); owner.className = 'model-owner'; owner.textContent = model.owner; author.append(owner);
         const contact = document.createElement('span'); contact.className = 'model-contact'; contact.textContent = model.manifest?.author_contact || '連絡先は未設定'; author.append(contact);
         const status = document.createElement('td'); const pill = document.createElement('span'); pill.className = `status ${model.deleted ? '' : pending ? 'pending' : model.active_revision ? 'published' : op?.status === 'failed' ? 'failed' : ''}`; pill.textContent = state; status.append(pill);
@@ -363,6 +363,7 @@ async function preview(file, result, modelId) {
     }
     for (const obj of Array.isArray(result) ? result : []) {
         if (obj.type === 'rectangle') { const [x1, y1, x2, y2] = obj.points; context.strokeRect(x1, y1, x2 - x1, y2 - y1); }
+        else if (obj.type === 'polyline') { context.beginPath(); context.moveTo(obj.points[0], obj.points[1]); for (let i = 2; i < obj.points.length; i += 2) context.lineTo(obj.points[i], obj.points[i + 1]); context.stroke(); }
         else if (obj.type === 'polygon') { context.beginPath(); context.moveTo(obj.points[0], obj.points[1]); for (let i = 2; i < obj.points.length; i += 2) context.lineTo(obj.points[i], obj.points[i + 1]); context.closePath(); context.fillStyle = 'rgba(232,75,64,.3)'; context.fill(); context.stroke(); }
     }
     canvas.hidden = false;

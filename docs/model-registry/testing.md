@@ -12,6 +12,7 @@
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_api.py components/model_registry/tests/test_deletion.py components/model_registry/tests/test_runtime.py components/model_registry/tests/test_cli.py -q
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_classification.py -q
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_prompting.py -q
+PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_polylines.py -q
 python -m pytest --noconftest components/model_registry/tests/test_partial_updates.py -q
 python -m pytest --noconftest components/extensions/tests/test_registration.py -q
 node --test components/model_registry/tests/classification-ui.test.cjs components/model_registry/tests/ui-copy.test.cjs
@@ -20,6 +21,7 @@ python -m pytest -q components/extensions/tests/run_core_tests.py -k registered_
 ```
 
 Classificationの試験は出力と独立した応答検査、旧出力形式、内部パッケージ、ワーカーのHTTP処理を確認します。通常のONNXセッションは代替実装を使い、onnxとonnxruntimeがある場合だけIdentityモデルの実行試験も動きます。部分更新の試験は経路と候補の組み立てを確認しますが、認証やサービスを代替しています。
+Line detectionの試験は任意本数のポリライン、数値配列による頂点、交差を含む線、DetectionやClassificationとの混在、座標範囲と頂点数、図形数と頂点数の共通上限、管理サーバーでの再検査、作例の実ONNX実行と登録後のCVAT向け推論を確認します。JavaScriptの試験にはポリラインの登録と試験結果の表示も含みます。
 Promptingの試験は能力情報、点・除外点・矩形の制約、二値性と寸法、空の結果、穴と離れた領域、登録と試験Promptの保持、部分更新の失敗、旧版の実行と切り替えを確認します。実ONNXの試験は[ワーカー依存](../../components/model_registry/requirements-worker.txt)も準備し、IdentityモデルをCPUで実行します。SAMの認識精度を検証する試験ではありません。JavaScriptの試験には登録・更新・版別Prompt入力とマスク表示も含みます。
 
 `registered_interactor`は[本体接続の専用環境](../development.md#本体との接続を確認する)で実行します。CVATの実ルーティング、関数種別、Jobのデータ閲覧権限、未認証・拒否時の非実行、ROIの画像切り出し、点と矩形の移動、dense maskの全画像への復元を確認します。画像配信と中継HTTP、推論、イベント保存、OPAの最終判断は代替実装です。実Docker、実OPA、ブラウザーでの保存確認は別途必要です。通常のONNXセッションは代替実装を使い、onnxとonnxruntimeがある場合だけIdentityモデルの実行試験も動きます。部分更新の試験は経路と候補の組み立てを確認しますが、認証やサービスを代替しています。
@@ -37,7 +39,7 @@ Promptingの試験は能力情報、点・除外点・矩形の制約、二値�
 | 公開URLと認証 | CVATから再ログインなしに一覧を開き、ログアウトと期限切れ後は認証が必要になることを確認します。 |
 | 権限 | BはAの公開モデルを実行でき、更新、削除、試験、ログを操作できないことを確認します。 |
 | 操作要求 | 不一致のOriginやX-Registry-Requestがない操作要求を拒否します。 |
-| 4種類の登録 | Segmentation、Detection、Classification、Promptingを登録し、図形、タグと信頼度、Promptによるマスクを確認します。 |
+| 5種類の登録 | Segmentation、Detection、Line detection、Classification、Promptingを登録し、図形、ポリライン、タグと信頼度、Promptによるマスクを確認します。 |
 | 出力 | 実画像の輪郭、穴、小領域、ラベル順、元の画像座標、分類の意味を確認します。 |
 | 部分更新 | 設定、コード、試験画像、個別ONNXだけの更新で他の値を保持し、失敗時は公開中の版を維持します。 |
 | CVATからの実行 | 単一画像と一括処理でラベルを対応付け、図形とタグを保存して再読込します。 |

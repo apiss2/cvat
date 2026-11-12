@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from .schema import Manifest, PolygonSettings
-from .sdk import Box, Mask, Tag
+from .sdk import Box, Mask, Polyline, Tag
 
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_PIXELS = 16_000_000
@@ -177,6 +177,31 @@ def _polygons(bitmap: np.ndarray, settings: PolygonSettings):
                 yield points
 
 
+def polyline_points(points, w: int, h: int) -> np.ndarray:
+    """Validate one open polyline in original image coordinates."""
+    if isinstance(points, np.ndarray):
+        if points.ndim != 2 or points.shape[1] != 2 or points.dtype.kind not in ("i", "u", "f"):
+            raise ValueError("Polyline.points must be a numeric (K, 2) array")
+        if not 2 <= len(points) <= MAX_POLYGON_VERTICES:
+            raise ValueError("polyline requires 2 to 4096 vertices")
+        array = points.astype(np.float64)
+    else:
+        if not isinstance(points, (list, tuple)) or not 2 <= len(points) <= MAX_POLYGON_VERTICES:
+            raise ValueError("polyline requires 2 to 4096 vertices")
+        if any(not isinstance(point, (list, tuple)) or len(point) != 2 for point in points):
+            raise ValueError("Polyline.points must contain (x, y) pairs")
+        if any(isinstance(v, (bool, np.bool_)) or not isinstance(v, numbers.Real) for point in points for v in point):
+            raise ValueError("Polyline.points contains a nonnumeric coordinate")
+        array = np.asarray(points, dtype=np.float64)
+    if not np.isfinite(array).all():
+        raise ValueError("polyline contains NaN or infinity")
+    if (array < 0).any() or (array[:, 0] > w).any() or (array[:, 1] > h).any():
+        raise ValueError("polyline must be in original image coordinates")
+    if (np.linalg.norm(np.diff(array, axis=0), axis=1) <= GEOMETRY_EPSILON).any():
+        raise ValueError("polyline has consecutive duplicate vertices")
+    return array
+
+
 def _class_and_score(item, labels):
     if isinstance(item.class_id, (bool, np.bool_)) or not isinstance(item.class_id, numbers.Integral):
         raise ValueError("class_id must be an integer")
@@ -220,12 +245,12 @@ def encode_results(results, manifest: Manifest, shape: tuple[int, ...]) -> list[
         return output
 
     if not isinstance(results, (list, tuple)) or len(results) > MAX_OBJECTS:
-        raise ValueError("predict must return a binary (N, H, W) numpy array or at most 2000 Box, Tag or legacy Mask values")
+        raise ValueError("predict must return a binary (N, H, W) numpy array or at most 2000 Box, Polyline, Tag or legacy Mask values")
     mask_values = 0
     tag_ids: set[int] = set()
     for item in results:
-        if not isinstance(item, (Box, Mask, Tag)):
-            raise TypeError("results must be registry.sdk.Box, Tag or legacy Mask")
+        if not isinstance(item, (Box, Mask, Polyline, Tag)):
+            raise TypeError("results must be registry.sdk.Box, Polyline, Tag or legacy Mask")
         label, score = _class_and_score(item, labels)
         if isinstance(item, Tag):
             if label.type != "tag":
@@ -247,6 +272,17 @@ def encode_results(results, manifest: Manifest, shape: tuple[int, ...]) -> list[
             if mask_values > MAX_MASK_VALUES:
                 raise ValueError("segmentation masks exceed 24000000 elements")
             add_bitmap(bitmap, label, score)
+            continue
+        if isinstance(item, Polyline):
+            if label.type != "polyline":
+                raise ValueError("Polyline class_id must refer to a polyline label")
+            points = polyline_points(item.points, w, h)
+            total_vertices += len(points)
+            if total_vertices > MAX_TOTAL_POLYGON_VERTICES:
+                raise ValueError("combined polygons and polylines exceed 100000 vertices")
+            if len(output) >= MAX_OBJECTS:
+                raise ValueError("predict output exceeds 2000 objects")
+            output.append({"label": label.name, "confidence": score, "type": "polyline", "points": points.ravel().tolist()})
             continue
         if label.type != "rectangle":
             raise ValueError("Box class_id must refer to a rectangle label")

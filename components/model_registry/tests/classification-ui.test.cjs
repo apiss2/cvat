@@ -90,7 +90,7 @@ function model(kind = 'tag') {
 }
 function file(name) { return new File(['fixture'], name); }
 
-for (const [kind, outputName] of [['tag', 'Classification'], ['polygon', 'Segmentation'], ['rectangle', 'Detection']]) {
+for (const [kind, outputName] of [['tag', 'Classification'], ['polygon', 'Segmentation'], ['rectangle', 'Detection'], ['polyline', 'Line detection']]) {
     test(`new registration retains ${kind} label types and correct options`, async () => {
         const ui = setup(); ui.get('model-kind').value = kind; ui.eval('kindChanged()');
         assert.match(ui.get('label-help').textContent, new RegExp(outputName));
@@ -251,6 +251,34 @@ test('prompting list and revision-aware test display masks and send prompts', as
     ui.sandbox.response.results = [];
     await ui.submit('test-form');
     assert.deepEqual(Object.keys(requestBodies[2]), ['image']);
+});
+
+test('line detection registers polyline labels and previews any number of lines', async () => {
+    const ui = setup(); ui.get('model-kind').value = 'polyline'; ui.eval('kindChanged()');
+    assert.equal(ui.get('polygon-options').hidden, true);
+    assert.equal(ui.get('interactor-options').hidden, true);
+    assert.match(ui.get('label-help').textContent, /任意の本数/);
+    ui.get('name').value = 'line model'; ui.get('code').files = [file('model.py')];
+    ui.get('weights').files = [file('model.onnx')]; ui.get('sample').files = [file('sample.png')];
+    await ui.submit('register-form');
+    const manifest = JSON.parse(ui.sandbox.submitted[0].data.get('manifest'));
+    assert.equal(manifest.labels[0].type, 'polyline');
+    assert.equal(manifest.kind, undefined); assert.equal(manifest.polygon, undefined);
+
+    ui.sandbox.model = model('polyline'); ui.eval('resetForm(model)');
+    assert.equal(ui.get('model-kind').value, 'polyline');
+    ui.eval('selected = model; models = [model]; renderModels();');
+    assert.equal(ui.get('models').children[0].children[1].textContent, 'Line detection');
+    ui.get('revision').value = ui.sandbox.model.active_revision; ui.eval('testRevisionChanged()');
+    ui.get('test-image').files = [file('sample.png')];
+    const line = { label: 'dark_image', confidence: 0.9, type: 'polyline' };
+    ui.sandbox.response = { revision: 'b'.repeat(16), request_id: 'test', results: [
+        { ...line, points: [0, 0, 10, 10] }, { ...line, points: [1, 1, 5, 1, 5, 5] }, { ...line, points: [2, 2, 3, 3] },
+    ] };
+    await ui.submit('test-form');
+    assert.equal(ui.get('notice').textContent, '');
+    assert.equal(ui.get('preview').hidden, false);
+    assert.match(ui.get('test-summary').textContent, /出力件数: 3件（図形 3件、タグ 0件）/);
 });
 
 test('metadata-only update does not convert tag labels to polygons', async () => {

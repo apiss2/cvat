@@ -15,7 +15,7 @@ class StrictModel(BaseModel):
 class OutputLabel(StrictModel):
     id: Annotated[int, Field(ge=0, le=2**31 - 1)]
     name: Annotated[str, Field(min_length=1, max_length=128)]
-    type: Literal["rectangle", "polygon", "tag"]
+    type: Literal["rectangle", "polygon", "polyline", "tag"]
 
     @model_validator(mode="before")
     @classmethod

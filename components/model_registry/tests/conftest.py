@@ -14,7 +14,7 @@ from registry.codec import decode_image, encode_interactor, encode_results
 from registry.config import Settings
 from registry.manager import create_app
 from registry.schema import Manifest
-from registry.sdk import Box
+from registry.sdk import Box, Polyline
 from registry.runtime import RuntimeFailure
 
 TOKENS = {'service': 's'*48}
@@ -44,6 +44,8 @@ class FakeRuntime:
             return encode_interactor(bitmap, image.shape)
         if manifest.labels[0].type == 'polygon':
             output = np.stack([bitmap for _ in manifest.labels])
+        elif manifest.labels[0].type == 'polyline':
+            output = [Polyline(label.id, .9, [(12, 20), (44, 20)]) for label in manifest.labels]
         else:
             output = [Box(label.id, .9, (12, 8, 44, 32)) for label in manifest.labels]
         return encode_results(output, manifest, image.shape)

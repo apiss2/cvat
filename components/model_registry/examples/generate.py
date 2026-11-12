@@ -44,7 +44,7 @@ def identity_model():
 
 
 def generate(root: Path):
-    for kind, label_type in [("segmentation", "polygon"), ("detection", "rectangle"), ("classification", "tag"), ("prompting", "polygon")]:
+    for kind, label_type in [("segmentation", "polygon"), ("detection", "rectangle"), ("classification", "tag"), ("prompting", "polygon"), ("line", "polyline")]:
         folder = root / kind
         folder.mkdir(exist_ok=True)
         (folder / "model.onnx").write_bytes(identity_model())

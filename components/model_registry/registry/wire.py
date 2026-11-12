@@ -63,6 +63,17 @@ def validate_wire(result: list | dict, manifest: Manifest, width: int, height: i
                 raise ValueError("worker polygon is degenerate or below minimum area")
             if not is_simple_polygon(ring):
                 raise ValueError("worker polygon intersects or touches itself")
+        elif kind == "polyline":
+            if len(points) < 4 or len(points) % 2 or len(points) > 2 * MAX_POLYGON_VERTICES:
+                raise ValueError("invalid worker polyline vertex count")
+            line = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+            total_vertices += len(line)
+            if total_vertices > MAX_TOTAL_POLYGON_VERTICES:
+                raise ValueError("combined worker polygons and polylines exceed vertex budget")
+            if (line < 0).any() or (line[:, 0] > width).any() or (line[:, 1] > height).any():
+                raise ValueError("worker polyline outside image")
+            if (np.linalg.norm(np.diff(line, axis=0), axis=1) <= GEOMETRY_EPSILON).any():
+                raise ValueError("worker polyline has consecutive duplicate vertices")
         else:
             raise ValueError("unsupported worker shape")
     return result

@@ -30,6 +30,20 @@ class Mask:
 
 
 @dataclass(frozen=True)
+class Polyline:
+    """One open line, such as an edge, crack, lane or contour segment.
+
+    Return one Polyline per line; a model may return any number of them per
+    image within the shared object and vertex limits. Polylines may cross.
+    """
+    class_id: int
+    score: float
+    # Original input image coordinates, 0 <= x <= W and 0 <= y <= H.
+    # At least two vertices; consecutive vertices must differ.
+    points: Sequence[tuple[float, float]] | np.ndarray
+
+
+@dataclass(frozen=True)
 class Tag:
     """One image/frame-level classification, with no spatial coordinates.
 
@@ -80,12 +94,15 @@ class ModelBase(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def predict(self, image: np.ndarray, params: PredictParams) -> np.ndarray | Sequence[Box | Tag | Mask]:
+    def predict(self, image: np.ndarray, params: PredictParams) -> np.ndarray | Sequence[Box | Polyline | Tag | Mask]:
         """Input: RGB uint8 H x W x 3, including CVAT's optional cropped ROI.
 
         Segmentation: return bool/integer 0-or-1 ndarray (N, H, W), in manifest
         label order and original input dimensions. Perform binarization here.
         Detection: return Box values after your own confidence/NMS decisions.
+        Line detection: return any number of Polyline values; class_id refers
+        to a manifest label with type="polyline". Box, Polyline and Tag values
+        may be mixed when the manifest declares the corresponding label types.
         Classification: return Tag values after your own top-class/threshold
         decisions; class_id refers to a manifest label with type="tag". Do not
         return raw logits/probability arrays. Use [] when no tag should be added.

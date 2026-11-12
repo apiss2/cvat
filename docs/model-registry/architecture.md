@@ -66,7 +66,7 @@ mr-は登録ONNXモデル専用の接頭辞です。実Nuclio関数が同じ接�
 
 ## 出力の変換と検査
 
-Segmentationの二値配列と旧Mask出力を共通ワーカーでポリゴンへ変換し、管理サーバーが型と座標を再検査します。Detectionは矩形、Classificationは座標のないタグです。いずれも既存detector関数形式でCVATへ公開し、CVAT側が画像番号とタスクのラベルを付けて保存します。
+Segmentationの二値配列と旧Mask出力を共通ワーカーでポリゴンへ変換し、管理サーバーが型と座標を再検査します。Detectionは矩形、Line detectionは任意本数の開いたポリライン、Classificationは座標のないタグです。いずれも既存detector関数形式でCVATへ公開し、CVAT側が画像番号とタスクのラベルを付けて保存します。
 
 Promptingはマニフェストの`kind: "interactor"`からCVAT標準のinteractor関数として公開します。中継は`pos_points`、`neg_points`、`obj_bbox`を管理サーバーへ渡し、管理サーバーとワーカーが画像範囲と対応するPromptを検査します。ワーカーは二次元二値配列を標準のdense mask応答へ変換し、管理サーバーも独立して型、寸法、画素を再検査します。ROIの切り出し、Prompt移動、全画像への応答復元とマスクの表示・保存は既存のCVAT経路を再利用します。CVAT本体やDBスキーマの変更は不要です。
 

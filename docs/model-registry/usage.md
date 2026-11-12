@@ -17,7 +17,7 @@ CVATへログインし、上部メニューの「モデル管理」を開きま�
 | 入力 | 内容 |
 |---|---|
 | モデル名、説明、連絡先 | 用途、対象、使用条件を説明します。連絡先は任意です。 |
-| モデルの種類 | Segmentation、Detection、Classification、Promptingから選びます。 |
+| モデルの種類 | Segmentation、Detection、Line detection、Classification、Promptingから選びます。 |
 | クラスIDとラベル名 | 推論コードの出力に対応するラベルを登録します。 |
 | 推論コード | model.pyを用意します。 |
 | ONNXファイル | 使用するファイルを1個から16個まで指定します。 |
@@ -28,7 +28,7 @@ CVATへログインし、上部メニューの「モデル管理」を開きま�
 ファイルは個別に指定します。ZIP登録、追加のPython依存パッケージ、補助Pythonモジュールの新規登録には対応していません。詳細な上限は[実装仕様](model-development.md)を確認してください。
 
 Segmentationではラベルを出力する順に上から登録し、ポリゴンの頂点間隔と最小面積を設定します。間隔を大きくすると細かな凹凸が省略され、小領域も消える場合があります。領域内の穴はポリゴンに保持されません。
-DetectionとClassificationでは、クラスIDを推論コードの出力と一致させます。Classificationにはポリゴン変換設定を使用しません。
+Detection、Line detection、Classificationでは、クラスIDを推論コードの出力と一致させます。Line detectionは1枚の画像から任意の本数のポリラインを出力し、CVATではポリライン用のラベルへ対応付けます。Classificationにはポリゴン変換設定を使用しません。
 Promptingは説明用ラベルを1件だけ登録し、点・除外点・矩形の対応と試験Promptを設定します。初期表示の点`[0,0]`は対象を示す座標ではないため、必ず試験画像に合わせて変更してください。形式と座標の意味は[Promptingの実装仕様](model-development.md#promptinginteractor)を参照してください。
 
 「検証して公開」を実行すると、管理サーバーがファイルと試験推論の結果を検査します。成功後にモデルが公開されます。検証に失敗した場合は、詳細な推論結果と処理ログを確認します。
@@ -48,7 +48,7 @@ ONNXファイル名は、大文字と小文字を含め既存名と完全に一�
 
 ## 試験結果と過去の版を確認する
 
-詳細画面で試験する版と画像を選びます。DetectionとSegmentationは図形、Classificationはタグ名と信頼度を確認します。JSON形式の推論結果と処理ログは詳細表示から確認できます。
+詳細画面で試験する版と画像を選びます。Detection、Line detection、Segmentationは図形、Classificationはタグ名と信頼度を確認します。JSON形式の推論結果と処理ログは詳細表示から確認できます。
 Promptingでは選択した版の試験Promptを表示します。試験する画像に合わせてJSONの座標を変更し、マスクの対象、穴、離れた領域を確認します。この欄の変更は保存済みのPromptを上書きしません。版の切り替え操作は保存済みの試験画像とPromptで再検証します。
 Classificationの信頼度は試験結果で確認できますが、CVATのタグへ信頼度用の属性を自動追加する機能ではありません。
 

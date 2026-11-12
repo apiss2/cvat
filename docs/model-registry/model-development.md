@@ -2,7 +2,7 @@
 
 [モデル管理](README.md) / [利用手順](usage.md)
 
-このページはmodel.pyを作成する技術者向けです。Segmentation、Detection、Classification、Promptingの共通入力と出力の違いをまとめています。
+このページはmodel.pyを作成する技術者向けです。Segmentation、Detection、Line detection、Classification、Promptingの共通入力と出力の違いをまとめています。
 モデル固有の前処理、座標や画像サイズの復元、信頼度による選別、NMS、分類クラスの選択は推論コードで実装します。
 
 ## 共通インターフェース
@@ -90,6 +90,24 @@ return [Box(class_id=10, score=0.92, xyxy=(12.0, 20.0, 80.0, 100.0))]
 `class_id`は宣言したIDです。`score`は有限な0以上1以下の値、`xyxy`は入力画像の左、上、右、下の座標です。右端と下端は排他的です。
 リサイズした画像で推論した場合は入力画像の座標へ戻します。低スコアの除外と重複検出の抑制はmodel.pyが行います。
 
+## Line detection
+
+亀裂、境界線、車線などの開いた線を検出するモデルは、ラベルを`polyline`とし、`registry.sdk.Polyline`のリストまたはタプルを返します。1枚の画像から任意の本数を返せ、各要素がCVATのポリライン1本になります。該当がない場合は`[]`を返します。
+
+```python
+from registry.sdk import Polyline
+
+return [
+    Polyline(class_id=3, score=0.88, points=[(10.0, 40.0), (60.0, 42.5), (120.0, 47.0)]),
+    Polyline(class_id=3, score=0.71, points=[(5.0, 90.0), (140.0, 90.0)]),
+]
+```
+
+`points`は`(x, y)`の組のリスト、タプル、または数値の`(K, 2)`配列です。座標は入力画像の連続座標で、`0 <= x <= W`、`0 <= y <= H`です。頂点は2個以上4096個以下で、連続する同じ頂点は拒否します。線の交差と自己交差は許容し、始点と終点を自動で閉じません。
+`class_id`と`score`の扱いはDetectionと同じです。線の抽出、細線化、近い線の統合、頂点の間引きはmodel.pyが行います。ポリゴン変換設定は使用しません。
+
+`Box`、`Polyline`、`Tag`は、対応する型のラベルを宣言すれば同じ返り値に混在できます。上限はSegmentationと共通で、最終結果は2000図形以下、ポリゴンとポリラインの頂点は合計10万以下です。上限を超える場合はエラーになり、黙って切り捨てません。
+
 ## Prompting（Interactor）
 
 SAMのように点や矩形を受けて対象領域を返すONNXモデルは、`kind: "interactor"`で登録します。省略時は従来どおり`detector`です。`interactor`設定と試験画像へのPromptが必須です。説明用ラベルは`polygon`を1件だけ宣言しますが、出力ラベルの分類には使わず、実際のタスクラベルはCVATのPromptingタブで選びます。
@@ -161,6 +179,6 @@ softmax、sigmoid、最上位クラスの選択、閾値判定はmodel.pyで実�
 旧形式の`Mask`や`Box`と`Mask`の混在リストは引き続き受け付けます。対応するラベルを宣言し、Maskには入力画像と同じ大きさの二値画像を指定します。マスクは同じポリゴン変換を通ります。
 保存済みマニフェストの`mask`は`polygon`として扱い、旧`threshold`は取り除きます。旧コードが`params.threshold`を参照する場合は修正が必要です。
 
-作例のSegmentation、Detection、Classification、PromptingはONNX Identity演算を使う接続確認用で、学習済み認識モデルではありません。Promptingは点と矩形で明るい領域を選ぶ作例で、SAM本体ではありません。Classificationのスコアも校正済みの分類確率ではありません。
+作例のSegmentation、Detection、Line detection、Classification、PromptingはONNX Identity演算を使う接続確認用で、学習済み認識モデルではありません。Line detectionは明るい領域ごとに中央線と開いた外周線の2本を返す作例です。Promptingは点と矩形で明るい領域を選ぶ作例で、SAM本体ではありません。Classificationのスコアも校正済みの分類確率ではありません。
 `python components/model_registry/examples/generate.py`で作例を再生成できます。生成されるZIPは内部パッケージの検査用で、画面へアップロードするためのものではありません。
 実装後は[検証手順](testing.md)に従い、代表的な実画像とCVATでの保存まで確認してください。
