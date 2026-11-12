@@ -26,7 +26,6 @@ def test_metadata_and_old_models(manifest):
     assert annotations["type"] == "interactor"
     assert annotations["startswith_box"] is False
     assert annotations["startswith_box_optional"] is True
-    assert annotations["box_satisfies_min_pos_points"] is True
     assert annotations["min_pos_points"] == "1" and annotations["min_neg_points"] == "0"
     legacy = Manifest(name="legacy", weights=["model.onnx"], labels=[{"id": 0, "name": "object", "type": "polygon"}])
     assert legacy.kind == "detector" and legacy.interactor is None
@@ -64,8 +63,9 @@ def test_partial_settings_preserve_sample_and_weights(manifest):
     {"pos_points": [[1, 2, 3]], "neg_points": []},
     {"pos_points": [[float("inf"), 1]], "neg_points": []},
     {"pos_points": [[1, 1]] * 1001, "neg_points": []},
-    {"pos_points": [], "neg_points": [], "obj_bbox": [[20, 10], [10, 20]]},
-    {"pos_points": [], "neg_points": [], "obj_bbox": [[0, 0], [65, 48]]},
+    {"pos_points": [[1, 1]], "neg_points": [], "obj_bbox": [[20, 10], [10, 20]]},
+    {"pos_points": [[1, 1]], "neg_points": [], "obj_bbox": [[0, 0], [65, 48]]},
+    {"pos_points": [], "neg_points": [], "obj_bbox": [[0, 0], [64, 48]]},
     {"pos_points": [[1, 1]], "neg_points": [], "text_prompts": ["object"]},
 ])
 def test_invalid_requests(manifest, prompts):
@@ -74,11 +74,17 @@ def test_invalid_requests(manifest, prompts):
 
 
 def test_point_box_requirements_and_image_edges(manifest):
-    body = InvokeRequest(image="fixture", pos_points=[], neg_points=[], obj_bbox=[[0, 0], [64, 48]])
+    body = InvokeRequest(image="fixture", pos_points=[[1, 1]], neg_points=[], obj_bbox=[[0, 0], [64, 48]])
     assert body.prompts_for(manifest, 64, 48).obj_bbox == [[0, 0], [64, 48]]
+    box_only = InvokeRequest(image="fixture", pos_points=[], neg_points=[], obj_bbox=[[0, 0], [64, 48]])
+    # Like CVAT's editor, a box does not lower min_pos_points.
+    with pytest.raises(ValueError, match="not enough positive"):
+        box_only.prompts_for(manifest, 64, 48)
     required = merge_manifest(manifest.model_dump(), {"interactor": {"startswith_box": True, "startswith_box_optional": False}})
     with pytest.raises(ValueError, match="requires a box"):
         InvokeRequest.model_validate(sample_payload(manifest, "fixture")).prompts_for(required, 64, 48)
+    box_model = merge_manifest(required.model_dump(), {"interactor": {"min_pos_points": 0}})
+    assert box_only.prompts_for(box_model, 64, 48).pos_points == []
     disabled = merge_manifest(manifest.model_dump(), {"interactor": {"startswith_box_optional": False}})
     with pytest.raises(ValueError, match="does not accept a box"):
         body.prompts_for(disabled, 64, 48)
@@ -153,7 +159,8 @@ def test_real_onnx_worker_points_negative_box_empty_and_roi_local(monkeypatch, m
         assert mask[10, 14] == 1 and mask[18, 22] == 0
         payload["neg_points"] = [[15, 11]]
         assert client.post("/predict", json=payload).json() == {"shapes": []}
-        payload.update(pos_points=[], neg_points=[], obj_bbox=[[12, 8], [20, 16]])
+        # The positive point is on the background, so only the box limits the mask.
+        payload.update(pos_points=[[2, 2]], neg_points=[], obj_bbox=[[12, 8], [20, 16]])
         response = client.post("/predict", json=payload)
         assert response.status_code == 200, response.text
         assert np.asarray(response.json()["mask"]).sum() == 64
@@ -194,7 +201,7 @@ def test_registration_test_update_old_revision_and_rollback(ctx, sample, manifes
     c = ctx["client"]
     fid = function_id(mid, old)
     assert c.get("/internal/functions/" + fid, headers=headers("service")).json()["metadata"]["annotations"]["type"] == "interactor"
-    payload = {"image": sample, "pos_points": [], "neg_points": [], "obj_bbox": [[0, 0], [64, 48]]}
+    payload = {"image": sample, "pos_points": [[2, 2]], "neg_points": [], "obj_bbox": [[0, 0], [64, 48]]}
     response = c.post("/internal/functions/" + fid + "/invoke", headers=headers("service"), json=payload)
     assert response.status_code == 200 and "mask" in response.json()
     assert ctx["runtime"].calls[-1][2] == payload

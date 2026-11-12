@@ -163,7 +163,6 @@ export interface InteractionData {
     settings?: {
         crosshair?: boolean; // default is false
         points_type?: 'any' | 'positive' | 'negative'; // default is any
-        allowNegativePoints?: boolean; // only used when points_type is any
         removalStrategy?: 'any' | 'last'; // default is any
         appendCursorPositionAsPoint?: boolean; // default is false
         hint?: {

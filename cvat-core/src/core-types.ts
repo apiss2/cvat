@@ -18,7 +18,6 @@ export interface ModelParams {
         minNegVertices?: number;
         startWithBox?: boolean;
         startWithBoxOptional?: boolean;
-        boxSatisfiesMinPosPoints?: boolean;
     };
 }
 
@@ -52,7 +51,6 @@ export interface SerializedModel {
     min_neg_points?: number;
     startswith_box?: boolean;
     startswith_box_optional?: boolean;
-    box_satisfies_min_pos_points?: boolean;
     created_date?: string;
     updated_date?: string;
 }

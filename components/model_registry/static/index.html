@@ -52,7 +52,7 @@
                     <label>正の点の最小数<input id="min-pos-points" type="number" min="0" max="1000" step="1" value="1" required></label>
                     <label>除外点の最小数<input id="min-neg-points" type="number" min="-1" max="1000" step="1" value="0" required><span class="help">-1は除外点を受け付けません。</span></label>
                     <label>矩形Prompt<select id="box-mode"><option value="optional">任意</option><option value="required">必須</option><option value="disabled">使用しない</option></select></label>
-                </div><p class="help">矩形を指定した場合は正の点なしで推論できます。出力は対象1個の二値マスクです。穴と離れた領域を保持し、タスクのラベルはCVATのPromptingタブで選択します。テキストPromptと追跡には対応しません。</p>
+                </div><p class="help">正の点の最小数は矩形を指定した場合も適用します。矩形だけで推論する場合は、矩形を必須にして正の点の最小数を0にしてください。出力は対象1個の二値マスクです。穴と離れた領域を保持し、タスクのラベルはCVATのPromptingタブで選択します。テキストPromptと追跡には対応しません。</p>
                 </fieldset>
             </div>
             <div class="panel form-panel"><div class="form-section-heading"><span class="step-number" aria-hidden="true">3</span><div><h2>ファイルと試験画像</h2><p>公開前に、登録するモデルで試験画像を推論します。</p></div></div>

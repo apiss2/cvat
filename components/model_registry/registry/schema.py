@@ -63,7 +63,8 @@ class Prompts(StrictModel):
                 raise ValueError("obj_bbox must be ordered image-edge coordinates inside the image")
         elif settings.startswith_box:
             raise ValueError("this interactor requires a box prompt")
-        if self.obj_bbox is None and len(self.pos_points) < settings.min_pos_points:
+        # CVAT's editor applies min_pos_points even when a box is drawn.
+        if len(self.pos_points) < settings.min_pos_points:
             raise ValueError("not enough positive prompt points")
         if settings.min_neg_points == -1 and self.neg_points:
             raise ValueError("this interactor does not accept negative prompt points")
@@ -181,7 +182,6 @@ def function_metadata(model_id: str, revision: str, manifest: dict, namespace: s
                     # CVAT reads these fields with bool(), not a string parser.
                     "startswith_box": m.interactor.startswith_box,
                     "startswith_box_optional": m.interactor.startswith_box_optional,
-                    "box_satisfies_min_pos_points": True,
                     "help_message": "Use positive points, negative points and a box as supported by this model.",
                 } if m.interactor else {}),
             },
