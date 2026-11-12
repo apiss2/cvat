@@ -3,6 +3,7 @@
 
 from contextlib import closing
 from dataclasses import replace
+from hashlib import sha256
 from uuid import UUID
 
 from components.task_guide.staging import TextStore
@@ -49,8 +50,7 @@ def _import_context(project):
 
 
 def _stage_reports(reports, store):
-    # Group by the matching key. Identical reports are merged; different reports
-    # for the same patient and date are left for matching to resolve or skip.
+    # Only hash matches need to read an earlier body back from disk.
     staged = {}
     duplicates = 0
     invalid = []
@@ -58,12 +58,9 @@ def _stage_reports(reports, store):
         if isinstance(report, InvalidRecord):
             invalid.append(report.row)
             continue
-        group = staged.setdefault(report.key, [])
-        if any(
-            previous.modality == report.modality
-            and store.matches(previous.markdown, report.markdown)
-            for previous in group
-        ):
+        digest = sha256(report.markdown.encode("utf-8")).digest()
+        group = staged.setdefault((*report.dedup_key, digest), [])
+        if any(store.matches(previous.markdown, report.markdown) for previous in group):
             duplicates += 1
         else:
             group.append(replace(report, markdown=store.write(report.markdown)))
@@ -256,6 +253,8 @@ def _apply_staged_guides(project, input_format, store, entries, duplicates, inva
     )
     if input_format == "dicom":
         meta.status += f", {len(invalid)} invalid records, {len(skipped_tasks)} skipped tasks"
+        if unmatched or invalid or skipped_tasks:
+            meta.status = "WARNING: " + meta.status
     if unmatched:
         meta.status += "; unmatched positions: " + _positions(unmatched)
     if invalid:

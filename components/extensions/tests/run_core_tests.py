@@ -378,6 +378,39 @@ def enqueue_task_guides(project, user, queue, format_name, members):
     return job
 
 
+def add_task_guide_dicom_tags(project, tasks, study_uids):
+    label = models.Label.objects.create(project=project, name="DicomTag", type="tag")
+    identity = {"PatientID": "P1", "StudyDate": "20250101", "Modality": "CT"}
+    specs = {
+        name: models.AttributeSpec.objects.create(
+            label=label, name=name, input_type="text", mutable=False
+        )
+        for name in (*identity, "StudyInstanceUID")
+    }
+    for task, uid in zip(tasks, study_uids, strict=True):
+        data = models.Data.objects.create(
+            size=1,
+            start_frame=0,
+            stop_frame=0,
+            chunk_size=1,
+            image_quality=100,
+            original_chunk_type="imageset",
+            compressed_chunk_type="imageset",
+        )
+        task.data = data
+        task.mode = "annotation"
+        task.save(update_fields=["data", "mode"])
+        models.Image.objects.create(data=data, frame=0, path="scan.png", width=1, height=1)
+        segment = models.Segment.objects.create(task=task, start_frame=0, stop_frame=0)
+        tag = models.LabeledImage.objects.create(
+            job=models.Job.objects.create(segment=segment), label=label, frame=0
+        )
+        for name, value in dict(identity, StudyInstanceUID=uid).items():
+            models.LabeledImageAttributeVal.objects.create(
+                image=tag, job_id=tag.job_id, spec=specs[name], value=value
+            )
+
+
 @pytest.mark.parametrize(
     "format_name",
     [
@@ -399,36 +432,7 @@ def test_task_guides_save_large_bodies_through_the_native_import_job(
     text = "x" * 1_000_001
     is_report = format_name == "Task Guide DICOM Report Import 1.0"
     if is_report:
-        label = models.Label.objects.create(project=project, name="DicomTag", type="tag")
-        specs = {
-            name: models.AttributeSpec.objects.create(
-                label=label, name=name, input_type="text", mutable=False
-            )
-            for name in ("PatientID", "StudyDate", "Modality")
-        }
-        identity = {"PatientID": "P1", "StudyDate": "20250101", "Modality": "CT"}
-        for task in tasks:
-            data = models.Data.objects.create(
-                size=1,
-                start_frame=0,
-                stop_frame=0,
-                chunk_size=1,
-                image_quality=100,
-                original_chunk_type="imageset",
-                compressed_chunk_type="imageset",
-            )
-            task.data = data
-            task.mode = "annotation"
-            task.save(update_fields=["data", "mode"])
-            models.Image.objects.create(data=data, frame=0, path="scan.png", width=1, height=1)
-            segment = models.Segment.objects.create(task=task, start_frame=0, stop_frame=0)
-            tag = models.LabeledImage.objects.create(
-                job=models.Job.objects.create(segment=segment), label=label, frame=0
-            )
-            for name, value in identity.items():
-                models.LabeledImageAttributeVal.objects.create(
-                    image=tag, job_id=tag.job_id, spec=specs[name], value=value
-                )
+        add_task_guide_dicom_tags(project, tasks, ("1.2.3", "1.2.3"))
         members = {
             "reports.json": json.dumps(
                 [
@@ -472,6 +476,54 @@ def test_task_guides_save_large_bodies_through_the_native_import_job(
     assert [project.updated_date, *(task.updated_date for task in tasks)] == changed_dates
     assert [guide.updated_date for guide in guides] == guide_dates
     assert "0 created, 0 updated, 2 unchanged" in job.meta["status"]
+
+
+def test_dicom_task_guide_exact_uid_and_partial_result_through_native_requests(
+    project, user, queue, monkeypatch
+):
+    from cvat.apps.dataset_manager.formats.task_guide_core import merge_markdown
+    from cvat.apps.redis_handler.apps import QUEUE_TO_PARSED_JOB_ID_CLS, SELECTOR_TO_QUEUE
+
+    first, other = [
+        models.Task.objects.create(project=project, owner=user, name=name)
+        for name in ("scan-one", "scan-two")
+    ]
+    add_task_guide_dicom_tags(project, (first, other), ("1.2.3", "1.2.4"))
+    original = merge_markdown("", "Report for the other study")
+    other_guide = models.AnnotationGuide.objects.create(task=other, markdown=original)
+    identity = {"pid": "P1", "dt": "20250101", "mod": "CT"}
+    findings = "Synthetic findings"
+    reports = [
+        {"input": dict(identity, study_uid="1.2.3"), "result": {"findings": findings}},
+        {"input": dict(identity, study_uid="9.9.9"), "result": {"findings": findings}},
+        {"input": {"pid": "P2"}, "result": {}},
+    ]
+    job = enqueue_task_guides(
+        project,
+        user,
+        queue,
+        "Task Guide DICOM Report Import 1.0",
+        {"reports.json": json.dumps(reports)},
+    )
+    monkeypatch.setattr(rq, "get_current_job", lambda: job)
+    job.func(*job.args, **job.kwargs)
+    assert findings in models.AnnotationGuide.objects.get(task=first).markdown
+    other_guide.refresh_from_db()
+    assert other_guide.markdown == original
+
+    # The isolated app skips startup hooks, including this queue registration.
+    monkeypatch.setitem(SELECTOR_TO_QUEUE, "import", queue.name)
+    monkeypatch.setitem(QUEUE_TO_PARSED_JOB_ID_CLS, queue.name, ImportRequestId)
+    job.set_status(JobStatus.FINISHED)
+    response = dispatch("get", reverse("request-detail", kwargs={"pk": job.id}), user)
+    assert response.status_code == 200
+    assert response.data["status"] == "finished"
+    message = response.data["message"]
+    assert message.startswith("WARNING: Task guides:")
+    assert "unmatched positions: 2" in message
+    assert "invalid positions: 3" in message
+    assert f"skipped task IDs: {other.pk}" in message
+    assert not any(value in message for value in ("P1", "P2", "1.2.3", "1.2.4", "9.9.9", findings))
 
 
 @pytest.mark.parametrize("failure", ["late_input", "second_save"])

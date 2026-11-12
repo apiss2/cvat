@@ -193,8 +193,7 @@ def test_missing_study_uid_is_rejected_and_cannot_be_supplied_by_a_label_default
     # An absent UID must not become an existing project's unrelated default UID.
     values = metadata(pydicom.dcmread(source))
     assert "StudyInstanceUID" not in values
-    names = ("StudyInstanceUID", *guides.IDENTITY_TAGS)
-    attribute_ids = {name: index for index, name in enumerate(names, 1)}
+    attribute_ids = {name: index for index, name in enumerate(guides.IDENTITY_TAGS, 1)}
     tag = next(tag_batches([(0, values)], 7, attribute_ids))["tags"][0]
     registered = attribute_values(tag, attribute_ids)
     assert registered["StudyInstanceUID"] == ""

@@ -34,7 +34,8 @@ END = "<!-- cvat:study-report:end -->"
 PATIENT_ID = "PatientID"
 STUDY_DATE = "StudyDate"
 MODALITY = "Modality"
-IDENTITY_TAGS = (PATIENT_ID, STUDY_DATE, MODALITY)
+STUDY_UID = "StudyInstanceUID"
+IDENTITY_TAGS = (PATIENT_ID, STUDY_DATE, MODALITY, STUDY_UID)
 # Full StudyInstanceUID syntax, shared with the project annotation importer.
 _UID = re.compile(r"[0-9]+(?:\.[0-9]+)+\Z")
 
@@ -49,11 +50,16 @@ class Report:
     patient_id: str
     date: str
     modality: str
+    study_uid: str
     markdown: str | TextReference
 
     @property
     def key(self) -> tuple[str, str]:
         return self.patient_id, self.date
+
+    @property
+    def dedup_key(self) -> tuple[str, str, str, str]:
+        return self.patient_id, self.date, self.modality, self.study_uid
 
 
 @dataclass(frozen=True)
@@ -221,6 +227,18 @@ def _modality(value) -> str:
     return _text(value).upper()
 
 
+def _valid_uid(value: str) -> bool:
+    return len(value) <= 64 and _UID.fullmatch(value) is not None
+
+
+def _report_uid(data: dict) -> str:
+    try:
+        uid = _identifier(data, ("study_instance_uid", "study_uid", "uid"))
+    except GuideImportError:
+        return ""
+    return uid if _valid_uid(uid) else ""
+
+
 def _report(row: int, record) -> Report:
     if not isinstance(record, dict):
         raise GuideImportError("Record must be an object")
@@ -238,7 +256,7 @@ def _report(row: int, record) -> Report:
         raise GuideImportError("Guide contains invalid Unicode")
     # Check the same value that the overview shows: the first nonempty alias.
     modality = _modality(_first(data.get("modality"), data.get("mod")))
-    return Report(row, patient_id, date, modality, markdown)
+    return Report(row, patient_id, date, modality, _report_uid(data), markdown)
 
 
 def iter_reports(source) -> Iterator[Report | InvalidRecord]:
@@ -259,28 +277,20 @@ def iter_reports(source) -> Iterator[Report | InvalidRecord]:
 
 
 def read_reports(source) -> tuple[list[Report], int, list[InvalidRecord]]:
-    """Collect reports for callers that need an in-memory result.
-
-    Identical reports for one patient, date and modality are merged. Different
-    reports for the same patient and date are kept, and matching decides whether
-    a task can choose exactly one of them.
-    """
-    groups: dict[tuple[str, str], list[Report]] = {}
+    """Collect and deduplicate reports for callers that need an in-memory result."""
+    unique = {}
     duplicates = 0
     invalid = []
     for report in iter_reports(source):
         if isinstance(report, InvalidRecord):
             invalid.append(report)
             continue
-        group = groups.setdefault(report.key, [])
-        if any(
-            (previous.modality, previous.markdown) == (report.modality, report.markdown)
-            for previous in group
-        ):
+        key = (*report.dedup_key, report.markdown)
+        if key in unique:
             duplicates += 1
         else:
-            group.append(report)
-    return [report for group in groups.values() for report in group], duplicates, invalid
+            unique[key] = report
+    return list(unique.values()), duplicates, invalid
 
 
 def _named_guide(row: int, name, markdown) -> NamedGuide:
@@ -459,18 +469,17 @@ def _task_dates(values: set[str]) -> set[str] | None:
         return None
 
 
-def plan_updates(reports: list[Report], tasks: list[TaskIdentity]) -> ReportPlan:
-    """Match reports to image/video tasks by the DicomTag PatientID and StudyDate.
+@dataclass(frozen=True)
+class _ReportTarget:
+    id: int
+    modalities: set[str]
+    study_uids: set[str]
 
-    Modality is checked only when both the report and the task have one. A task
-    with mixed identities, a contradicting Modality, or more than one different
-    candidate report is skipped. The import fails only when no task matches.
-    """
-    by_key: dict[tuple[str, str], list[Report]] = {}
-    for report in reports:
-        by_key.setdefault(report.key, []).append(report)
-    patients_with_reports = {patient for patient, _ in by_key}
-    updates, matched, skipped = {}, set(), []
+
+def _index_report_targets(tasks, report_keys):
+    patients_with_reports = {patient for patient, _ in report_keys}
+    by_key = {}
+    considered = set()
     for task in tasks:
         tags = {
             key: {value.strip() for value in task.tags.get(key, set()) if value.strip()}
@@ -481,35 +490,70 @@ def plan_updates(reports: list[Report], tasks: list[TaskIdentity]) -> ReportPlan
         if dates is None:
             # An unreadable StudyDate cannot be checked against this patient's reports.
             if patients & patients_with_reports:
-                skipped.append(task.id)
+                considered.add(task.id)
             continue
-        candidates = [
-            report
-            for patient in patients
-            for date in dates
-            for report in by_key.get((patient, date), ())
-        ]
-        if not candidates:
+        keys = report_keys.intersection((patient, date) for patient in patients for date in dates)
+        if not keys:
             continue
         if len(patients) != 1 or len(dates) != 1:
-            # A task mixing studies cannot choose one report.
-            skipped.append(task.id)
+            considered.add(task.id)
             continue
         modalities = {_modality(value) for value in tags[MODALITY]}
-        candidates = [
-            report
-            for report in candidates
-            if not report.modality or not modalities or report.modality in modalities
-        ]
-        if len(candidates) != 1:
-            skipped.append(task.id)
-            continue
-        updates[task.id] = candidates[0].markdown
-        matched.add(candidates[0].row)
+        by_key.setdefault(keys.pop(), []).append(
+            _ReportTarget(task.id, modalities, tags[STUDY_UID])
+        )
+    return by_key, considered
+
+
+def _choose_report_targets(report, tasks):
+    candidates = [
+        task
+        for task in tasks
+        if not report.modality or not task.modalities or report.modality in task.modalities
+    ]
+    exact_uid = {report.study_uid} if report.study_uid else set()
+    exact = [task.id for task in candidates if exact_uid and task.study_uids == exact_uid]
+    if exact:
+        return exact, True
+    if len(candidates) == 1 and len(candidates[0].study_uids) <= 1:
+        return [candidates[0].id], False
+    if candidates:
+        uids = candidates[0].study_uids
+        if (
+            len(uids) == 1
+            and _valid_uid(next(iter(uids)))
+            and all(task.study_uids == uids for task in candidates)
+        ):
+            return [task.id for task in candidates], False
+    return [], False
+
+
+def plan_updates(reports: list[Report], tasks: list[TaskIdentity]) -> ReportPlan:
+    """Use UID matches to disambiguate compatible reports and tasks."""
+    by_key, considered = _index_report_targets(tasks, {report.key for report in reports})
+    exact_reports, fallback_reports = {}, {}
+    for report in reports:
+        tasks_for_key = by_key.get(report.key, ())
+        targets, exact = _choose_report_targets(report, tasks_for_key)
+        considered.update(
+            task.id for task in tasks_for_key if not exact or report.study_uid in task.study_uids
+        )
+        selected = exact_reports if exact else fallback_reports
+        for task_id in targets:
+            selected[task_id] = None if task_id in selected else report
+
+    # An exact match takes priority, including a conflict between exact reports.
+    chosen = {
+        task_id: report
+        for task_id, report in (fallback_reports | exact_reports).items()
+        if report is not None
+    }
+    updates = {task_id: report.markdown for task_id, report in chosen.items()}
     if not updates:
         raise GuideImportError("No matching tasks in this project; no guides were changed")
+    matched = {report.row for report in chosen.values()}
     unmatched = [report.row for report in reports if report.row not in matched]
-    return ReportPlan(updates, unmatched, skipped)
+    return ReportPlan(updates, unmatched, sorted(considered - updates.keys()))
 
 
 def merge_markdown(existing: str, generated: str) -> str:

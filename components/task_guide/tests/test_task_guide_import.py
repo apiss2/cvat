@@ -179,7 +179,7 @@ class BoundedReader:
 
 
 def tags(patient="P1", date="20250101", modality="CT"):
-    values = {core.PATIENT_ID: {patient}, core.STUDY_DATE: {date}}
+    values = {core.PATIENT_ID: {patient}, core.STUDY_DATE: {date}, core.STUDY_UID: {"1.2.3"}}
     if modality is not None:
         values[core.MODALITY] = {modality}
     return values
@@ -306,11 +306,15 @@ class TestReport:
     @pytest.mark.parametrize(
         "uid", [None, "", "12345678", "1.2.x", "conflict", 123, "1." + "2" * 64]
     )
-    def test_study_uid_is_neither_required_nor_used(self, uid):
-        r = record(uid=uid)
-        r["input"].update(study_uid="1.2.4", uid="other")
-        report = reports(r)[0]
-        assert (report.patient_id, report.date, report.modality) == ("P1", "20250101", "CT")
+    def test_unusable_study_uid_does_not_invalidate_the_report(self, uid):
+        assert reports(record(uid=uid))[0].study_uid == ""
+
+    def test_study_uid_aliases_must_agree_after_trimming(self):
+        r = record(uid=" 1.2.3 ")
+        r["input"].update(study_uid="1.2.3", uid="1.2.3")
+        assert reports(r)[0].study_uid == "1.2.3"
+        r["input"]["uid"] = "1.2.4"
+        assert reports(r)[0].study_uid == ""
 
     @pytest.mark.parametrize(
         "keys, reason",
@@ -500,8 +504,8 @@ class TestReport:
             assert [row for row, _ in invalid_reasons(r)] == [1]
 
     def test_duplicate_reports(self):
-        unique, duplicates, _ = core.read_reports(stream([record(), record(uid="9.9")]))
-        assert (len(unique), duplicates) == (1, 1)
+        unique, duplicates, _ = core.read_reports(stream([record(), record(), record(uid="9.9")]))
+        assert ([r.row for r in unique], duplicates) == ([1, 3], 1)
         changed = record()
         changed["result"]["findings_ja"] = "Different"
         assert [r.row for r in reports(record(), changed)] == [1, 2]
@@ -520,10 +524,39 @@ class TestMatching:
         assert set(result.updates) == {1, 2, 3}
         assert (result.unmatched, result.skipped_tasks) == ([], [])
 
-    def test_study_uid_is_not_used_for_matching(self):
-        task = image()
-        task.tags["StudyInstanceUID"] = {"9.9.9"}
-        assert set(plan([record(uid="1.2.3")], [task]).updates) == {1}
+    def test_uid_mismatch_falls_back_when_the_candidates_are_one_study(self):
+        assert set(plan([record(uid="9.9.9")], [image(), video()]).updates) == {1, 2}
+
+    @pytest.mark.parametrize("uid", [None, "123", "9.9.9"])
+    @pytest.mark.parametrize("other_uids", [{"1.2.4"}, set(), {"1.2.3", "1.2.4"}])
+    def test_unresolved_same_day_studies_are_held(self, uid, other_uids):
+        other = image(3)
+        other.tags[core.STUDY_UID] = other_uids
+        result = plan(
+            [record(uid=uid), record(patient="P2")],
+            [image(), video(), other, image(4, patient="P2")],
+        )
+        assert set(result.updates) == {4}
+        assert result.unmatched == [1]
+        assert result.skipped_tasks == [1, 2, 3]
+
+    def test_exact_uid_routes_identical_report_text_to_separate_studies(self):
+        other = image(3)
+        other.tags[core.STUDY_UID] = {"1.2.4"}
+        tasks = [image(), video(), other]
+        result = plan([record(uid="1.2.3")], tasks)
+        assert set(result.updates) == {1, 2}
+        assert (result.unmatched, result.skipped_tasks) == ([], [])
+        result = plan([record(uid="1.2.3"), record(uid="1.2.4")], tasks)
+        assert set(result.updates) == {1, 2, 3}
+        assert (result.unmatched, result.skipped_tasks) == ([], [])
+
+    def test_exact_uid_report_takes_priority_over_a_fallback_report(self):
+        exact, fallback = record(), record(uid="9.9.9")
+        fallback["result"]["findings_ja"] = "Different"
+        result = plan([fallback, exact], [image()])
+        assert result.updates == {1: reports(exact)[0].markdown}
+        assert result.unmatched == [1]
 
     def test_sanitized_patient_and_arbitrary_prefix(self):
         result = plan(
@@ -590,9 +623,11 @@ class TestMatching:
         assert result.unmatched == []
 
     def test_same_day_reports_are_selected_by_modality(self):
-        ct, mr = record(modality="CT"), record(modality="MR")
+        ct, mr = record(modality="CT", uid=None), record(modality="MR", uid=None)
         mr["result"]["findings_ja"] = "MR所見"
-        result = plan([ct, mr], [image(1, modality="CT"), video(2, modality="MR")])
+        mr_task = video(2, modality="MR")
+        mr_task.tags[core.STUDY_UID] = {"1.2.4"}
+        result = plan([ct, mr], [image(1, modality="CT"), mr_task])
         assert "所見です。" in result.updates[1]
         assert "MR所見" in result.updates[2]
         assert (result.unmatched, result.skipped_tasks) == ([], [])
@@ -1543,6 +1578,7 @@ class TestAdapter:
         bad_date = record(patient="SECRET_PATIENT", date="SECRET_DATE")
         self.run_import([missing_date, record(), bad_date, None])
         assert self.guide_manager.create.call_count == 2
+        assert self.meta.status.startswith("WARNING: Task guides:")
         assert "0 unmatched records, 0 duplicate records, 3 invalid records" in self.meta.status
         assert "invalid positions: 1, 3, 4" in self.meta.status
         for secret in ("SECRET_PATIENT", "SECRET_DATE"):
@@ -1587,17 +1623,29 @@ class TestAdapter:
         prefix = "x" * (64 * 1024)
         first["result"]["findings_ja"] = prefix + "あ"
         last["result"]["findings_ja"] = prefix + last_character
+        fake_hash = SimpleNamespace(digest=lambda: b"same")
+        with patch.object(self.adapter, "sha256", return_value=fake_hash):
+            if last_character != "あ":
+                with pytest.raises(core.GuideImportError, match="No matching tasks"):
+                    self.run_import([first, first, last])
+            else:
+                self.run_import([first, first, last])
         if last_character == "あ":
-            self.run_import([first, first, last])
             assert self.guide_manager.create.call_count == 2
             assert "2 duplicate records" in self.meta.status
         else:
-            # Different text is a second candidate: both tasks become ambiguous.
-            with pytest.raises(core.GuideImportError, match="No matching tasks"):
-                self.run_import([first, first, last])
             self.guide_manager.create.assert_not_called()
             self.meta.save.assert_not_called()
             self.assert_no_timestamps_changed()
+
+    def test_distinct_bodies_for_the_same_study_do_not_need_disk_comparisons(self):
+        rows = [record(patient="P2") for _ in range(100)]
+        for index, row in enumerate(rows):
+            row["result"]["findings_ja"] = f"Report {index:03d}"
+        with patch.object(self.adapter.TextStore, "matches") as matches:
+            self.run_import([*rows, record()])
+        matches.assert_not_called()
+        assert "100 unmatched records, 0 duplicate records" in self.meta.status
 
     def test_conflicting_report_skips_only_the_affected_tasks(self):
         guide = SimpleNamespace(task_id=1, markdown="manual", save=MagicMock())
