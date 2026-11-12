@@ -662,15 +662,6 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         this.runInteractionRequest(this.interaction.id);
     };
 
-    private onInteraction = (e: Event): void => {
-        const { shapes } = (e as CustomEvent).detail;
-        this.submitInteraction({
-            obj_bbox: convertShapesForInteractor(shapes, 'rectangle', 'positive'),
-            pos_points: convertShapesForInteractor(shapes, 'points', 'positive'),
-            neg_points: convertShapesForInteractor(shapes, 'points', 'negative'),
-        });
-    };
-
     private onTracking = async (e: Event): Promise<void> => {
         const { trackedShapes, activeTracker, activeLabelID } = this.state;
         const {
@@ -756,15 +747,16 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 this.interaction.latestRequest = null;
                 this.constructFromLatestResponse();
             } else {
-                const isRectangleRequired = activeInteractor!.params.canvas.startWithBox === true;
-                const minPosPoints = activeInteractor!.params.canvas.minPosVertices ?? 0;
-                const minNegPoints = activeInteractor!.params.canvas.minNegVertices ?? 0;
-
-                const boxes = convertShapesForInteractor(shapes, 'rectangle', 'positive');
+                const {
+                    startWithBox, startWithBoxOptional, boxSatisfiesMinPosPoints, minPosVertices, minNegVertices,
+                } = activeInteractor.params.canvas;
+                const allowNegativePoints = (minNegVertices ?? -1) >= 0;
+                const boxes = startWithBox || startWithBoxOptional ?
+                    convertShapesForInteractor(shapes, 'rectangle', 'positive') : [];
                 const posPoints = convertShapesForInteractor(shapes, 'points', 'positive');
-                const negPoints = convertShapesForInteractor(shapes, 'points', 'negative');
+                const negPoints = allowNegativePoints ? convertShapesForInteractor(shapes, 'points', 'negative') : [];
 
-                if (isRectangleRequired && !boxes.length) {
+                if (startWithBox && !boxes.length) {
                     // there should be at least one box to proceed
                     canvasInstance.interact({
                         enabled: true,
@@ -784,17 +776,18 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     command: 'draw_points',
                     settings: {
                         crosshair: false,
-                        hint: getPointsHint((activeInteractor.params.canvas.minNegVertices ?? -1) >= 0),
+                        allowNegativePoints,
+                        hint: getPointsHint(allowNegativePoints),
                         ...(interactorRegionOfInterest ? { regionOfInterest: interactorRegionOfInterest } : {}),
                     },
                 });
 
-                if (posPoints.length < minPosPoints || negPoints.length < minNegPoints) {
-                    // there should be enough points to proceed
+                const minPosPoints = boxSatisfiesMinPosPoints && boxes.length ? 0 : minPosVertices ?? 0;
+                if (posPoints.length < minPosPoints || negPoints.length < (minNegVertices ?? 0)) {
                     return;
                 }
 
-                this.onInteraction(e);
+                this.submitInteraction({ obj_bbox: boxes, pos_points: posPoints, neg_points: negPoints });
             }
         }
 
@@ -1409,6 +1402,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                                             appendCursorPositionAsPoint: false,
                                             removalStrategy: 'any' as const,
                                             points_type: 'any' as const,
+                                            allowNegativePoints: minNegVertices >= 0,
                                             crosshair: startWithBox,
                                             hint: startWithBox ? rectangleHint : getPointsHint(minNegVertices >= 0),
                                             ...(this.state.interactorRegionOfInterest ? {

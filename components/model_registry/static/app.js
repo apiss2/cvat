@@ -53,8 +53,11 @@ async function run(handler) { try { await handler(); } catch (error) { if (!(err
 function button(text, handler) { const b = document.createElement('button'); b.textContent = text; b.type = 'button'; b.addEventListener('click', () => run(handler)); return b; }
 function kindChanged() {
     const segmentation = $('model-kind').value === 'polygon'; $('polygon-options').hidden = !segmentation;
+    const prompting = $('model-kind').value === 'interactor';
+    $('interactor-options').hidden = !prompting; $('sample-prompts-field').hidden = !prompting;
+    for (const id of ['min-pos-points', 'min-neg-points', 'box-mode', 'sample-prompts']) $(id).disabled = !prompting;
     for (const id of ['min-distance', 'spacing-percent', 'min-area']) $(id).disabled = !segmentation;
-    $('label-help').textContent = $('model-kind').value === 'tag' ? 'ClassificationのクラスIDとラベル名を登録します。分類結果は画像や動画の各フレームのタグになります。画像全体を分類する場合は、実行時にROIを指定しないでください。' : segmentation ? 'Segmentationのラベルをモデルの出力順に登録してください。この順番に従って、各領域にラベルを付けます。' : 'DetectionのクラスIDとラベル名を登録します。クラスIDはモデルの出力と一致させてください。';
+    $('label-help').textContent = prompting ? 'Promptingは対象1個のマスクを返します。モデルの説明用ラベルを1件だけ登録してください。実際のラベルはCVATで選びます。' : $('model-kind').value === 'polyline' ? 'Line detectionのクラスIDとラベル名を登録します。1枚の画像から任意の本数の線を出力でき、各線はCVATのポリラインになります。クラスIDはモデルの出力と一致させてください。' : $('model-kind').value === 'tag' ? 'ClassificationのクラスIDとラベル名を登録します。分類結果は画像や動画の各フレームのタグになります。画像全体を分類する場合は、実行時にROIを指定しないでください。' : segmentation ? 'Segmentationのラベルをモデルの出力順に登録してください。この順番に従って、各領域にラベルを付けます。' : 'DetectionのクラスIDとラベル名を登録します。クラスIDはモデルの出力と一致させてください。';
 }
 function labelRow(value = { id: 0, name: '' }) {
     const row = document.createElement('div'); row.className = 'label-row';
@@ -71,7 +74,11 @@ function resetForm(model = null) {
     $('form-title').textContent = model ? `モデルの更新: ${model.manifest?.name || model.id}` : 'モデルの新規登録';
     $('name').value = model?.manifest?.name || ''; $('description').value = model?.manifest?.description || ''; $('author-contact').value = model?.manifest?.author_contact || '';
     const labelType = model?.manifest?.labels?.[0]?.type;
-    $('model-kind').value = ['rectangle', 'tag'].includes(labelType) ? labelType : 'polygon';
+    $('model-kind').value = model?.manifest?.kind === 'interactor' ? 'interactor' : ['rectangle', 'polyline', 'tag'].includes(labelType) ? labelType : 'polygon';
+    const interactor = model?.manifest?.interactor;
+    $('min-pos-points').value = interactor?.min_pos_points ?? 1; $('min-neg-points').value = interactor?.min_neg_points ?? 0;
+    $('box-mode').value = interactor?.startswith_box ? 'required' : interactor?.startswith_box_optional === false ? 'disabled' : 'optional';
+    $('sample-prompts').value = JSON.stringify(interactor?.sample || { pos_points: [[0, 0]], neg_points: [], obj_bbox: null }, null, 2);
     const polygon = model?.manifest?.polygon || {}; $('min-distance').value = polygon.min_distance_px ?? 2; $('spacing-percent').value = polygon.spacing_percent ?? 1; $('min-area').value = polygon.min_area_px ?? 10;
     (model?.manifest?.labels || [{ id: 0, name: 'object' }]).forEach(labelRow); $('cancel-update').hidden = !model; kindChanged();
     const updating = Boolean(model?.active_revision);
@@ -106,18 +113,38 @@ function updateSummary() {
 }
 function readModelSettings(previous) {
     const kind = $('model-kind').value;
+    const labelKind = kind === 'interactor' ? 'polygon' : kind;
     const labels = [...$('labels').children].map((row) => {
         const id = Number(row.querySelector('[data-key=id]').value);
         const previousLabel = previous?.labels.find((label) => label.id === id);
         // Keep mixed label types unless the user changes the model kind.
         return { id, name: row.querySelector('[data-key=name]').value.trim(),
-            type: kind === previous?.labels[0]?.type ? (previousLabel?.type || kind) : kind };
+            type: labelKind === previous?.labels[0]?.type ? (previousLabel?.type || labelKind) : labelKind };
     });
     const settings = { name: $('name').value.trim(), description: $('description').value,
         author_contact: $('author-contact').value.trim(), labels };
     if (kind === 'polygon') settings.polygon = { min_distance_px: Number($('min-distance').value),
         spacing_percent: Number($('spacing-percent').value), min_area_px: Number($('min-area').value) };
+    if (kind === 'interactor') {
+        if (labels.length !== 1) throw new Error('Promptingの説明用ラベルは1件だけにしてください。');
+        settings.kind = 'interactor';
+        settings.interactor = { min_pos_points: Number($('min-pos-points').value),
+            min_neg_points: Number($('min-neg-points').value), startswith_box: $('box-mode').value === 'required',
+            startswith_box_optional: $('box-mode').value === 'optional', sample: readPrompts('sample-prompts') };
+    } else if (previous?.kind) {
+        settings.kind = 'detector';
+        if (previous.interactor) settings.interactor = null;
+    }
     return settings;
+}
+function readPrompts(id) {
+    const prompts = JSON.parse($(id).value);
+    if (!prompts || Array.isArray(prompts) || typeof prompts !== 'object' ||
+        Object.keys(prompts).some((key) => !['pos_points', 'neg_points', 'obj_bbox'].includes(key)) ||
+        !Array.isArray(prompts.pos_points) || !Array.isArray(prompts.neg_points)) {
+        throw new Error('PromptのJSONにはpos_pointsとneg_pointsの配列、任意のobj_bboxだけを指定してください。');
+    }
+    return { ...prompts, obj_bbox: prompts.obj_bbox ?? null };
 }
 async function submitModel() {
     const model = editing;
@@ -167,7 +194,7 @@ function renderModels() {
         if (model.manifest?.description) { const description = document.createElement('span'); description.className = 'model-description'; description.textContent = model.manifest.description; name.append(description); }
         const kind = document.createElement('td'); const badge = document.createElement('span'); badge.className = 'model-type';
         const types = new Set((model.manifest?.labels || []).map((label) => label.type));
-        badge.textContent = types.size > 1 ? 'Mixed' : types.has('polygon') ? 'Segmentation' : types.has('rectangle') ? 'Detection' : types.has('tag') ? 'Classification' : '未設定'; kind.append(badge);
+        badge.textContent = model.manifest?.kind === 'interactor' ? 'Prompting' : types.size > 1 ? 'Mixed' : types.has('polygon') ? 'Segmentation' : types.has('rectangle') ? 'Detection' : types.has('polyline') ? 'Line detection' : types.has('tag') ? 'Classification' : '未設定'; kind.append(badge);
         const author = document.createElement('td'); const owner = document.createElement('span'); owner.className = 'model-owner'; owner.textContent = model.owner; author.append(owner);
         const contact = document.createElement('span'); contact.className = 'model-contact'; contact.textContent = model.manifest?.author_contact || '連絡先は未設定'; author.append(contact);
         const status = document.createElement('td'); const pill = document.createElement('span'); pill.className = `status ${model.deleted ? '' : pending ? 'pending' : model.active_revision ? 'published' : op?.status === 'failed' ? 'failed' : ''}`; pill.textContent = state; status.append(pill);
@@ -232,16 +259,26 @@ async function selectModel(id) {
     $('detail-contact').textContent = `連絡先: ${model.manifest?.author_contact || '未設定'}`; $('detail-description').textContent = model.manifest?.description || '';
     $('detail-labels').textContent = (model.manifest?.labels || []).map((label, index) => `${index}: ${label.name} (ID=${label.id}, ${label.type})`).join('\n');
     const polygon = model.manifest?.polygon;
-    $('detail-polygon').textContent = polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `ポリゴン変換: 頂点の最小距離 ${polygon.min_distance_px} px、周長比 ${polygon.spacing_percent}%、最小面積 ${polygon.min_area_px} px²` : '';
+    $('detail-polygon').textContent = model.manifest?.kind === 'interactor' ? 'Prompting: AI assistanceのPromptingタブで利用します。マスクの穴と離れた領域を保持します。' : polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `ポリゴン変換: 頂点の最小距離 ${polygon.min_distance_px} px、周長比 ${polygon.spacing_percent}%、最小面積 ${polygon.min_area_px} px²` : '';
     const managed = Boolean(model.can_manage); $('owner-detail').hidden = !managed;
     for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = id === 'update-model' && Boolean(model.deleted || !model.active_revision); }
     $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-summary').textContent = ''; $('test-tags').textContent = ''; $('preview').hidden = true;
     if (managed) {
         for (const rev of model.revisions || []) { const option = document.createElement('option'); option.value = rev.revision; option.textContent = `${rev.revision} ${rev.revision === model.active_revision ? '(公開中)' : '(保持中)'} ${rev.manifest.name}`; $('revision').append(option); }
         $('revision').value = model.active_revision || '';
+        testRevisionChanged();
         for (const id of ['rollback', 'test-button']) $(id).disabled = Boolean(model.deleted || !model.active_revision);
         await refreshLogs();
     }
+}
+function testedManifest() {
+    return selected?.revisions?.find((item) => item.revision === $('revision').value)?.manifest || selected?.manifest;
+}
+function testRevisionChanged() {
+    const manifest = testedManifest(); const prompting = manifest?.kind === 'interactor';
+    $('test-prompts-field').hidden = !prompting; $('test-prompts').disabled = !prompting;
+    $('test-prompts').value = prompting ? JSON.stringify(manifest.interactor.sample, null, 2) : '';
+    $('test-tags').textContent = ''; $('test-summary').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
 }
 async function refreshLogs() {
     const model = selected; if (!model?.can_manage) return; const logs = await api(`/api/models/${model.id}/logs`); if (selected?.id !== model.id) return;
@@ -292,6 +329,7 @@ $('refresh').addEventListener('click', () => run(refresh)); $('search').addEvent
 $('new-model').addEventListener('click', () => { resetForm(); $('operation').textContent = ''; notice(''); location.hash = 'register'; });
 $('register-nav').addEventListener('click', () => { if (!activeOperation) { resetForm(); $('operation').textContent = ''; notice(''); } });
 $('cancel-update').addEventListener('click', () => resetForm()); $('model-kind').addEventListener('change', kindChanged);
+$('revision').addEventListener('change', testRevisionChanged);
 $('add-label').addEventListener('click', () => { const ids = [...$('labels').querySelectorAll('[data-key=id]')].map((x) => Number(x.value)); labelRow({ id: ids.length ? Math.max(...ids) + 1 : 0, name: '' }); });
 for (const id of ['code', 'sample']) $(id).addEventListener('change', updateSummary);
 $('register-form').addEventListener('submit', (event) => { event.preventDefault(); run(submitModel); });
@@ -308,13 +346,25 @@ $('rollback').addEventListener('click', () => run(async () => {
     await refresh(); await selectModel(id); notice('公開する版を切り替えました。');
 }));
 async function base64File(file) { if (file.size > 32 * 1024 ** 2) throw new Error('画像は32 MiB以下にしてください。'); const bytes = new Uint8Array(await file.arrayBuffer()); let binary = ''; for (let i = 0; i < bytes.length; i += 4096) binary += String.fromCharCode(...bytes.subarray(i, i + 4096)); return btoa(binary); }
-async function preview(file, result, modelId) {
+async function preview(file, result, modelId, revision) {
     const epoch = authEpoch; const bitmap = await createImageBitmap(file, { imageOrientation: 'none' });
-    if (epoch !== authEpoch || selected?.id !== modelId) { bitmap.close(); return; }
+    if (epoch !== authEpoch || selected?.id !== modelId || $('revision').value !== revision) { bitmap.close(); return; }
     const canvas = $('preview'); canvas.width = bitmap.width; canvas.height = bitmap.height;
     const context = canvas.getContext('2d'); context.drawImage(bitmap, 0, 0); bitmap.close(); context.strokeStyle = '#e84b40'; context.lineWidth = Math.max(2, canvas.width / 400);
-    for (const obj of result) {
+    if (result.mask) {
+        context.fillStyle = 'rgba(232,75,64,.3)';
+        for (let y = 0; y < result.mask.length; y++) {
+            const row = result.mask[y];
+            for (let x = 0; x < row.length;) {
+                if (!row[x]) { x++; continue; }
+                const start = x; while (x < row.length && row[x]) x++;
+                context.fillRect(start, y, x - start, 1);
+            }
+        }
+    }
+    for (const obj of Array.isArray(result) ? result : []) {
         if (obj.type === 'rectangle') { const [x1, y1, x2, y2] = obj.points; context.strokeRect(x1, y1, x2 - x1, y2 - y1); }
+        else if (obj.type === 'polyline') { context.beginPath(); context.moveTo(obj.points[0], obj.points[1]); for (let i = 2; i < obj.points.length; i += 2) context.lineTo(obj.points[i], obj.points[i + 1]); context.stroke(); }
         else if (obj.type === 'polygon') { context.beginPath(); context.moveTo(obj.points[0], obj.points[1]); for (let i = 2; i < obj.points.length; i += 2) context.lineTo(obj.points[i], obj.points[i + 1]); context.closePath(); context.fillStyle = 'rgba(232,75,64,.3)'; context.fill(); context.stroke(); }
     }
     canvas.hidden = false;
@@ -322,15 +372,21 @@ async function preview(file, result, modelId) {
 $('test-form').addEventListener('submit', (event) => { event.preventDefault(); run(async () => {
     if (!selected?.can_manage) return; const model = selected; const file = $('test-image').files[0]; const revision = $('revision').value; $('test-button').disabled = true;
     $('test-tags').textContent = ''; $('test-summary').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
-    try { const result = await api(`/api/models/${model.id}/test?revision=${encodeURIComponent(revision)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: await base64File(file) }) });
-        if (selected?.id === model.id) {
-            const tags = result.results.filter((object) => object.type === 'tag');
-            const testedManifest = model.revisions?.find((item) => item.revision === revision)?.manifest || model.manifest;
+    const manifest = testedManifest();
+    try {
+        const prompts = manifest?.kind === 'interactor' ? readPrompts('test-prompts') : {};
+        const image = await base64File(file);
+        const result = await api(`/api/models/${model.id}/test?revision=${encodeURIComponent(revision)}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, ...prompts }),
+        });
+        if (selected?.id === model.id && $('revision').value === revision) {
+            const objects = Array.isArray(result.results) ? result.results : [];
+            const tags = objects.filter((object) => object.type === 'tag');
             $('test-tags').textContent = tags.length ? `分類タグ: ${tags.map((tag) => `${tag.label}（信頼度 ${tag.confidence.toFixed(3)}）`).join('、')}` :
-                testedManifest?.labels?.some((label) => label.type === 'tag') ? '分類タグ: なし' : '';
-            $('test-summary').textContent = `出力件数: ${result.results.length}件（図形 ${result.results.length - tags.length}件、タグ ${tags.length}件）。結果を画像とタグ一覧で確認してください。`;
+                manifest?.labels?.some((label) => label.type === 'tag') ? '分類タグ: なし' : '';
+            $('test-summary').textContent = manifest?.kind === 'interactor' ? `出力マスク: ${result.results.mask ? 1 : 0}件。Promptで指定した対象を画像で確認してください。` : `出力件数: ${objects.length}件（図形 ${objects.length - tags.length}件、タグ ${tags.length}件）。結果を画像とタグ一覧で確認してください。`;
             $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: result.results.length, results: result.results }, null, 2);
-            await preview(file, result.results, model.id);
+            await preview(file, result.results, model.id, revision);
         }
     } finally { $('test-button').disabled = Boolean(selected?.deleted || !selected?.active_revision); await refreshLogs(); }
 }); });

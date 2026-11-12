@@ -132,6 +132,90 @@ def chunk_url(project, user):
     )
 
 
+@pytest.mark.parametrize("roi", [None, [12, 8, 44, 32]])
+def test_registered_interactor_native_routing_permissions_prompts_and_mask(
+    user, policy, monkeypatch, roi,
+):
+    import numpy as np
+    from components.model_registry.registry.schema import InvokeRequest, Manifest, function_metadata
+    from components.model_registry.registry.codec import decode_image, encode_interactor
+    from django.conf import settings
+    from cvat.apps.engine.permissions import JobPermission
+    from cvat.apps.lambda_manager.permissions import LambdaPermission
+    from cvat.apps.lambda_manager.views import LambdaGateway, TaskFrameProvider
+
+    manifest = Manifest.model_validate_json(
+        (ROOT / "components/model_registry/examples/prompting/manifest.json").read_text()
+    )
+    metadata = function_metadata("a" * 20, "b" * 16, manifest.model_dump(), "nuclio")
+    fid = metadata["metadata"]["name"]
+    data = models.Data.objects.create(size=1, start_frame=0, stop_frame=0, chunk_size=1,
+                                     image_quality=100, original_chunk_type="imageset",
+                                     compressed_chunk_type="imageset")
+    task = models.Task.objects.create(name="prompt image", owner=user, data=data,
+                                      dimension="2d", mode="annotation", media_type="image")
+    models.Image.objects.create(data=data, frame=0, path="sample.png", width=64, height=48)
+    segment = models.Segment.objects.create(task=task, start_frame=0, stop_frame=0)
+    job = models.Job.objects.create(segment=segment)
+    models.Label.objects.create(task=task, name="chosen target", type="mask")
+    calls = []
+    def http(self, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("method", "get") == "get":
+            return metadata
+        payload = kwargs["data"]
+        image = decode_image(payload["image"])
+        InvokeRequest.model_validate(payload).prompts_for(manifest, image.shape[1], image.shape[0])
+        return encode_interactor(image.mean(axis=2) > 128, image.shape)
+    monkeypatch.setattr(LambdaGateway, "_http", http)
+    monkeypatch.setitem(settings.NUCLIO, "INVOKE_METHOD", "dashboard")
+    monkeypatch.setattr(TaskFrameProvider, "get_frame", lambda *args: SimpleNamespace(
+        data=io.BytesIO((ROOT / "components/model_registry/examples/prompting/sample.png").read_bytes())
+    ))
+    # Deployment event storage is outside this isolated HTTP/permission test.
+    monkeypatch.setattr("cvat.apps.lambda_manager.views.handle_function_call", lambda *args, **kwargs: None)
+    path = reverse("lambda_function-detail", kwargs={"func_id": fid})
+    assert resolve(path).func.cls.__name__ == "FunctionViewSet"
+    info = dispatch("get", path, user)
+    assert info.status_code == 200
+    assert info.data["kind"] == "interactor" and info.data["startswith_box_optional"] is True
+    assert info.data["box_satisfies_min_pos_points"] is True
+    request = {"task": task.id, "job": job.id, "frame": 0,
+               "pos_points": [[14, 10]], "neg_points": [[13, 9]],
+               "obj_bbox": [[12, 8], [44, 32]]}
+    if roi:
+        request["roi"] = roi
+    response = dispatch("post", path, user, data=json.dumps(request), content_type="application/json")
+    assert response.status_code == 200, response.data
+    payload = calls[-1]["data"]
+    assert payload["pos_points"] == ([[2, 2]] if roi else [[14, 10]])
+    assert payload["neg_points"] == ([[1, 1]] if roi else [[13, 9]])
+    assert payload["obj_bbox"] == ([[0, 0], [32, 24]] if roi else [[12, 8], [44, 32]])
+    assert any(isinstance(perm, LambdaPermission) and perm.scope == LambdaPermission.Scopes.CALL_ONLINE
+               for perm in policy.permissions)
+    assert any(isinstance(perm, JobPermission) and perm.scope == JobPermission.Scopes.VIEW_DATA
+               and perm.obj.id == job.id for perm in policy.permissions)
+    mask = np.asarray(response.data["mask"])
+    assert mask.shape == (48, 64) and mask.sum() == 32 * 24 - 8 * 8
+    assert mask[18, 22] == 0 and mask[10, 14] == 1
+    box_only = {**request, "pos_points": [], "neg_points": []}
+    response = dispatch("post", path, user, data=json.dumps(box_only), content_type="application/json")
+    assert response.status_code == 200, response.data
+    assert calls[-1]["data"]["pos_points"] == []
+    assert calls[-1]["data"]["obj_bbox"] == payload["obj_bbox"]
+    # CVAT's AI tools send an empty box when only points are placed.
+    points_only = {**request, "obj_bbox": []}
+    response = dispatch("post", path, user, data=json.dumps(points_only), content_type="application/json")
+    assert response.status_code == 200, response.data
+    assert calls[-1]["data"]["obj_bbox"] == []
+    before = len(calls)
+    policy.allow = False
+    assert dispatch("post", path, user, data=json.dumps(request), content_type="application/json").status_code == 403
+    assert len(calls) == before
+    assert dispatch("post", path, data=json.dumps(request), content_type="application/json").status_code == 401
+    assert len(calls) == before
+
+
 def create_upload(project, user, payload):
     response = dispatch(
         "post",

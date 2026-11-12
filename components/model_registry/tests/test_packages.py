@@ -16,7 +16,7 @@ def altered(tmp_path, edits):
     return dst
 
 def test_examples_extract(tmp_path):
-    for kind in ('segmentation','detection'):
+    for kind in ('segmentation','detection','line'):
         m,h=extract_package(ROOT/'examples'/f'{kind}-demo.zip',tmp_path/kind)
         assert len(h)==64 and m.weights==['model.onnx']
         assert (tmp_path/kind/'model.py').stat().st_mode&0o777==0o444

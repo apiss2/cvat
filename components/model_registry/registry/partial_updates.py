@@ -29,6 +29,8 @@ def merge_manifest(previous: dict, patch: dict) -> Manifest:
     merged = {**previous, **patch}
     if isinstance(patch.get("polygon"), dict):
         merged["polygon"] = {**previous.get("polygon", {}), **patch["polygon"]}
+    if isinstance(patch.get("interactor"), dict):
+        merged["interactor"] = {**(previous.get("interactor") or {}), **patch["interactor"]}
     return Manifest.model_validate(merged)
 
 

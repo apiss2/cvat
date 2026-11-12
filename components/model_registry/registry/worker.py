@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 
-from .codec import decode_image, encode_results
+from .codec import decode_image, encode_interactor, encode_results
 from .schema import InvokeRequest, Manifest
 from .sdk import ModelBase, ModelContext, PredictParams
 
@@ -112,9 +112,22 @@ def create_worker(package: Path = Path("/model")) -> FastAPI:
             raise HTTPException(503, "worker busy")
         try:
             image = decode_image(body.image)
-            result = state["model"].predict(image, PredictParams(request_id))
-            output = encode_results(result, state["manifest"], image.shape)
-            log.info("request_id=%s stage=predict objects=%d", request_id, len(output))
+            manifest = state["manifest"]
+            prompts = body.prompts_for(manifest, image.shape[1], image.shape[0])
+            params = PredictParams(request_id)
+            if prompts is not None:
+                params = PredictParams(
+                    request_id,
+                    tuple((x, y) for x, y in prompts.pos_points),
+                    tuple((x, y) for x, y in prompts.neg_points),
+                    ((prompts.obj_bbox[0][0], prompts.obj_bbox[0][1]),
+                     (prompts.obj_bbox[1][0], prompts.obj_bbox[1][1])) if prompts.obj_bbox else None,
+                )
+            result = state["model"].predict(image, params)
+            output = (encode_interactor(result, image.shape) if manifest.kind == "interactor"
+                      else encode_results(result, manifest, image.shape))
+            count = int("mask" in output) if manifest.kind == "interactor" else len(output)
+            log.info("request_id=%s stage=predict objects=%d", request_id, count)
             return output
         except Exception as exc:
             details = traceback.format_exc()[-16000:]

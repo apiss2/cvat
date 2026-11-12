@@ -883,6 +883,32 @@ def test_registry_build_and_up_use_one_compose_project(mgr):
     )
 
 
+def test_prompting_is_managed_by_existing_cpu_registry_lifecycle(mgr):
+    fresh = select_extensions(mgr, "model_registry")
+    for doctor in (False, True):
+        summary = ops.configuration_summary(fresh, doctor=doctor)
+        assert summary["extensions"] == ("model_registry",)
+        assert summary["client_plugins"] == ["plugins/model-registry"]
+        assert not any(key.startswith(("sam2", "sam31", "ultrasam")) for key in summary)
+    assert fresh.functions() == []
+    assert fresh.values.get("MR_GPU_DEVICE", "") == ""
+    fresh.up()
+    fresh.check()
+    fresh.up(no_build=True)
+    assert not any(command[0] == "nuctl" for command in fresh.calls)
+    assert not any("/invoke" in " ".join(command) or "/predict" in " ".join(command)
+                   for command in fresh.calls)
+    saved = ops.read_json(fresh.state / "active.json")
+    assert saved["model"]["services"]["cvat_ui"]["build"]["args"]["CLIENT_PLUGINS"] == "plugins/model-registry"
+    # Disabling the selection still stops the recorded registry, retaining its data.
+    fresh.extensions = ()
+    fresh.values["CVAT_EXTENSIONS"] = ""
+    fresh.down()
+    down = next(command for command in fresh.calls
+                if command[:2] == ["docker", "compose"] and "down" in command)
+    assert str(fresh.state / "active.compose.json") in down and "-v" not in down
+
+
 def test_no_build_uses_prebuilt_cvat_and_sam2_images(mgr):
     mgr.up(no_build=True)
     assert not any("build" in c for c in mgr.calls)

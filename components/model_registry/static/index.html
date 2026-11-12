@@ -36,7 +36,7 @@
         <div class="page-heading"><div><p class="eyebrow">MODEL REGISTRATION</p><h1 id="form-title">モデルの新規登録</h1><p>ファイルをアップロードすると、試験推論の成功後にモデルが公開されます。</p></div><a class="text-link" href="#models">モデル一覧に戻る</a></div>
         <form id="register-form">
             <div class="panel form-panel"><div class="form-section-heading"><span class="step-number" aria-hidden="true">1</span><div><h2>基本情報</h2><p>モデルの用途と、問い合わせ先を伝えます。</p></div></div>
-                <div class="fields-row"><label>モデル名 <span class="required">必須</span><input id="name" maxlength="128" placeholder="例: 製品表面の傷検出" required></label><label>モデルの種類<select id="model-kind"><option value="polygon">Segmentation（ポリゴン出力）</option><option value="rectangle">Detection（矩形出力）</option><option value="tag">Classification（画像タグ出力）</option></select></label></div>
+                <div class="fields-row"><label>モデル名 <span class="required">必須</span><input id="name" maxlength="128" placeholder="例: 製品表面の傷検出" required></label><label>モデルの種類<select id="model-kind"><option value="polygon">Segmentation（ポリゴン出力）</option><option value="rectangle">Detection（矩形出力）</option><option value="polyline">Line detection（ポリライン出力）</option><option value="tag">Classification（画像タグ出力）</option><option value="interactor">Prompting（点・矩形からマスク出力）</option></select></label></div>
                 <label>説明<textarea id="description" rows="3" maxlength="4000" placeholder="対象、得意な条件、使うときの注意点など"></textarea></label>
                 <label>作者の連絡先 <span class="optional">任意</span><input id="author-contact" maxlength="512" placeholder="社内メールアドレス、内線など" aria-describedby="contact-help"></label><p id="contact-help" class="help">連絡先はログインした利用者全員に表示されます。</p>
             </div>
@@ -48,10 +48,17 @@
                     <label>最小面積（px²）<input id="min-area" type="number" min="0" step="any" value="10" aria-describedby="min-area-help" required><span id="min-area-help" class="help">小さな領域を除外する基準です。小さい対象を残す場合は値を下げてください。</span></label></div>
                     <p class="help">頂点の間隔や最小面積の条件を満たさない領域は出力されません。領域内の穴は塗りつぶされます。試験推論で輪郭を確認してください。</p>
                 </fieldset>
+                <fieldset id="interactor-options" hidden><legend>Promptingの入力</legend><div class="fields-row">
+                    <label>正の点の最小数<input id="min-pos-points" type="number" min="0" max="1000" step="1" value="1" required></label>
+                    <label>除外点の最小数<input id="min-neg-points" type="number" min="-1" max="1000" step="1" value="0" required><span class="help">-1は除外点を受け付けません。</span></label>
+                    <label>矩形Prompt<select id="box-mode"><option value="optional">任意</option><option value="required">必須</option><option value="disabled">使用しない</option></select></label>
+                </div><p class="help">矩形を指定した場合は正の点なしで推論できます。出力は対象1個の二値マスクです。穴と離れた領域を保持し、タスクのラベルはCVATのPromptingタブで選択します。テキストPromptと追跡には対応しません。</p>
+                </fieldset>
             </div>
             <div class="panel form-panel"><div class="form-section-heading"><span class="step-number" aria-hidden="true">3</span><div><h2>ファイルと試験画像</h2><p>公開前に、登録するモデルで試験画像を推論します。</p></div></div>
                 <div class="upload-grid"><label class="file-field"><strong>推論コード</strong><span class="help">model.py</span><input id="code" type="file" accept=".py" required></label><label class="file-field"><strong>ONNXファイル</strong><span class="help">複数選択できます</span><input id="weights" type="file" accept=".onnx" multiple required></label><section id="retained-model-files" hidden></section><label class="file-field"><strong>試験画像</strong><span class="help">PNGまたはJPEG</span><input id="sample" type="file" accept=".png,.jpg,.jpeg" required></label></div>
                 <p class="help">新規登録では推論コード、使用するONNXファイル、試験画像を選択してください。試験画像には、実際にアノテーションする画像に近いものを使用してください。更新の検証に失敗した場合は公開中の版を維持します。</p>
+                <label id="sample-prompts-field" hidden>試験画像用のPrompt（JSON）<textarea id="sample-prompts" rows="4" maxlength="131072" required aria-describedby="sample-prompts-help"></textarea><span id="sample-prompts-help" class="help">pos_pointsとneg_pointsは[[x,y],...]、obj_bboxは[[左,上],[右,下]]またはnullです。試験画像の左上を原点として対象の座標を指定してください。画像を変更した場合は座標も確認します。公開、更新、版の切り替えでこのPromptを使います。</span></label>
                 <div class="form-actions"><p id="update-summary" role="status" class="help"></p><button id="submit-model" class="primary" type="submit">検証して公開</button><button id="cancel-update" class="secondary" type="button" hidden>更新を取り消す</button><span>試験推論が成功すると、CVATから利用できます。</span></div><progress id="upload-progress" max="100" value="0" aria-label="アップロードの進捗" hidden></progress>
             </div>
         </form>
@@ -62,7 +69,7 @@
         <div class="panel detail-summary"><div class="detail-meta"><p id="detail-info"></p><p id="detail-contact"></p></div><p id="detail-description"></p><h2>出力ラベル</h2><pre id="detail-labels"></pre><p id="detail-polygon" class="help"></p></div>
         <div id="owner-detail">
             <div class="panel form-panel"><h2>公開する版</h2><p class="help">保持されている版に戻す場合は、切り替える前に試験推論で結果を確認できます。</p><div class="revision-controls"><label>保持されている版<select id="revision"></select></label><button id="rollback" class="secondary" type="button">選択した版を公開する</button></div></div>
-            <div class="panel form-panel"><h2>試験推論</h2><p class="help">選択した版のモデルで画像を推論し、結果を確認します。</p><form id="test-form"><label class="file-field">試験する画像<input id="test-image" type="file" accept=".png,.jpg,.jpeg" required></label><button type="submit" id="test-button" class="primary">選択した版で推論</button></form><canvas id="preview" aria-label="試験推論の結果" hidden></canvas><p id="test-summary" role="status" aria-live="polite"></p><p id="test-tags" role="status" aria-live="polite"></p><details><summary>推論結果の詳細（JSON）</summary><pre id="test-result"></pre></details></div>
+            <div class="panel form-panel"><h2>試験推論</h2><p class="help">選択した版のモデルで画像を推論し、結果を確認します。</p><form id="test-form"><label class="file-field">試験する画像<input id="test-image" type="file" accept=".png,.jpg,.jpeg" required></label><label id="test-prompts-field" hidden>この画像へのPrompt（JSON）<textarea id="test-prompts" rows="4" maxlength="131072" required></textarea><span class="help">保存済みの試験Promptを表示します。選択した画像に合わせて点・除外点・矩形の座標を変更してください。ここでの変更は登録済みの設定を変更しません。</span></label><button type="submit" id="test-button" class="primary">選択した版で推論</button></form><canvas id="preview" aria-label="試験推論の結果" hidden></canvas><p id="test-summary" role="status" aria-live="polite"></p><p id="test-tags" role="status" aria-live="polite"></p><details><summary>推論結果の詳細（JSON）</summary><pre id="test-result"></pre></details></div>
             <div class="panel form-panel"><div class="section-heading"><div><h2>処理ログ</h2><p class="help">直近200件を表示します。入力画像自体はログに保存しません。</p></div><div class="button-group"><button id="refresh-logs" class="secondary" type="button">ログを更新</button><button id="download-logs" class="secondary" type="button">ログを保存</button></div></div><details><summary>処理ログを表示</summary><pre id="logs"></pre></details></div>
         </div>
     </section>
