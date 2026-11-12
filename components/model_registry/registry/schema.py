@@ -181,6 +181,7 @@ def function_metadata(model_id: str, revision: str, manifest: dict, namespace: s
                     # CVAT reads these fields with bool(), not a string parser.
                     "startswith_box": m.interactor.startswith_box,
                     "startswith_box_optional": m.interactor.startswith_box_optional,
+                    "box_satisfies_min_pos_points": True,
                     "help_message": "Use positive points, negative points and a box as supported by this model.",
                 } if m.interactor else {}),
             },

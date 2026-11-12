@@ -278,6 +278,7 @@ function testRevisionChanged() {
     const manifest = testedManifest(); const prompting = manifest?.kind === 'interactor';
     $('test-prompts-field').hidden = !prompting; $('test-prompts').disabled = !prompting;
     $('test-prompts').value = prompting ? JSON.stringify(manifest.interactor.sample, null, 2) : '';
+    $('test-tags').textContent = ''; $('test-summary').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
 }
 async function refreshLogs() {
     const model = selected; if (!model?.can_manage) return; const logs = await api(`/api/models/${model.id}/logs`); if (selected?.id !== model.id) return;
@@ -345,9 +346,9 @@ $('rollback').addEventListener('click', () => run(async () => {
     await refresh(); await selectModel(id); notice('公開する版を切り替えました。');
 }));
 async function base64File(file) { if (file.size > 32 * 1024 ** 2) throw new Error('画像は32 MiB以下にしてください。'); const bytes = new Uint8Array(await file.arrayBuffer()); let binary = ''; for (let i = 0; i < bytes.length; i += 4096) binary += String.fromCharCode(...bytes.subarray(i, i + 4096)); return btoa(binary); }
-async function preview(file, result, modelId) {
+async function preview(file, result, modelId, revision) {
     const epoch = authEpoch; const bitmap = await createImageBitmap(file, { imageOrientation: 'none' });
-    if (epoch !== authEpoch || selected?.id !== modelId) { bitmap.close(); return; }
+    if (epoch !== authEpoch || selected?.id !== modelId || $('revision').value !== revision) { bitmap.close(); return; }
     const canvas = $('preview'); canvas.width = bitmap.width; canvas.height = bitmap.height;
     const context = canvas.getContext('2d'); context.drawImage(bitmap, 0, 0); bitmap.close(); context.strokeStyle = '#e84b40'; context.lineWidth = Math.max(2, canvas.width / 400);
     if (result.mask) {
@@ -372,16 +373,20 @@ $('test-form').addEventListener('submit', (event) => { event.preventDefault(); r
     if (!selected?.can_manage) return; const model = selected; const file = $('test-image').files[0]; const revision = $('revision').value; $('test-button').disabled = true;
     $('test-tags').textContent = ''; $('test-summary').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
     const manifest = testedManifest();
-    try { const result = await api(`/api/models/${model.id}/test?revision=${encodeURIComponent(revision)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: await base64File(file), ...(manifest?.kind === 'interactor' ? readPrompts('test-prompts') : {}) }) });
-        if (selected?.id === model.id) {
+    try {
+        const prompts = manifest?.kind === 'interactor' ? readPrompts('test-prompts') : {};
+        const image = await base64File(file);
+        const result = await api(`/api/models/${model.id}/test?revision=${encodeURIComponent(revision)}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image, ...prompts }),
+        });
+        if (selected?.id === model.id && $('revision').value === revision) {
             const objects = Array.isArray(result.results) ? result.results : [];
             const tags = objects.filter((object) => object.type === 'tag');
-            const testedManifest = model.revisions?.find((item) => item.revision === revision)?.manifest || model.manifest;
             $('test-tags').textContent = tags.length ? `分類タグ: ${tags.map((tag) => `${tag.label}（信頼度 ${tag.confidence.toFixed(3)}）`).join('、')}` :
-                testedManifest?.labels?.some((label) => label.type === 'tag') ? '分類タグ: なし' : '';
+                manifest?.labels?.some((label) => label.type === 'tag') ? '分類タグ: なし' : '';
             $('test-summary').textContent = manifest?.kind === 'interactor' ? `出力マスク: ${result.results.mask ? 1 : 0}件。Promptで指定した対象を画像で確認してください。` : `出力件数: ${objects.length}件（図形 ${objects.length - tags.length}件、タグ ${tags.length}件）。結果を画像とタグ一覧で確認してください。`;
             $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: result.results.length, results: result.results }, null, 2);
-            await preview(file, result.results, model.id);
+            await preview(file, result.results, model.id, revision);
         }
     } finally { $('test-button').disabled = Boolean(selected?.deleted || !selected?.active_revision); await refreshLogs(); }
 }); });

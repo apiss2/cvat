@@ -179,6 +179,7 @@ def test_registered_interactor_native_routing_permissions_prompts_and_mask(
     info = dispatch("get", path, user)
     assert info.status_code == 200
     assert info.data["kind"] == "interactor" and info.data["startswith_box_optional"] is True
+    assert info.data["box_satisfies_min_pos_points"] is True
     request = {"task": task.id, "job": job.id, "frame": 0,
                "pos_points": [[14, 10]], "neg_points": [[13, 9]],
                "obj_bbox": [[12, 8], [44, 32]]}
@@ -197,6 +198,11 @@ def test_registered_interactor_native_routing_permissions_prompts_and_mask(
     mask = np.asarray(response.data["mask"])
     assert mask.shape == (48, 64) and mask.sum() == 32 * 24 - 8 * 8
     assert mask[18, 22] == 0 and mask[10, 14] == 1
+    box_only = {**request, "pos_points": [], "neg_points": []}
+    response = dispatch("post", path, user, data=json.dumps(box_only), content_type="application/json")
+    assert response.status_code == 200, response.data
+    assert calls[-1]["data"]["pos_points"] == []
+    assert calls[-1]["data"]["obj_bbox"] == payload["obj_bbox"]
     # CVAT's AI tools send an empty box when only points are placed.
     points_only = {**request, "obj_bbox": []}
     response = dispatch("post", path, user, data=json.dumps(points_only), content_type="application/json")

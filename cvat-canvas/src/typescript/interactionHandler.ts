@@ -93,6 +93,7 @@ export class InteractionHandlerImpl implements InteractionHandler {
         this.settings = {
             crosshair: false,
             points_type: 'any',
+            allowNegativePoints: true,
             removalStrategy: 'any',
             appendCursorPositionAsPoint: false,
         };
@@ -161,6 +162,7 @@ export class InteractionHandlerImpl implements InteractionHandler {
 
     private release(): void {
         this.enabled = false;
+        this.settings.allowNegativePoints = true;
         this.ctrlKey = false;
         this.command = 'idle';
         this.regionOfInterest = null;
@@ -465,7 +467,8 @@ export class InteractionHandlerImpl implements InteractionHandler {
         if (this.command === 'draw_box') {
             (this.currentRectangle as any).draw(e);
         } else if (this.command === 'draw_points') {
-            if (!this.isWithinInteractionBounds(x, y)) {
+            const negativePoint = this.settings.points_type === 'any' && e.button === 2;
+            if ((negativePoint && this.settings.allowNegativePoints === false) || !this.isWithinInteractionBounds(x, y)) {
                 return;
             }
 

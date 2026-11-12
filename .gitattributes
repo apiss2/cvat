@@ -22,6 +22,7 @@ LICENSE         text
 *.ico           binary
 *.jpeg          binary
 *.jpg           binary
+*.onnx          binary
 *.png           binary
 *.gif           binary
 *.ttf           binary

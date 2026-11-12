@@ -196,6 +196,19 @@ test('prompting update retains files and sample, changing only requested setting
     assert.deepEqual([...ui.sandbox.submitted[0].data.keys()], ['manifest', 'expected_revision']);
 });
 
+test('prompting can disable both the box and negative points on an existing revision', async () => {
+    const ui = setup();
+    ui.sandbox.model = promptingModel();
+    ui.eval('resetForm(model)');
+    ui.get('box-mode').value = 'disabled';
+    ui.get('min-neg-points').value = '-1';
+    await ui.submit('register-form');
+    const patch = JSON.parse(ui.sandbox.submitted[0].data.get('manifest'));
+    assert.equal(patch.interactor.startswith_box, false);
+    assert.equal(patch.interactor.startswith_box_optional, false);
+    assert.equal(patch.interactor.min_neg_points, -1);
+});
+
 test('switching away from prompting explicitly clears its capabilities', async () => {
     const ui = setup(); ui.sandbox.model = promptingModel(); ui.eval('resetForm(model)');
     ui.get('model-kind').value = 'rectangle'; ui.eval('kindChanged()');
@@ -251,6 +264,44 @@ test('prompting list and revision-aware test display masks and send prompts', as
     ui.sandbox.response.results = [];
     await ui.submit('test-form');
     assert.deepEqual(Object.keys(requestBodies[2]), ['image']);
+});
+
+test('changing revision during image reading keeps the submitted prompts with their revision', async () => {
+    const ui = setup();
+    const original = promptingModel();
+    const next = structuredClone(original.manifest);
+    next.interactor.sample.pos_points = [[20, 12]];
+    original.revisions.push({ revision: 'c'.repeat(16), manifest: next });
+    ui.sandbox.model = original;
+    ui.sandbox.requests = [];
+    ui.eval(`selected = model;
+        api = async (route, options) => {
+            if (route.endsWith('/logs')) return [];
+            requests.push({ route, body: options.body });
+            return { revision: model.active_revision, results: { mask: [[1]] } };
+        };`);
+    ui.get('revision').value = original.active_revision;
+    ui.eval('testRevisionChanged()');
+    let startReading;
+    let finishReading;
+    const reading = new Promise((resolve) => { startReading = resolve; });
+    const contents = new Promise((resolve) => { finishReading = resolve; });
+    const sample = file('sample.png');
+    sample.arrayBuffer = () => { startReading(); return contents; };
+    ui.get('test-image').files = [sample];
+
+    const submission = ui.submit('test-form');
+    await reading;
+    ui.get('revision').value = 'c'.repeat(16);
+    ui.eval('testRevisionChanged()');
+    finishReading(new Uint8Array([1]).buffer);
+    await submission;
+
+    const [request] = ui.sandbox.requests;
+    assert.equal(request.route, `/api/models/${original.id}/test?revision=${original.active_revision}`);
+    assert.deepEqual(JSON.parse(request.body).pos_points, original.manifest.interactor.sample.pos_points);
+    assert.equal(ui.get('test-summary').textContent, '');
+    assert.equal(ui.get('preview').hidden, true);
 });
 
 test('line detection registers polyline labels and previews any number of lines', async () => {

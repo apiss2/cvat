@@ -26,6 +26,7 @@ def test_metadata_and_old_models(manifest):
     assert annotations["type"] == "interactor"
     assert annotations["startswith_box"] is False
     assert annotations["startswith_box_optional"] is True
+    assert annotations["box_satisfies_min_pos_points"] is True
     assert annotations["min_pos_points"] == "1" and annotations["min_neg_points"] == "0"
     legacy = Manifest(name="legacy", weights=["model.onnx"], labels=[{"id": 0, "name": "object", "type": "polygon"}])
     assert legacy.kind == "detector" and legacy.interactor is None

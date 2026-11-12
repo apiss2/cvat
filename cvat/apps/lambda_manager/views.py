@@ -249,6 +249,7 @@ class LambdaFunction:
         self.min_neg_points = int(meta_anno.get("min_neg_points", -1))
         self.startswith_box = bool(meta_anno.get("startswith_box", False))
         self.startswith_box_optional = bool(meta_anno.get("startswith_box_optional", False))
+        self.box_satisfies_min_pos_points = meta_anno.get("box_satisfies_min_pos_points") is True
         self.animated_gif = meta_anno.get("animated_gif", "")
         self.version = int(meta_anno.get("version", "1"))
         self.help_message = meta_anno.get("help_message", "")
@@ -291,6 +292,8 @@ class LambdaFunction:
                     "animated_gif": self.animated_gif,
                 }
             )
+            if self.box_satisfies_min_pos_points:
+                response["box_satisfies_min_pos_points"] = True
         elif self.kind is FunctionKind.TRACKER:
             response.update(
                 {
