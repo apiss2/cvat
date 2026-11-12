@@ -15,7 +15,7 @@ from .cleanup import purge_deleted_files
 from .config import Settings
 from .packages import extract_package
 from .runtime import Busy
-from .schema import Manifest, function_metadata, parse_function_id
+from .schema import InvokeRequest, Manifest, function_metadata, parse_function_id, sample_payload
 from .store import Conflict, Store
 from .wire import validate_wire
 
@@ -139,15 +139,17 @@ class Service:
             manifest, digest = extract_package(archive, destination)
             self.store.event(model_id, revision, operation, actor, "load", "info", "Loading ONNX models in isolated worker")
             sample = next(destination.glob("sample.*")).read_bytes()
-            payload = {"image": base64.b64encode(sample).decode()}
-            result = self.runtime.call(model_id, revision, destination, payload, operation)
+            payload = sample_payload(manifest, base64.b64encode(sample).decode())
             image = decode_image(payload["image"])
+            InvokeRequest.model_validate(payload).prompts_for(manifest, image.shape[1], image.shape[0])
+            result = self.runtime.call(model_id, revision, destination, payload, operation)
             validate_wire(result, manifest, image.shape[1], image.shape[0])
+            count = int("mask" in result) if manifest.kind == "interactor" else len(result)
             with self.mutations:
                 self.store.commit_revision(model_id, revision, expected, manifest.model_dump(), digest, str(destination.relative_to(self.settings.data_dir)))
                 committed = True
-            self.store.event(model_id, revision, operation, actor, "publish", "info", f"Published revision; sample objects={len(result)}, sha256={digest}")
-            self.store.update_operation(operation, "succeeded", f"Sample inference succeeded with {len(result)} objects")
+            self.store.event(model_id, revision, operation, actor, "publish", "info", f"Published revision; sample objects={count}, sha256={digest}")
+            self.store.update_operation(operation, "succeeded", f"Sample inference succeeded with {count} objects")
         except Exception:
             detail = traceback.format_exc()[-20000:]
             self.store.event(model_id, revision, operation, actor, "registration", "error", detail)
@@ -205,7 +207,7 @@ class Service:
         # Old revisions stay addressable for already queued multi-frame CVAT tasks.
         return function_metadata(model_id, revision, record["manifest"], self.settings.namespace)
 
-    def infer(self, identifier: str, payload: dict, request_id: str, actor: str = "cvat") -> list:
+    def infer(self, identifier: str, payload: dict, request_id: str, actor: str = "cvat") -> list | dict:
         model_id, revision = parse_function_id(identifier)
         with self.using_model(model_id):
             self.function(identifier)
@@ -214,9 +216,12 @@ class Service:
             self.store.event(model_id, revision, request_id, actor, "predict", "info", "Inference accepted")
             try:
                 image = decode_image(payload["image"])
-                result = self.runtime.call(model_id, revision, self.settings.data_dir / record["path"], {"image": payload["image"]}, request_id)
+                body = InvokeRequest.model_validate(payload)
+                body.prompts_for(manifest, image.shape[1], image.shape[0])
+                result = self.runtime.call(model_id, revision, self.settings.data_dir / record["path"], body.model_dump(exclude_none=True, exclude={"threshold"}), request_id)
                 output = validate_wire(result, manifest, image.shape[1], image.shape[0])
-                self.store.event(model_id, revision, request_id, actor, "predict", "info", f"Completed; objects={len(output)}")
+                count = int("mask" in output) if manifest.kind == "interactor" else len(output)
+                self.store.event(model_id, revision, request_id, actor, "predict", "info", f"Completed; objects={count}")
                 return output
             except Exception:
                 self.store.event(model_id, revision, request_id, actor, "predict", "error", traceback.format_exc())
@@ -250,7 +255,8 @@ class Service:
             directory = self.settings.data_dir / record["path"]
             sample = next(directory.glob("sample.*")).read_bytes()
             identifier = function_metadata(model_id, revision, record["manifest"], self.settings.namespace)["metadata"]["name"]
-            self.infer(identifier, {"image": base64.b64encode(sample).decode()}, uuid.uuid4().hex, actor)
+            manifest = Manifest.model_validate(record["manifest"])
+            self.infer(identifier, sample_payload(manifest, base64.b64encode(sample).decode()), uuid.uuid4().hex, actor)
             with self.mutations:
                 self.store.activate_existing(model_id, revision, expected)
             self.store.event(model_id, revision, "", actor, "rollback", "info", "Activated previously tested revision")

@@ -34,7 +34,7 @@ class Element {
     querySelector(selector) { return this.querySelectorAll(selector)[0]; }
     reset() {}
     getContext() {
-        return { drawImage() {}, strokeRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() {}, stroke() {} };
+        return { drawImage() {}, strokeRect() {}, fillRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() {}, stroke() {} };
     }
 }
 
@@ -162,6 +162,95 @@ test('code-only update retains the model.py filename and other files', async () 
 
 test('registration exposes individual files without a ZIP entry', () => {
     assert.doesNotMatch(html, /zip-form|submit-zip|accept="\.zip"/);
+});
+
+function promptingModel() {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'examples/prompting/manifest.json'), 'utf8'));
+    return { ...model('polygon'), manifest, revisions: [{ revision: 'b'.repeat(16), manifest }] };
+}
+
+test('prompting registration sends capabilities and explicit sample prompts', async () => {
+    const ui = setup(); ui.get('model-kind').value = 'interactor'; ui.eval('kindChanged()');
+    ui.get('name').value = 'prompt model'; ui.get('weights').files = [file('model.onnx')];
+    ui.get('sample-prompts').value = '{"pos_points":[[12,8]],"neg_points":[[1,1]],"obj_bbox":null}';
+    assert.equal(ui.get('polygon-options').hidden, true);
+    assert.equal(ui.get('interactor-options').hidden, false);
+    assert.equal(ui.get('sample-prompts').disabled, false);
+    await ui.submit('register-form');
+    const manifest = JSON.parse(ui.sandbox.submitted[0].data.get('manifest'));
+    assert.equal(manifest.kind, 'interactor');
+    assert.equal(manifest.labels[0].type, 'polygon');
+    assert.deepEqual(manifest.interactor.sample.pos_points, [[12, 8]]);
+    assert.equal(manifest.interactor.startswith_box, false);
+    assert.equal(manifest.interactor.startswith_box_optional, true);
+});
+
+test('prompting update retains files and sample, changing only requested settings', async () => {
+    const ui = setup(); ui.sandbox.model = promptingModel(); ui.eval('resetForm(model)');
+    assert.equal(ui.get('model-kind').value, 'interactor');
+    assert.equal(ui.get('code').required, false);
+    assert.deepEqual(JSON.parse(ui.get('sample-prompts').value), ui.sandbox.model.manifest.interactor.sample);
+    ui.get('description').value = 'changed';
+    await ui.submit('register-form');
+    assert.deepEqual(JSON.parse(ui.sandbox.submitted[0].data.get('manifest')), { description: 'changed' });
+    assert.deepEqual([...ui.sandbox.submitted[0].data.keys()], ['manifest', 'expected_revision']);
+});
+
+test('switching away from prompting explicitly clears its capabilities', async () => {
+    const ui = setup(); ui.sandbox.model = promptingModel(); ui.eval('resetForm(model)');
+    ui.get('model-kind').value = 'rectangle'; ui.eval('kindChanged()');
+    await ui.submit('register-form');
+    const patch = JSON.parse(ui.sandbox.submitted[0].data.get('manifest'));
+    assert.equal(patch.kind, 'detector'); assert.equal(patch.interactor, null);
+    assert.equal(patch.labels[0].type, 'rectangle');
+    assert.equal(ui.get('sample-prompts').disabled, true);
+});
+
+test('invalid prompting JSON and multiple labels are rejected before upload', async () => {
+    const ui = setup(); ui.get('model-kind').value = 'interactor';
+    for (const json of ['invalid', '{"text_prompts":["object"]}', '[]']) {
+        ui.get('sample-prompts').value = json;
+        await ui.submit('register-form');
+        assert.equal(ui.sandbox.submitted.length, 0);
+        assert.notEqual(ui.get('notice').textContent, '');
+    }
+    ui.eval("labelRow({ id: 1, name: 'extra' })");
+    await ui.submit('register-form');
+    assert.match(ui.get('notice').textContent, /1件だけ/);
+});
+
+test('prompting list and revision-aware test display masks and send prompts', async () => {
+    const ui = setup(); const requestBodies = [];
+    ui.sandbox.model = promptingModel();
+    ui.sandbox.requestBodies = requestBodies;
+    ui.eval(`selected = model; models = [model]; renderModels();
+        api = async (route, options) => {
+            if (route.endsWith('/logs')) return [];
+            requestBodies.push(JSON.parse(options.body)); return response;
+        };`);
+    assert.equal(ui.get('models').children[0].children[1].textContent, 'Prompting');
+    ui.get('revision').value = ui.sandbox.model.active_revision; ui.eval('testRevisionChanged()');
+    assert.equal(ui.get('test-prompts-field').hidden, false);
+    ui.get('test-image').files = [file('sample.png')];
+    ui.get('test-prompts').value = '{"pos_points":[],"neg_points":[],"obj_bbox":[[0,0],[24,20]]}';
+    ui.sandbox.response = { revision: 'b'.repeat(16), request_id: 'test', results: { mask: [[0, 1], [1, 0]] } };
+    await ui.submit('test-form');
+    assert.equal(ui.get('notice').textContent, '');
+    assert.equal(ui.get('preview').hidden, false);
+    assert.match(ui.get('test-summary').textContent, /出力マスク: 1件/);
+    const payload = JSON.parse(JSON.stringify(requestBodies[0]));
+    assert.deepEqual(payload.obj_bbox, [[0, 0], [24, 20]]);
+    assert.deepEqual(payload.pos_points, []);
+    ui.sandbox.response.results = { shapes: [] };
+    await ui.submit('test-form');
+    assert.match(ui.get('test-summary').textContent, /出力マスク: 0件/);
+    ui.sandbox.model.revisions.push({ revision: 'old-detector', manifest: model().manifest });
+    ui.get('revision').value = 'old-detector'; ui.eval('testRevisionChanged()');
+    assert.equal(ui.get('test-prompts-field').hidden, true);
+    assert.equal(ui.get('test-prompts').disabled, true);
+    ui.sandbox.response.results = [];
+    await ui.submit('test-form');
+    assert.deepEqual(Object.keys(requestBodies[2]), ['image']);
 });
 
 test('metadata-only update does not convert tag labels to polygons', async () => {

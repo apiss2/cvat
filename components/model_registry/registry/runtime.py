@@ -172,7 +172,7 @@ class DockerRuntime:
                 time.sleep(0.2)
         raise RuntimeFailure("Worker load timeout\n" + self.engine.logs(entry.container))
 
-    def call(self, model_id: str, revision: str, path: Path, payload: dict, request_id: str) -> list:
+    def call(self, model_id: str, revision: str, path: Path, payload: dict, request_id: str) -> list | dict:
         key = model_id + "-" + revision
         with self.lock:
             if model_id in self.revoked:
@@ -196,8 +196,8 @@ class DockerRuntime:
             socket = entry.run_dir / "worker.sock"
             with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url="http://worker", timeout=self.settings.infer_timeout, trust_env=False) as client:
                 result = limited_json(client, "POST", "/predict", json=payload, headers={"x-request-id": request_id})
-            if not isinstance(result, list):
-                raise RuntimeFailure("worker returned a non-list result")
+            if not isinstance(result, (list, dict)):
+                raise RuntimeFailure("worker returned an invalid result container")
             if self.log_sink and entry.container:
                 # Keep a bounded worker stdout/stderr snapshot even for successful requests.
                 # Adjacent snapshots can overlap; request IDs identify individual invocations.

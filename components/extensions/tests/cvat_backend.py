@@ -47,6 +47,7 @@ def configure_cvat(*, prefix: str, create_schema: bool = True):
         "cvat.apps.access_tokens",
         "cvat.apps.quality_control",
         "cvat.apps.consensus",
+        "cvat.apps.lambda_manager",
     )
     defaults.update(
         INSTALLED_APPS=[],

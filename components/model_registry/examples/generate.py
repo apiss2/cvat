@@ -44,13 +44,20 @@ def identity_model():
 
 
 def generate(root: Path):
-    for kind, label_type in [("segmentation", "polygon"), ("detection", "rectangle"), ("classification", "tag")]:
+    for kind, label_type in [("segmentation", "polygon"), ("detection", "rectangle"), ("classification", "tag"), ("prompting", "polygon")]:
         folder = root / kind
         folder.mkdir(exist_ok=True)
         (folder / "model.onnx").write_bytes(identity_model())
         labels = ([{"id": 0, "name": "dark_image", "type": "tag"}, {"id": 1, "name": "bright_image", "type": "tag"}]
                   if label_type == "tag" else [{"id": 0, "name": "bright_region", "type": label_type}])
-        (folder / "manifest.json").write_text(json.dumps({"schema_version": 1, "name": "ONNX demo " + kind, "description": "Identity network plus brightness postprocessing; interface test only", "weights": ["model.onnx"], "labels": labels, "author_contact": "", "polygon": {"min_distance_px": 2.0, "spacing_percent": 1.0, "min_area_px": 10.0}}, indent=2) + "\n")
+        manifest = {"schema_version": 1, "name": "ONNX demo " + kind, "description": "Identity network plus brightness postprocessing; interface test only", "weights": ["model.onnx"], "labels": labels, "author_contact": "", "polygon": {"min_distance_px": 2.0, "spacing_percent": 1.0, "min_area_px": 10.0}}
+        if kind == "prompting":
+            manifest.update(kind="interactor", interactor={
+                "min_pos_points": 1, "min_neg_points": 0,
+                "startswith_box": False, "startswith_box_optional": True,
+                "sample": {"pos_points": [[14.0, 10.0]], "neg_points": [], "obj_bbox": None},
+            })
+        (folder / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         image = Image.new("RGB", (64, 48))
         draw = ImageDraw.Draw(image)
         draw.rectangle((12, 8, 43, 31), fill="white")

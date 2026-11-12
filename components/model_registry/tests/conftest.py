@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from registry.codec import decode_image, encode_results
+from registry.codec import decode_image, encode_interactor, encode_results
 from registry.config import Settings
 from registry.manager import create_app
 from registry.schema import Manifest
@@ -40,6 +40,8 @@ class FakeRuntime:
         manifest = Manifest.model_validate_json((directory/'manifest.json').read_text())
         image = decode_image(payload['image'])
         bitmap = image.mean(axis=2) > 128
+        if manifest.kind == 'interactor':
+            return encode_interactor(bitmap, image.shape)
         if manifest.labels[0].type == 'polygon':
             output = np.stack([bitmap for _ in manifest.labels])
         else:

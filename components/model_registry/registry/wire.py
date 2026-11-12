@@ -4,13 +4,15 @@ from __future__ import annotations
 import math
 import numpy as np
 from .codec import (
-    GEOMETRY_EPSILON, MAX_OBJECTS, MAX_POLYGON_VERTICES,
+    GEOMETRY_EPSILON, MAX_MASK_VALUES, MAX_OBJECTS, MAX_POLYGON_VERTICES,
     MAX_TOTAL_POLYGON_VERTICES, is_simple_polygon, polygon_area,
 )
 from .schema import Manifest
 
 
-def validate_wire(result: list, manifest: Manifest, width: int, height: int) -> list:
+def validate_wire(result: list | dict, manifest: Manifest, width: int, height: int) -> list | dict:
+    if manifest.kind == "interactor":
+        return validate_interactor_wire(result, width, height)
     if not isinstance(result, list) or len(result) > MAX_OBJECTS:
         raise ValueError("invalid worker object count")
     labels = {label.name: label.type for label in manifest.labels}
@@ -63,4 +65,20 @@ def validate_wire(result: list, manifest: Manifest, width: int, height: int) -> 
                 raise ValueError("worker polygon intersects or touches itself")
         else:
             raise ValueError("unsupported worker shape")
+    return result
+
+
+def validate_interactor_wire(result, width: int, height: int) -> dict:
+    if not isinstance(result, dict):
+        raise ValueError("interactor output must be a mask response")
+    if result == {"shapes": []}:
+        return result
+    if set(result) != {"mask"} or width * height > MAX_MASK_VALUES:
+        raise ValueError("invalid interactor output fields or pixel budget")
+    mask = result["mask"]
+    if (not isinstance(mask, list) or len(mask) != height
+            or any(not isinstance(row, list) or len(row) != width for row in mask)):
+        raise ValueError("interactor mask must match input image H x W")
+    if any(type(pixel) not in (int, bool) or pixel not in (0, 1) for row in mask for pixel in row):
+        raise ValueError("interactor mask pixels must be bool or integer 0/1")
     return result

@@ -3,6 +3,7 @@
 [共通運用](README.md) / [SAM2](../sam2/README.md) / [SAM3.1](../sam31/README.md)
 
 このページでは、画像分割と追跡に使うSAM2とSAM3.1のモデルを設定します。画像分割は画像内の対象領域を求める処理、追跡はその領域を連続するフレームへ対応付ける処理です。初回の起動方法は[導入と共通設定](installation.md)を参照してください。
+利用者がONNX形式の点・矩形Promptモデルを登録してAI assistanceのPromptingタブから使う場合は、専用SAMの配備ではなく[ONNXモデル管理](../model-registry/README.md)と[Promptingの実装仕様](../model-registry/model-development.md#promptinginteractor)を参照してください。管理の選択名は既存の`model_registry`です。画像分割は画像内の対象領域を求める処理、追跡はその領域を連続するフレームへ対応付ける処理です。初回の起動方法は[導入と共通設定](installation.md)を参照してください。
 
 モデルの種類と学習済み重みは、共通管理コマンド `cvatctl` が読む非公開の `.env` で指定します。同じ系列の画像用処理と追跡用処理には同じ重みを使いますが、メモリー上のモデルは別々に読み込みます。
 

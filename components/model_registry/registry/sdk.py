@@ -43,6 +43,9 @@ class Tag:
 @dataclass(frozen=True)
 class PredictParams:
     request_id: str
+    pos_points: tuple[tuple[float, float], ...] = ()
+    neg_points: tuple[tuple[float, float], ...] = ()
+    obj_bbox: tuple[tuple[float, float], tuple[float, float]] | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,9 @@ class ModelBase(abc.ABC):
         decisions; class_id refers to a manifest label with type="tag". Do not
         return raw logits/probability arrays. Use [] when no tag should be added.
         For whole-image classification, do not select a cropped ROI in CVAT.
+        Interactor: return one binary ndarray (H, W) for the prompted object.
+        Prompts in params use input-image coordinates (ROI-local if cropped).
+        Box corners are ordered image edges; select/binarize/resize masks here.
         """
         raise NotImplementedError
 

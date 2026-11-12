@@ -11,13 +11,18 @@
 ```bash
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_api.py components/model_registry/tests/test_deletion.py components/model_registry/tests/test_runtime.py components/model_registry/tests/test_cli.py -q
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_classification.py -q
+PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_prompting.py -q
 python -m pytest --noconftest components/model_registry/tests/test_partial_updates.py -q
 python -m pytest --noconftest components/extensions/tests/test_registration.py -q
 node --test components/model_registry/tests/classification-ui.test.cjs components/model_registry/tests/ui-copy.test.cjs
 node --check components/model_registry/static/app.js
+python -m pytest -q components/extensions/tests/run_core_tests.py -k registered_interactor
 ```
 
 Classificationの試験は出力と独立した応答検査、旧出力形式、内部パッケージ、ワーカーのHTTP処理を確認します。通常のONNXセッションは代替実装を使い、onnxとonnxruntimeがある場合だけIdentityモデルの実行試験も動きます。部分更新の試験は経路と候補の組み立てを確認しますが、認証やサービスを代替しています。
+Promptingの試験は能力情報、点・除外点・矩形の制約、二値性と寸法、空の結果、穴と離れた領域、登録と試験Promptの保持、部分更新の失敗、旧版の実行と切り替えを確認します。実ONNXの試験は[ワーカー依存](../../components/model_registry/requirements-worker.txt)も準備し、IdentityモデルをCPUで実行します。SAMの認識精度を検証する試験ではありません。JavaScriptの試験には登録・更新・版別Prompt入力とマスク表示も含みます。
+
+`registered_interactor`は[本体接続の専用環境](../development.md#本体との接続を確認する)で実行します。CVATの実ルーティング、関数種別、Jobのデータ閲覧権限、未認証・拒否時の非実行、ROIの画像切り出し、点と矩形の移動、dense maskの全画像への復元を確認します。画像配信と中継HTTP、推論、イベント保存、OPAの最終判断は代替実装です。実Docker、実OPA、ブラウザーでの保存確認は別途必要です。通常のONNXセッションは代替実装を使い、onnxとonnxruntimeがある場合だけIdentityモデルの実行試験も動きます。部分更新の試験は経路と候補の組み立てを確認しますが、認証やサービスを代替しています。
 
 削除の試験は公開済みと未公開のモデル、所有者と管理者、全利用者の一覧からの除外を確認します。実ファイルを使い、推論、版の切り替え、更新のコピー・展開・検証、実行待ちの登録と削除を重ね、候補ファイルの残留や再公開を防ぐことも確認します。ワーカー停止・清掃の失敗、再試行、再起動、削除・清掃ログと最小限の記録の保持を含みます。CVAT認証とDockerは代替実装です。JavaScriptの試験は実際の登録、更新、削除のハンドラーをDOMの代替実装で呼び出します。実ブラウザーの描画や実CVAT認証の確認ではありません。接続試験用の作例は[examples](../../components/model_registry/examples/)にあり、学習済み認識モデルではありません。generate.pyで重み、画像、内部パッケージ検査用ZIPを再生成できますが、登録画面には個別ファイルを指定します。
 
@@ -32,10 +37,11 @@ Classificationの試験は出力と独立した応答検査、旧出力形式、
 | 公開URLと認証 | CVATから再ログインなしに一覧を開き、ログアウトと期限切れ後は認証が必要になることを確認します。 |
 | 権限 | BはAの公開モデルを実行でき、更新、削除、試験、ログを操作できないことを確認します。 |
 | 操作要求 | 不一致のOriginやX-Registry-Requestがない操作要求を拒否します。 |
-| 3種類の登録 | Segmentation、Detection、Classificationを登録し、図形またはタグと信頼度を確認します。 |
+| 4種類の登録 | Segmentation、Detection、Classification、Promptingを登録し、図形、タグと信頼度、Promptによるマスクを確認します。 |
 | 出力 | 実画像の輪郭、穴、小領域、ラベル順、元の画像座標、分類の意味を確認します。 |
 | 部分更新 | 設定、コード、試験画像、個別ONNXだけの更新で他の値を保持し、失敗時は公開中の版を維持します。 |
 | CVATからの実行 | 単一画像と一括処理でラベルを対応付け、図形とタグを保存して再読込します。 |
+| Prompting | 実際のONNXモデルをPromptingタブで選び、正の点、除外点、任意・必須の矩形、ROI、空結果、穴、離れた領域を確認します。マスクとポリゴンの確定・保存・再読込を確認します。 |
 | 版と削除 | 更新後の選び直し、旧版の実行、公開版の切り替え、削除後の新規推論拒否を確認します。削除後は一覧に戻り、全利用者の一覧と件数から消え、全版の保存ファイル、ワーカー用ディレクトリ、更新用の一時ファイルと版情報が残らないことを確認します。推論・更新中の削除と清掃失敗後の再試行も確認します。 |
 | 配備と停止 | 管理サーバーとワーカーのイメージが揃い、downと再起動後もモデルと権限を保持します。 |
 | 保存先 | モデルと秘密情報がGitとDockerのビルド対象に含まれません。 |

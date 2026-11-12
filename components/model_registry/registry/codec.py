@@ -146,6 +146,15 @@ def _check_bitmap(bitmap, h: int, w: int) -> np.ndarray:
     return bitmap
 
 
+def encode_interactor(result, image_shape: tuple) -> dict:
+    h, w = image_shape[:2]
+    if h * w > MAX_MASK_VALUES:
+        raise ValueError("interactor mask exceeds pixel budget")
+    bitmap = _check_bitmap(result, h, w)
+    # Use CVAT's existing dense-mask adapter, retaining holes and disconnected regions.
+    return {"mask": bitmap.astype(np.uint8).tolist()} if bitmap.any() else {"shapes": []}
+
+
 def _polygons(bitmap: np.ndarray, settings: PolygonSettings):
     # Imported only for inference. The control plane requires no OpenCV and never
     # runs uploaded Python or computes model predictions.
