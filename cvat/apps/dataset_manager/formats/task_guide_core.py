@@ -31,10 +31,12 @@ _READ_SIZE = 64 * 1024
 _SURROGATE = re.compile(r"[\ud800-\udfff]")
 START = "<!-- cvat:study-report:start -->"
 END = "<!-- cvat:study-report:end -->"
-STUDY_UID = "StudyInstanceUID"
 PATIENT_ID = "PatientID"
 STUDY_DATE = "StudyDate"
-IDENTITY_TAGS = (STUDY_UID, PATIENT_ID, STUDY_DATE)
+MODALITY = "Modality"
+STUDY_UID = "StudyInstanceUID"
+IDENTITY_TAGS = (PATIENT_ID, STUDY_DATE, MODALITY, STUDY_UID)
+# Full StudyInstanceUID syntax, shared with the project annotation importer.
 _UID = re.compile(r"[0-9]+(?:\.[0-9]+)+\Z")
 
 
@@ -45,10 +47,34 @@ class GuideImportError(ValueError):
 @dataclass(frozen=True)
 class Report:
     row: int
-    study_uid: str
     patient_id: str
     date: str
+    modality: str
+    study_uid: str
     markdown: str | TextReference
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.patient_id, self.date
+
+    @property
+    def dedup_key(self) -> tuple[str, str, str, str]:
+        return self.patient_id, self.date, self.modality, self.study_uid
+
+
+@dataclass(frozen=True)
+class InvalidRecord:
+    """A report record skipped by validation. It holds no patient data."""
+
+    row: int
+    reason: str
+
+
+@dataclass
+class ReportPlan:
+    updates: dict[int, str | TextReference]
+    unmatched: list[int]
+    skipped_tasks: list[int]
 
 
 @dataclass(frozen=True)
@@ -196,55 +222,75 @@ def render_markdown(source: dict, result: dict, *, input_text=None) -> str:
     return markdown
 
 
-def iter_reports(source) -> Iterator[Report]:
-    """Yield validated reports; callers must exhaust the iterator before writing."""
+def _modality(value) -> str:
+    # DICOM Modality is a code string; compare codes without case or padding.
+    return _text(value).upper()
+
+
+def _valid_uid(value: str) -> bool:
+    return len(value) <= 64 and _UID.fullmatch(value) is not None
+
+
+def _report_uid(data: dict) -> str:
+    try:
+        uid = _identifier(data, ("study_instance_uid", "study_uid", "uid"))
+    except GuideImportError:
+        return ""
+    return uid if _valid_uid(uid) else ""
+
+
+def _report(row: int, record) -> Report:
+    if not isinstance(record, dict):
+        raise GuideImportError("Record must be an object")
+    data, result = record.get("input"), record.get("result")
+    if not isinstance(data, dict) or not isinstance(result, dict):
+        raise GuideImportError("Record must contain input and result objects")
+    patient_id = _identifier(data, ("patient_id", "pid"))
+    if not patient_id:
+        raise GuideImportError("PatientID is required")
+    date = _identifier(data, ("study_date", "date", "dt"), date=True)
+    if not date:
+        raise GuideImportError("StudyDate is required")
+    markdown = render_markdown(data, result, input_text=record.get("input_text"))
+    if _SURROGATE.search(markdown):
+        raise GuideImportError("Guide contains invalid Unicode")
+    # Check the same value that the overview shows: the first nonempty alias.
+    modality = _modality(_first(data.get("modality"), data.get("mod")))
+    return Report(row, patient_id, date, modality, _report_uid(data), markdown)
+
+
+def iter_reports(source) -> Iterator[Report | InvalidRecord]:
+    """Yield reports and skipped records; callers must exhaust the iterator before writing.
+
+    A malformed record is skipped so that the other records can still be matched.
+    A broken JSON or ZIP stream still rejects the complete input.
+    """
     try:
         for row, record in enumerate(iter_report_records(source), 1):
             try:
-                if not isinstance(record, dict):
-                    raise GuideImportError("Record must be an object")
-                data, result = record.get("input"), record.get("result")
-                if not isinstance(data, dict) or not isinstance(result, dict):
-                    raise GuideImportError("Record must contain input and result objects")
-                uid = _identifier(data, ("study_instance_uid", "study_uid", "uid"))
-                if not _UID.fullmatch(uid) or len(uid) > 64:
-                    raise GuideImportError("A full numeric StudyInstanceUID is required")
-                markdown = render_markdown(data, result, input_text=record.get("input_text"))
-                if _SURROGATE.search(markdown):
-                    raise GuideImportError("Guide contains invalid Unicode")
-                yield Report(
-                    row,
-                    uid,
-                    _identifier(data, ("patient_id", "pid")),
-                    _identifier(data, ("study_date", "date", "dt"), date=True),
-                    markdown,
-                )
-                del record, data, result, markdown
+                yield _report(row, record)
             except GuideImportError as exc:
-                raise GuideImportError(f"Record {row}: {exc}") from exc
+                yield InvalidRecord(row, str(exc))
+            del record
     except JSONStreamError as exc:
         raise GuideImportError(str(exc)) from exc
 
 
-def read_reports(source) -> tuple[list[Report], int]:
+def read_reports(source) -> tuple[list[Report], int, list[InvalidRecord]]:
     """Collect and deduplicate reports for callers that need an in-memory result."""
-    reports = {}
+    unique = {}
     duplicates = 0
+    invalid = []
     for report in iter_reports(source):
-        previous = reports.get(report.study_uid)
-        if previous:
-            if (previous.patient_id, previous.date, previous.markdown) != (
-                report.patient_id,
-                report.date,
-                report.markdown,
-            ):
-                raise GuideImportError(
-                    f"Record {report.row}: Conflicting reports for the study in record {previous.row}"
-                )
+        if isinstance(report, InvalidRecord):
+            invalid.append(report)
+            continue
+        key = (*report.dedup_key, report.markdown)
+        if key in unique:
             duplicates += 1
         else:
-            reports[report.study_uid] = report
-    return list(reports.values()), duplicates
+            unique[key] = report
+    return list(unique.values()), duplicates, invalid
 
 
 def _named_guide(row: int, name, markdown) -> NamedGuide:
@@ -416,36 +462,98 @@ def plan_named_updates(
     return updates, unmatched
 
 
-def plan_updates(
-    reports: list[Report], tasks: list[TaskIdentity]
-) -> tuple[dict[int, str | TextReference], list[int]]:
-    """Apply one study report to all matching image/video tasks, never by short SOP suffix."""
-    by_uid = {report.study_uid: report for report in reports}
-    updates, matched = {}, set()
+def _task_dates(values: set[str]) -> set[str] | None:
+    try:
+        return {_date(value) for value in values}
+    except GuideImportError:
+        return None
+
+
+@dataclass(frozen=True)
+class _ReportTarget:
+    id: int
+    modalities: set[str]
+    study_uids: set[str]
+
+
+def _index_report_targets(tasks, report_keys):
+    patients_with_reports = {patient for patient, _ in report_keys}
+    by_key = {}
+    considered = set()
     for task in tasks:
         tags = {
             key: {value.strip() for value in task.tags.get(key, set()) if value.strip()}
             for key in IDENTITY_TAGS
         }
-        uids = tags.get(STUDY_UID, set())
-        if not uids.intersection(by_uid):
+        patients = tags[PATIENT_ID]
+        dates = _task_dates(tags[STUDY_DATE])
+        if dates is None:
+            # An unreadable StudyDate cannot be checked against this patient's reports.
+            if patients & patients_with_reports:
+                considered.add(task.id)
             continue
-        if len(uids) != 1:
-            raise GuideImportError(f"Task {task.id}: conflicting study identities")
-        report = by_uid[next(iter(uids))]
-        dates = {_date(value) for value in tags.get(STUDY_DATE, set())}
-        patients = tags.get(PATIENT_ID, set())
-        if len(dates) > 1 or (report.date and dates and report.date not in dates):
-            raise GuideImportError(f"Task {task.id}: study date mismatch")
-        if len(patients) > 1 or (
-            report.patient_id and patients and report.patient_id not in patients
+        keys = report_keys.intersection((patient, date) for patient in patients for date in dates)
+        if not keys:
+            continue
+        if len(patients) != 1 or len(dates) != 1:
+            considered.add(task.id)
+            continue
+        modalities = {_modality(value) for value in tags[MODALITY]}
+        by_key.setdefault(keys.pop(), []).append(
+            _ReportTarget(task.id, modalities, tags[STUDY_UID])
+        )
+    return by_key, considered
+
+
+def _choose_report_targets(report, tasks):
+    candidates = [
+        task
+        for task in tasks
+        if not report.modality or not task.modalities or report.modality in task.modalities
+    ]
+    exact_uid = {report.study_uid} if report.study_uid else set()
+    exact = [task.id for task in candidates if exact_uid and task.study_uids == exact_uid]
+    if exact:
+        return exact, True
+    if len(candidates) == 1 and len(candidates[0].study_uids) <= 1:
+        return [candidates[0].id], False
+    if candidates:
+        uids = candidates[0].study_uids
+        if (
+            len(uids) == 1
+            and _valid_uid(next(iter(uids)))
+            and all(task.study_uids == uids for task in candidates)
         ):
-            raise GuideImportError(f"Task {task.id}: patient ID mismatch")
-        updates[task.id] = report.markdown
-        matched.add(report.study_uid)
+            return [task.id for task in candidates], False
+    return [], False
+
+
+def plan_updates(reports: list[Report], tasks: list[TaskIdentity]) -> ReportPlan:
+    """Use UID matches to disambiguate compatible reports and tasks."""
+    by_key, considered = _index_report_targets(tasks, {report.key for report in reports})
+    exact_reports, fallback_reports = {}, {}
+    for report in reports:
+        tasks_for_key = by_key.get(report.key, ())
+        targets, exact = _choose_report_targets(report, tasks_for_key)
+        considered.update(
+            task.id for task in tasks_for_key if not exact or report.study_uid in task.study_uids
+        )
+        selected = exact_reports if exact else fallback_reports
+        for task_id in targets:
+            selected[task_id] = None if task_id in selected else report
+
+    # An exact match takes priority, including a conflict between exact reports.
+    chosen = {
+        task_id: report
+        for task_id, report in (fallback_reports | exact_reports).items()
+        if report is not None
+    }
+    updates = {task_id: report.markdown for task_id, report in chosen.items()}
     if not updates:
         raise GuideImportError("No matching tasks in this project; no guides were changed")
-    return updates, [report.row for report in reports if report.study_uid not in matched]
+    matched = {report.row for report in chosen.values()}
+    unmatched = [report.row for report in reports if report.row not in matched]
+    return ReportPlan(updates, unmatched, sorted(considered - updates.keys()))
 
 
 def merge_markdown(existing: str, generated: str) -> str:

@@ -54,7 +54,7 @@ def native_asset_ids_reader():
 ASSET_IDS_FROM_MARKDOWN = native_asset_ids_reader()
 
 
-def record(uid="1.2.3", patient="P1", date="20250101"):
+def record(patient="P1", date="20250101", modality="CT", uid="1.2.3"):
     return {
         "input": {
             "study_instance_uid": uid,
@@ -62,7 +62,7 @@ def record(uid="1.2.3", patient="P1", date="20250101"):
             "study_date": date,
             "parsed_patient_age": "25Y",
             "patient_sex": "M",
-            "modality": "CT",
+            "modality": modality,
         },
         "result": {
             "findings_ja": "所見です。",
@@ -84,6 +84,16 @@ def stream(records):
 
 def reports(*rows):
     return core.read_reports(stream(list(rows)))[0]
+
+
+def invalid_reasons(*rows):
+    parsed, _, invalid = core.read_reports(stream(list(rows)))
+    assert parsed == []
+    return [(item.row, item.reason) for item in invalid]
+
+
+def plan(rows, tasks):
+    return core.plan_updates(reports(*rows), tasks)
 
 
 def named_stream(mapping):
@@ -168,23 +178,24 @@ class BoundedReader:
         return self.source.__exit__(*args)
 
 
-def image(task_id=1, uid="1.2.3", patient="P1", date="20250101", prefix="site"):
+def tags(patient="P1", date="20250101", modality="CT"):
+    values = {core.PATIENT_ID: {patient}, core.STUDY_DATE: {date}, core.STUDY_UID: {"1.2.3"}}
+    if modality is not None:
+        values[core.MODALITY] = {modality}
+    return values
+
+
+def image(task_id=1, patient="P1", date="20250101", modality="CT", prefix="site"):
     return core.TaskIdentity(
         task_id,
-        f"{prefix}_{patient.replace('/', '_')}_{date}_{uid.replace('.', '')[-8:]}",
-        {core.STUDY_UID: {uid}, core.PATIENT_ID: {patient}, core.STUDY_DATE: {date}},
+        f"{prefix}_{patient.replace('/', '_')}_{date}_12345678",
+        tags(patient, date, modality),
     )
 
 
-def video(task_id=2, uid="1.2.3"):
+def video(task_id=2, patient="P1", date="20250101", modality="CT"):
     return core.TaskIdentity(
-        task_id,
-        "site_P1_1_20250101_120000_0001_12345678",
-        {
-            core.STUDY_UID: {uid},
-            core.PATIENT_ID: {"P1"},
-            core.STUDY_DATE: {"20250101"},
-        },
+        task_id, "site_P1_1_20250101_120000_0001_12345678", tags(patient, date, modality)
     )
 
 
@@ -259,7 +270,7 @@ class TestReport:
         r = record()
         r["input"] = {"study_uid": "1.2.3", "pid": "P1", "date": "2025-01-01"}
         report = reports(r)[0]
-        assert (report.study_uid, report.patient_id, report.date) == ("1.2.3", "P1", "20250101")
+        assert (report.patient_id, report.date, report.modality) == ("P1", "20250101", "")
 
     def test_ptc_aliases_and_overview(self):
         r = record()
@@ -272,8 +283,7 @@ class TestReport:
             "mod": "CT",
         }
         report = reports(r)[0]
-        assert report.study_uid == r["input"]["uid"]
-        assert (report.patient_id, report.date) == ("ABC_DEFGH", "20250101")
+        assert (report.patient_id, report.date, report.modality) == ("ABC_DEFGH", "20250101", "CT")
         for value in ("年齢：21Y", "性別：M", "検査方法：CT"):
             assert value in report.markdown
 
@@ -288,40 +298,68 @@ class TestReport:
         for value in ("年齢：21Y", "性別：F", "検査方法：MR"):
             assert value in md
 
-    def test_uid_is_a_study_alias_only(self):
+    def test_uid_is_not_a_patient_alias(self):
         r = record()
-        r["input"] = {"uid": "1.2.3"}
-        report = reports(r)[0]
-        assert (report.study_uid, report.patient_id) == ("1.2.3", "")
+        r["input"] = {"uid": "P1", "study_date": "20250101"}
+        assert invalid_reasons(r) == [(1, "PatientID is required")]
+
+    @pytest.mark.parametrize(
+        "uid", [None, "", "12345678", "1.2.x", "conflict", 123, "1." + "2" * 64]
+    )
+    def test_unusable_study_uid_does_not_invalidate_the_report(self, uid):
+        assert reports(record(uid=uid))[0].study_uid == ""
+
+    def test_study_uid_aliases_must_agree_after_trimming(self):
+        r = record(uid=" 1.2.3 ")
+        r["input"].update(study_uid="1.2.3", uid="1.2.3")
+        assert reports(r)[0].study_uid == "1.2.3"
+        r["input"]["uid"] = "1.2.4"
+        assert reports(r)[0].study_uid == ""
+
+    @pytest.mark.parametrize(
+        "keys, reason",
+        [(("patient_id",), "PatientID is required"), (("study_date",), "StudyDate is required")],
+    )
+    def test_patient_and_date_are_required(self, keys, reason):
+        r = record()
+        for key in keys:
+            r["input"][key] = " "
+        assert invalid_reasons(r) == [(1, reason)]
+
+    def test_modality_alias_case_and_absence(self):
+        r = record(modality=" mr ")
+        assert reports(r)[0].modality == "MR"
+        r["input"].update(modality="", mod="ct")
+        assert reports(r)[0].modality == "CT"
+        r["input"].pop("modality")
+        r["input"].pop("mod")
+        assert reports(r)[0].modality == ""
 
     def test_equivalent_identifier_aliases_are_accepted(self):
         r = record()
         r["input"].update(
-            study_uid="1.2.3",
-            uid="1.2.3",
             pid=" P1 ",
             date="2025-01-01",
             dt="Wed, 01 Jan 2025 00:00:00 GMT",
         )
         report = reports(r)[0]
-        assert (report.study_uid, report.patient_id, report.date) == ("1.2.3", "P1", "20250101")
+        assert (report.patient_id, report.date) == ("P1", "20250101")
 
     @pytest.mark.parametrize(
         "alias, value",
         [
-            ("study_uid", "1.2.4"),
-            ("uid", "1.2.4"),
-            ("uid", "P1"),
             ("pid", "OTHER"),
             ("date", "20250102"),
             ("dt", "2025-01-02 00:00:00"),
         ],
     )
-    def test_conflicting_aliases_rejected(self, alias, value):
+    def test_conflicting_aliases_skip_only_that_record(self, alias, value):
         r = record()
         r["input"][alias] = value
-        with pytest.raises(core.GuideImportError, match="Conflicting aliases"):
-            reports(r)
+        parsed, _, invalid = core.read_reports(stream([r, record(patient="P2")]))
+        assert [report.row for report in parsed] == [2]
+        assert [item.row for item in invalid] == [1]
+        assert "Conflicting aliases" in invalid[0].reason
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -347,11 +385,6 @@ class TestReport:
     def test_supported_dates_keep_the_written_calendar_date(self, value, expected):
         assert reports(record(date=value))[0].date == expected
 
-    @pytest.mark.parametrize("uid", [None, "", "12345678", "1.2.x", "1.2.3x", "1." + "2" * 64])
-    def test_full_uid_required(self, uid):
-        with pytest.raises(core.GuideImportError):
-            reports(record(uid=uid))
-
     @pytest.mark.parametrize(
         "date",
         [
@@ -372,8 +405,9 @@ class TestReport:
         ],
     )
     def test_invalid_date(self, date):
-        with pytest.raises(core.GuideImportError):
-            reports(record(date=date))
+        [(row, reason)] = invalid_reasons(record(date=date))
+        assert row == 1
+        assert reason in ("Invalid study date", "study_date must be a string")
 
     def test_reference_text_is_the_last_section_and_escaped(self):
         r = record()
@@ -396,43 +430,41 @@ class TestReport:
             r["input_text"] = value
             with subtests.test(value=value):
                 assert "参考生データ" not in reports(r)[0].markdown
-        r = {"input": {"uid": "1.2.3"}, "result": {}, "input_text": "Original report"}
-        assert "## 参考生データ\nOriginal report" in reports(r)[0].markdown
+        r = {"input": {"pid": "P1", "dt": "20250101"}, "result": {}, "input_text": "Original"}
+        assert "## 参考生データ\nOriginal" in reports(r)[0].markdown
 
     def test_reference_validation(self, subtests):
         for value in (123, True, ["text"], {"text": "report"}, "bad\x00text"):
             r = record()
             r["input_text"] = value
-            with subtests.test(value=value), pytest.raises(core.GuideImportError):
-                reports(r)
+            with subtests.test(value=value):
+                assert [row for row, _ in invalid_reasons(r)] == [1]
 
     def test_two_sample_formats_from_json_zip(self, subtests):
         fixtures = Path(__file__).resolve().parent / "fixtures"
-        for filename, dates, suffixes in (
-            ("structured_report.json", ["20250102", "20250107"], ["05522970", "02065974"]),
-            ("ptc_report.json", ["20250101", "20250102"], ["30673432", "30694803"]),
+        for filename, dates, modalities in (
+            ("structured_report.json", ["20250102", "20250107"], ["MR", "CT"]),
+            ("ptc_report.json", ["20250101", "20250102"], ["CT", "CT"]),
         ):
             with subtests.test(filename=filename):
                 raw = (fixtures / filename).read_bytes()
                 rows = json.loads(raw)["records"]
                 with core.open_json_zip(zip_stream([(filename, raw)])) as member:
-                    parsed, duplicates = core.read_reports(member)
-                assert duplicates == 0
+                    parsed, duplicates, invalid = core.read_reports(member)
+                assert (duplicates, invalid) == (0, [])
                 assert [r.date for r in parsed] == dates
-                assert [r.study_uid[-8:] for r in parsed] == suffixes
+                assert [r.modality for r in parsed] == modalities
                 tasks = []
-                for task_id, (row, report, date) in enumerate(zip(rows, parsed, dates), 1):
-                    source = row["input"]
-                    uid = source.get("study_instance_uid", source.get("uid"))
-                    patient = source.get("patient_id", source.get("pid"))
-                    assert (report.study_uid, report.patient_id) == (uid, patient)
+                for task_id, (row, report) in enumerate(zip(rows, parsed), 1):
+                    patient = row["input"].get("patient_id", row["input"].get("pid"))
+                    assert report.patient_id == patient
                     for label in ("年齢", "性別", "検査方法", "既往歴", "検査部位", "検査目的"):
                         assert label + "：" in report.markdown
                     assert "## 参考生データ\nHistory: Synthetic" in report.markdown
-                    tasks.append(image(task_id, uid=uid, patient=patient, date=date))
-                updates, unmatched = core.plan_updates(parsed, tasks)
-                assert set(updates) == {1, 2}
-                assert unmatched == []
+                    tasks.append(image(task_id, patient, report.date, report.modality))
+                result = core.plan_updates(parsed, tasks)
+                assert set(result.updates) == {1, 2}
+                assert (result.unmatched, result.skipped_tasks) == ([], [])
 
     def test_bad_json_and_structure(self, subtests):
         for raw in (
@@ -444,13 +476,13 @@ class TestReport:
             b'{"records": [], "records": []}',
             b'{"x": NaN}',
             b'{"x": 1e999}',
-            b"[[[]]]",
         ):
             with subtests.test(raw=raw), pytest.raises(core.GuideImportError):
                 core.read_reports(io.BytesIO(raw))
+        # A non-object record is a skipped record, not a broken JSON document.
+        assert [item.row for item in core.read_reports(io.BytesIO(b"[[[]]]"))[2]] == [1]
         for r in (None, {}, {"input": {}, "result": []}):
-            with pytest.raises(core.GuideImportError):
-                reports(r)
+            assert [row for row, _ in invalid_reasons(r)] == [1]
 
     def test_bom_and_top_level_array(self):
         assert (
@@ -469,131 +501,169 @@ class TestReport:
         for value in ({"nested": "value"}, True, "\x00"):
             r = record()
             r["result"]["extracted"]["history"] = value
-            with pytest.raises(core.GuideImportError):
-                reports(r)
+            assert [row for row, _ in invalid_reasons(r)] == [1]
 
     def test_duplicate_reports(self):
-        unique, duplicates = core.read_reports(stream([record(), record()]))
-        assert (len(unique), duplicates) == (1, 1)
+        unique, duplicates, _ = core.read_reports(stream([record(), record(), record(uid="9.9")]))
+        assert ([r.row for r in unique], duplicates) == ([1, 3], 1)
         changed = record()
         changed["result"]["findings_ja"] = "Different"
-        with pytest.raises(core.GuideImportError, match="Conflicting reports"):
-            reports(record(), changed)
+        assert [r.row for r in reports(record(), changed)] == [1, 2]
 
     def test_different_reference_text_is_not_deduplicated(self):
         first, second = record(), record()
         first["input_text"] = "Original report"
         second["input_text"] = "Different original report"
-        with pytest.raises(core.GuideImportError, match="Conflicting reports"):
-            reports(first, second)
+        assert [r.row for r in reports(first, second)] == [1, 2]
 
 
 class TestMatching:
-    def test_all_images_and_videos_with_same_full_uid(self):
+    def test_all_images_and_videos_with_same_patient_and_date(self):
         tasks = [image(), image(3, prefix="other_site"), video()]
-        updates, unmatched = core.plan_updates(reports(record()), tasks)
-        assert set(updates) == {1, 2, 3}
-        assert unmatched == []
+        result = plan([record()], tasks)
+        assert set(result.updates) == {1, 2, 3}
+        assert (result.unmatched, result.skipped_tasks) == ([], [])
+
+    def test_uid_mismatch_falls_back_when_the_candidates_are_one_study(self):
+        assert set(plan([record(uid="9.9.9")], [image(), video()]).updates) == {1, 2}
+
+    @pytest.mark.parametrize("uid", [None, "123", "9.9.9"])
+    @pytest.mark.parametrize("other_uids", [{"1.2.4"}, set(), {"1.2.3", "1.2.4"}])
+    def test_unresolved_same_day_studies_are_held(self, uid, other_uids):
+        other = image(3)
+        other.tags[core.STUDY_UID] = other_uids
+        result = plan(
+            [record(uid=uid), record(patient="P2")],
+            [image(), video(), other, image(4, patient="P2")],
+        )
+        assert set(result.updates) == {4}
+        assert result.unmatched == [1]
+        assert result.skipped_tasks == [1, 2, 3]
+
+    def test_exact_uid_routes_identical_report_text_to_separate_studies(self):
+        other = image(3)
+        other.tags[core.STUDY_UID] = {"1.2.4"}
+        tasks = [image(), video(), other]
+        result = plan([record(uid="1.2.3")], tasks)
+        assert set(result.updates) == {1, 2}
+        assert (result.unmatched, result.skipped_tasks) == ([], [])
+        result = plan([record(uid="1.2.3"), record(uid="1.2.4")], tasks)
+        assert set(result.updates) == {1, 2, 3}
+        assert (result.unmatched, result.skipped_tasks) == ([], [])
+
+    def test_exact_uid_report_takes_priority_over_a_fallback_report(self):
+        exact, fallback = record(), record(uid="9.9.9")
+        fallback["result"]["findings_ja"] = "Different"
+        result = plan([fallback, exact], [image()])
+        assert result.updates == {1: reports(exact)[0].markdown}
+        assert result.unmatched == [1]
 
     def test_sanitized_patient_and_arbitrary_prefix(self):
-        r = record(patient="A/B_C")
-        updates, _ = core.plan_updates(
-            reports(r), [image(patient="A/B_C", prefix="prefix_with_underlines")]
+        result = plan(
+            [record(patient="A/B_C")], [image(patient="A/B_C", prefix="prefix_with_underlines")]
         )
-        assert set(updates) == {1}
+        assert set(result.updates) == {1}
 
     def test_prefixed_patient_matches_without_name_inference(self, subtests):
         r = record(patient="ABC_DEFGH", date="Tue, 07 Jan 2025 00:00:00 GMT")
         task = image(patient="ABC_DEFGH", date="20250107", prefix="ABC")
         task.name = "ABC_DEFGH_20250107_123"
-        assert set(core.plan_updates(reports(r), [task])[0]) == {1}
+        assert set(plan([r], [task]).updates) == {1}
         task.name = "renamed task"
-        assert set(core.plan_updates(reports(r), [task])[0]) == {1}
+        assert set(plan([r], [task]).updates) == {1}
         for different_patient in ("DEFGH", "OTHER_DEFGH", "ABCDEFGH"):
             with (
                 subtests.test(patient=different_patient),
-                pytest.raises(core.GuideImportError, match="patient ID mismatch"),
+                pytest.raises(core.GuideImportError, match="No matching tasks"),
             ):
-                core.plan_updates(
-                    reports(record(patient=different_patient, date="20250107")), [task]
-                )
+                plan([record(patient=different_patient, date="20250107")], [task])
 
-    def test_uid_not_substring_or_short_sop(self):
-        for task in (image(uid="1.2.30"), core.TaskIdentity(1, "video_12345678")):
+    def test_date_formats_are_compared_as_calendar_dates(self):
+        task = image(date="2025-01-01")
+        assert set(plan([record(date="Wed, 01 Jan 2025 00:00:00 GMT")], [task]).updates) == {1}
+
+    def test_patient_or_date_mismatch_does_not_match(self):
+        for task in (image(patient="WRONG"), image(date="20250102")):
             with pytest.raises(core.GuideImportError, match="No matching tasks"):
-                core.plan_updates(reports(record()), [task])
+                plan([record()], [task])
 
     def test_unmatched_record_positions(self):
-        updates, unmatched = core.plan_updates(reports(record(), record(uid="1.2.4")), [image()])
-        assert set(updates) == {1}
-        assert unmatched == [2]
+        result = plan([record(), record(patient="P2")], [image()])
+        assert set(result.updates) == {1}
+        assert result.unmatched == [2]
 
-    def test_name_is_not_used_as_a_source_of_study_identity(self):
+    def test_name_is_not_used_as_a_source_of_identity(self):
         task = image()
         task.name = "site_OTHER_19991231_9.9.9"
-        assert set(core.plan_updates(reports(record()), [task])[0]) == {1}
+        assert set(plan([record()], [task]).updates) == {1}
         task.tags.clear()
         task.name = "site_P1_20250101_1.2.3"
         with pytest.raises(core.GuideImportError, match="No matching tasks"):
-            core.plan_updates(reports(record()), [task])
-
-    def test_mixed_study_task_rejected(self):
-        task = video()
-        task.tags[core.STUDY_UID].add("1.2.4")
-        with pytest.raises(core.GuideImportError):
-            core.plan_updates(reports(record()), [task])
-
-    def test_patient_date_and_name_checks(self):
-        for task in (image(patient="WRONG"), image(date="20250102")):
-            with pytest.raises(core.GuideImportError):
-                core.plan_updates(reports(record()), [task])
-        for key, value in ((core.PATIENT_ID, "WRONG"), (core.STUDY_DATE, "20250102")):
-            task = video()
-            task.tags[key] = {value}
-            with pytest.raises(core.GuideImportError):
-                core.plan_updates(reports(record()), [task])
-
-    def test_full_uid_only_and_renamed_task(self):
-        r = record()
-        r["input"].pop("patient_id")
-        r["input"].pop("study_date")
-        task = core.TaskIdentity(9, "renamed", {core.STUDY_UID: {"1.2.3"}})
-        assert set(core.plan_updates(reports(r), [task])[0]) == {9}
-
-    def test_shortened_study_names_use_full_metadata_uid_for_images_and_videos(self):
-        tags = {
-            "StudyInstanceUID": {"1.2.12345678"},
-            "PatientID": {"P1"},
-            "StudyDate": {"20250101"},
-        }
-        tasks = [
-            core.TaskIdentity(1, "site_P1_20250101_12345678", tags),
-            core.TaskIdentity(2, video().name, tags),
-        ]
-        updates, unmatched = core.plan_updates(reports(record(uid="1.2.12345678")), tasks)
-        assert set(updates) == {1, 2}
-        assert unmatched == []
-
-    def test_identical_short_uid_suffix_does_not_match_another_study(self):
-        tasks = [
-            core.TaskIdentity(
-                1, "site_P1_20250101_12345678", {"StudyInstanceUID": {"1.2.12345678"}}
-            ),
-            core.TaskIdentity(
-                2, "site_P1_20250101_12345678", {"StudyInstanceUID": {"1.3.12345678"}}
-            ),
-        ]
-        updates, _ = core.plan_updates(reports(record(uid="1.2.12345678")), tasks)
-        assert set(updates) == {1}
-        with pytest.raises(core.GuideImportError, match="No matching tasks"):
-            core.plan_updates(
-                reports(record(uid="1.2.12345678")), [core.TaskIdentity(3, tasks[0].name)]
-            )
+            plan([record()], [task])
 
     def test_only_keyword_metadata_is_used_for_identity(self):
-        task = core.TaskIdentity(1, "site_P1_20250101_1.2.3", {"0020000D": {"1.2.3"}})
+        task = core.TaskIdentity(
+            1, "site_P1_20250101", {"00100020": {"P1"}, "00080020": {"20250101"}}
+        )
         with pytest.raises(core.GuideImportError, match="No matching tasks"):
-            core.plan_updates(reports(record()), [task])
+            plan([record()], [task])
+
+    @pytest.mark.parametrize(
+        "report_modality, task_modality",
+        [("CT", "CT"), ("ct", " CT "), ("", "CT"), ("CT", None), ("CT", "")],
+    )
+    def test_modality_is_checked_only_when_both_have_it(self, report_modality, task_modality):
+        task = image(modality=task_modality)
+        assert set(plan([record(modality=report_modality)], [task]).updates) == {1}
+
+    def test_modality_mismatch_skips_the_task_only(self):
+        result = plan([record(modality="MR")], [image(modality="CT"), image(3, modality="MR")])
+        assert set(result.updates) == {3}
+        assert result.skipped_tasks == [1]
+        assert result.unmatched == []
+
+    def test_same_day_reports_are_selected_by_modality(self):
+        ct, mr = record(modality="CT", uid=None), record(modality="MR", uid=None)
+        mr["result"]["findings_ja"] = "MR所見"
+        mr_task = video(2, modality="MR")
+        mr_task.tags[core.STUDY_UID] = {"1.2.4"}
+        result = plan([ct, mr], [image(1, modality="CT"), mr_task])
+        assert "所見です。" in result.updates[1]
+        assert "MR所見" in result.updates[2]
+        assert (result.unmatched, result.skipped_tasks) == ([], [])
+
+    def test_ambiguous_reports_skip_the_task(self, subtests):
+        first, second = record(), record()
+        second["result"]["findings_ja"] = "Different"
+        for task_modality in ("CT", None):
+            with subtests.test(task_modality=task_modality):
+                result = plan(
+                    [first, second, record(patient="P2")],
+                    [image(1, modality=task_modality), image(3, patient="P2")],
+                )
+                assert set(result.updates) == {3}
+                assert result.skipped_tasks == [1]
+                assert result.unmatched == [1, 2]
+
+    def test_task_with_mixed_identities_is_skipped(self, subtests):
+        for key, value in ((core.PATIENT_ID, "P9"), (core.STUDY_DATE, "20250102")):
+            with subtests.test(key=key):
+                mixed = video()
+                mixed.tags[key].add(value)
+                result = plan([record()], [image(), mixed])
+                assert set(result.updates) == {1}
+                assert result.skipped_tasks == [2]
+
+    def test_unreadable_task_date_is_skipped_only_for_reported_patients(self):
+        broken = image(2, date="not a date")
+        other = image(3, patient="P9", date="not a date")
+        result = plan([record()], [image(), broken, other])
+        assert set(result.updates) == {1}
+        assert result.skipped_tasks == [2]
+
+    def test_no_exact_match_is_an_error(self):
+        with pytest.raises(core.GuideImportError, match="No matching tasks"):
+            plan([record(modality="MR")], [image(modality="CT")])
 
 
 class TestJsonZip:
@@ -1058,11 +1128,16 @@ class TestAdapter:
             )
         else:
             self.values[:] = [
-                (1, core.STUDY_UID, "2.25.1"),
-                (2, core.STUDY_UID, f"2.25.{count}"),
+                (1, core.PATIENT_ID, "P1"),
+                (1, core.STUDY_DATE, "20250101"),
+                (2, core.PATIENT_ID, f"P{count}"),
+                (2, core.STUDY_DATE, "20250101"),
             ]
             chunks = report_json_chunks(
-                {"input": {"uid": f"2.25.{row}"}, "result": {"findings": f"guide {row}"}}
+                {
+                    "input": {"pid": f"P{row}", "dt": "20250101"},
+                    "result": {"findings": f"guide {row}"},
+                }
                 for row in range(1, count + 1)
             )
         path = write_json_zip(tmp_path / "many-records.zip", chunks)
@@ -1082,9 +1157,16 @@ class TestAdapter:
         assert "unmatched positions: 2, 3, 4" in self.meta.status
         assert self.meta.status.endswith(", ...")
 
-    @pytest.mark.parametrize("input_format", ["json", "dicom"])
     @pytest.mark.parametrize(
-        "invalid_end", ["trailing_document", "duplicate_key", "nonfinite", "unicode", "record"]
+        "input_format, invalid_end",
+        [
+            (input_format, invalid_end)
+            for input_format in ("json", "dicom")
+            for invalid_end in ("trailing_document", "duplicate_key", "nonfinite", "unicode")
+        ]
+        # A malformed named-guide value breaks the JSON format. A malformed report
+        # record is skipped instead; see test_late_invalid_report_record_is_skipped.
+        + [("json", "record")],
     )
     def test_late_invalid_json_prevents_all_guide_writes(self, tmp_path, input_format, invalid_end):
         guide = SimpleNamespace(task_id=1, markdown="manual", save=MagicMock())
@@ -1096,7 +1178,6 @@ class TestAdapter:
                 "duplicate_key": b'], "records":[]}',
                 "nonfinite": b'], "metadata":{"number":1e999}}',
                 "unicode": b"]}\xff",
-                "record": b', {"input":{},"result":{}}]}',
             }[invalid_end]
             reader_name, expected_rows = "iter_reports", [1]
         else:
@@ -1212,7 +1293,7 @@ class TestAdapter:
         if input_format == "json":
             source = named_zip({task.name: f"guide {task.id}" for task in self.tasks})
         elif input_format == "dicom":
-            source = report_zip([record(), record(uid="2.25.2")])
+            source = report_zip([record(), record(patient="P2")])
         else:
             source = zip_stream([(f"{task.name}.md", f"guide {task.id}") for task in self.tasks])
         files = []
@@ -1470,7 +1551,7 @@ class TestAdapter:
         assert "2 unchanged" in self.meta.status
 
     def test_unmatched_task_timestamp_is_preserved(self):
-        self.tasks.append(self.timestamped(id=3, name=image(3, uid="1.2.4").name))
+        self.tasks.append(self.timestamped(id=3, name=image(3, patient="P3").name))
         self.run_import()
         self.tasks[2].touch.assert_not_called()
         assert self.guide_manager.create.call_count == 2
@@ -1487,15 +1568,48 @@ class TestAdapter:
         self.project.touch.assert_called_once_with()
 
     def test_unmatched_summary_contains_positions_not_patient_data(self):
-        self.run_import([record(), record(uid="1.2.4", patient="SECRET_PATIENT")])
+        self.run_import([record(), record(patient="SECRET_PATIENT")])
         assert "1 unmatched records" in self.meta.status
         assert "unmatched positions: 2" in self.meta.status
         assert "SECRET_PATIENT" not in self.meta.status
 
+    def test_invalid_records_are_skipped_and_reported_by_position(self):
+        missing_date = record(patient="SECRET_PATIENT", date="")
+        bad_date = record(patient="SECRET_PATIENT", date="SECRET_DATE")
+        self.run_import([missing_date, record(), bad_date, None])
+        assert self.guide_manager.create.call_count == 2
+        assert self.meta.status.startswith("WARNING: Task guides:")
+        assert "0 unmatched records, 0 duplicate records, 3 invalid records" in self.meta.status
+        assert "invalid positions: 1, 3, 4" in self.meta.status
+        for secret in ("SECRET_PATIENT", "SECRET_DATE"):
+            assert secret not in self.meta.status
+
+    def test_only_invalid_records_fail_without_writes(self):
+        with pytest.raises(core.GuideImportError, match="No matching tasks"):
+            self.run_import([record(date=""), {"input": {}, "result": {}}])
+        self.guide_manager.create.assert_not_called()
+        self.meta.save.assert_not_called()
+        self.assert_no_timestamps_changed()
+
+    def test_late_invalid_report_record_is_skipped(self, tmp_path):
+        path = write_json_zip(
+            tmp_path / "late-record.zip",
+            (
+                b'{"records":[',
+                json.dumps(record()).encode("utf-8"),
+                b" " * (64 * 1024),
+                b', {"input":{},"result":{}}]}',
+            ),
+        )
+        with path.open("rb") as source:
+            self.adapter.import_project_guides(source, self.project)
+        assert self.guide_manager.create.call_count == 2
+        assert "invalid positions: 2" in self.meta.status
+
     def test_duplicate_streamed_reports_keep_original_unmatched_positions(self):
-        unmatched = record(uid="1.2.4", patient="SECRET_PATIENT")
+        unmatched = record(patient="SECRET_PATIENT")
         matched = record()
-        self.run_import([unmatched, matched, unmatched, record(uid="1.2.5"), matched])
+        self.run_import([unmatched, matched, unmatched, record(patient="P5"), matched])
         assert self.guide_manager.create.call_count == 2
         assert "2 unmatched records, 2 duplicate records" in self.meta.status
         assert "unmatched positions: 1, 4" in self.meta.status
@@ -1509,30 +1623,61 @@ class TestAdapter:
         prefix = "x" * (64 * 1024)
         first["result"]["findings_ja"] = prefix + "あ"
         last["result"]["findings_ja"] = prefix + last_character
+        fake_hash = SimpleNamespace(digest=lambda: b"same")
+        with patch.object(self.adapter, "sha256", return_value=fake_hash):
+            if last_character != "あ":
+                with pytest.raises(core.GuideImportError, match="No matching tasks"):
+                    self.run_import([first, first, last])
+            else:
+                self.run_import([first, first, last])
         if last_character == "あ":
-            self.run_import([first, first, last])
             assert self.guide_manager.create.call_count == 2
             assert "2 duplicate records" in self.meta.status
         else:
-            with pytest.raises(core.GuideImportError, match="Record 3:.*record 1"):
-                self.run_import([first, first, last])
             self.guide_manager.create.assert_not_called()
             self.meta.save.assert_not_called()
             self.assert_no_timestamps_changed()
 
-    @pytest.mark.parametrize("conflicting_uid, original_row", [("1.2.3", 1), ("1.2.4", 2)])
-    def test_conflicting_last_report_prevents_all_writes(self, conflicting_uid, original_row):
+    def test_distinct_bodies_for_the_same_study_do_not_need_disk_comparisons(self):
+        rows = [record(patient="P2") for _ in range(100)]
+        for index, row in enumerate(rows):
+            row["result"]["findings_ja"] = f"Report {index:03d}"
+        with patch.object(self.adapter.TextStore, "matches") as matches:
+            self.run_import([*rows, record()])
+        matches.assert_not_called()
+        assert "100 unmatched records, 0 duplicate records" in self.meta.status
+
+    def test_conflicting_report_skips_only_the_affected_tasks(self):
         guide = SimpleNamespace(task_id=1, markdown="manual", save=MagicMock())
         self.existing[:] = [guide]
-        changed = record(uid=conflicting_uid)
+        self.values[:] = [
+            (task.id, tag, next(iter(value)))
+            for task in (image(), video(patient="P2"))
+            for tag, value in task.tags.items()
+        ]
+        changed = record()
         changed["result"]["findings_ja"] = "Different"
-        with pytest.raises(core.GuideImportError, match=rf"Record 3:.*record {original_row}"):
-            self.run_import([record(), record(uid="1.2.4"), changed])
+        self.run_import([record(), record(patient="P2"), changed])
         assert guide.markdown == "manual"
         guide.save.assert_not_called()
-        self.guide_manager.create.assert_not_called()
-        self.meta.save.assert_not_called()
-        self.assert_no_timestamps_changed()
+        self.guide_manager.create.assert_called_once()
+        assert self.guide_manager.create.call_args.kwargs["task_id"] == 2
+        assert "2 unmatched records" in self.meta.status
+        assert "1 skipped tasks" in self.meta.status
+        assert "skipped task IDs: 1" in self.meta.status
+        self.tasks[0].touch.assert_not_called()
+        self.tasks[1].touch.assert_called_once_with()
+
+    def test_modality_mismatch_skips_only_that_task(self):
+        self.values[:] = [
+            (task.id, tag, next(iter(value)))
+            for task in (image(modality="MR"), video())
+            for tag, value in task.tags.items()
+        ]
+        self.run_import()
+        self.guide_manager.create.assert_called_once()
+        assert self.guide_manager.create.call_args.kwargs["task_id"] == 2
+        assert "skipped task IDs: 1" in self.meta.status
 
     def test_write_failure_does_not_report_success(self):
         self.guide_manager.create.side_effect = RuntimeError("write failed")
