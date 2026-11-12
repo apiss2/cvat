@@ -33,6 +33,7 @@ def save_dicom(path, instance, pixels, *, spacing=None, study_uid=STUDY_UID, pat
     dataset = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\0" * 128)
     dataset.PatientID = patient_id
     dataset.StudyDate = STUDY_DATE
+    dataset.Modality = "OT"
     dataset.StudyTime = "030405"
     dataset.SeriesNumber = 2
     dataset.InstanceNumber = instance
@@ -67,6 +68,7 @@ def read_report(patient_id=PATIENT_ID):
                     "study_date": STUDY_DATE,
                     "parsed_patient_age": "025Y",
                     "patient_sex": "M",
+                    "modality": "ot",
                 },
                 "result": {"findings_ja": "合成画像の所見です。", "impression_ja": "検証用です。"},
             }
@@ -135,10 +137,11 @@ def test_real_dicom_images_and_video_receive_the_same_study_report(tmp_path, pat
         )
         identities.append(task_identity(task_id, task.name, tags, attribute_ids))
 
+    assert all(identity.tags[guides.MODALITY] == {"OT"} for identity in identities)
     reports = read_report(patient_id)
-    updates, unmatched = guides.plan_updates(reports, identities)
-    assert updates == {1: reports[0].markdown, 2: reports[0].markdown}
-    assert unmatched == []
+    result = guides.plan_updates(reports, identities)
+    assert result.updates == {1: reports[0].markdown, 2: reports[0].markdown}
+    assert (result.unmatched, result.skipped_tasks) == ([], [])
     assert patient_id not in reports[0].markdown
     assert STUDY_UID not in reports[0].markdown
     assert "合成画像の所見です。" in reports[0].markdown
@@ -190,12 +193,13 @@ def test_missing_study_uid_is_rejected_and_cannot_be_supplied_by_a_label_default
     # An absent UID must not become an existing project's unrelated default UID.
     values = metadata(pydicom.dcmread(source))
     assert "StudyInstanceUID" not in values
-    attribute_ids = {name: index for index, name in enumerate(guides.IDENTITY_TAGS, 1)}
+    names = ("StudyInstanceUID", *guides.IDENTITY_TAGS)
+    attribute_ids = {name: index for index, name in enumerate(names, 1)}
     tag = next(tag_batches([(0, values)], 7, attribute_ids))["tags"][0]
     registered = attribute_values(tag, attribute_ids)
-    assert registered[guides.STUDY_UID] == ""
-    expanded = {guides.STUDY_UID: STUDY_UID, **registered}
-    assert expanded[guides.STUDY_UID] == ""
+    assert registered["StudyInstanceUID"] == ""
+    expanded = {"StudyInstanceUID": STUDY_UID, **registered}
+    assert expanded["StudyInstanceUID"] == ""
+    # Study reports match by PatientID and StudyDate, so they do not need the UID.
     identity = task_identity(1, "video-without-study-identity", [tag], attribute_ids)
-    with pytest.raises(guides.GuideImportError, match="No matching tasks"):
-        guides.plan_updates(read_report(), [identity])
+    assert set(guides.plan_updates(read_report(), [identity]).updates) == {1}

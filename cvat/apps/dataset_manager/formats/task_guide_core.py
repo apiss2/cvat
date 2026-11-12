@@ -31,10 +31,11 @@ _READ_SIZE = 64 * 1024
 _SURROGATE = re.compile(r"[\ud800-\udfff]")
 START = "<!-- cvat:study-report:start -->"
 END = "<!-- cvat:study-report:end -->"
-STUDY_UID = "StudyInstanceUID"
 PATIENT_ID = "PatientID"
 STUDY_DATE = "StudyDate"
-IDENTITY_TAGS = (STUDY_UID, PATIENT_ID, STUDY_DATE)
+MODALITY = "Modality"
+IDENTITY_TAGS = (PATIENT_ID, STUDY_DATE, MODALITY)
+# Full StudyInstanceUID syntax, shared with the project annotation importer.
 _UID = re.compile(r"[0-9]+(?:\.[0-9]+)+\Z")
 
 
@@ -45,10 +46,29 @@ class GuideImportError(ValueError):
 @dataclass(frozen=True)
 class Report:
     row: int
-    study_uid: str
     patient_id: str
     date: str
+    modality: str
     markdown: str | TextReference
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.patient_id, self.date
+
+
+@dataclass(frozen=True)
+class InvalidRecord:
+    """A report record skipped by validation. It holds no patient data."""
+
+    row: int
+    reason: str
+
+
+@dataclass
+class ReportPlan:
+    updates: dict[int, str | TextReference]
+    unmatched: list[int]
+    skipped_tasks: list[int]
 
 
 @dataclass(frozen=True)
@@ -196,55 +216,71 @@ def render_markdown(source: dict, result: dict, *, input_text=None) -> str:
     return markdown
 
 
-def iter_reports(source) -> Iterator[Report]:
-    """Yield validated reports; callers must exhaust the iterator before writing."""
+def _modality(value) -> str:
+    # DICOM Modality is a code string; compare codes without case or padding.
+    return _text(value).upper()
+
+
+def _report(row: int, record) -> Report:
+    if not isinstance(record, dict):
+        raise GuideImportError("Record must be an object")
+    data, result = record.get("input"), record.get("result")
+    if not isinstance(data, dict) or not isinstance(result, dict):
+        raise GuideImportError("Record must contain input and result objects")
+    patient_id = _identifier(data, ("patient_id", "pid"))
+    if not patient_id:
+        raise GuideImportError("PatientID is required")
+    date = _identifier(data, ("study_date", "date", "dt"), date=True)
+    if not date:
+        raise GuideImportError("StudyDate is required")
+    markdown = render_markdown(data, result, input_text=record.get("input_text"))
+    if _SURROGATE.search(markdown):
+        raise GuideImportError("Guide contains invalid Unicode")
+    # Check the same value that the overview shows: the first nonempty alias.
+    modality = _modality(_first(data.get("modality"), data.get("mod")))
+    return Report(row, patient_id, date, modality, markdown)
+
+
+def iter_reports(source) -> Iterator[Report | InvalidRecord]:
+    """Yield reports and skipped records; callers must exhaust the iterator before writing.
+
+    A malformed record is skipped so that the other records can still be matched.
+    A broken JSON or ZIP stream still rejects the complete input.
+    """
     try:
         for row, record in enumerate(iter_report_records(source), 1):
             try:
-                if not isinstance(record, dict):
-                    raise GuideImportError("Record must be an object")
-                data, result = record.get("input"), record.get("result")
-                if not isinstance(data, dict) or not isinstance(result, dict):
-                    raise GuideImportError("Record must contain input and result objects")
-                uid = _identifier(data, ("study_instance_uid", "study_uid", "uid"))
-                if not _UID.fullmatch(uid) or len(uid) > 64:
-                    raise GuideImportError("A full numeric StudyInstanceUID is required")
-                markdown = render_markdown(data, result, input_text=record.get("input_text"))
-                if _SURROGATE.search(markdown):
-                    raise GuideImportError("Guide contains invalid Unicode")
-                yield Report(
-                    row,
-                    uid,
-                    _identifier(data, ("patient_id", "pid")),
-                    _identifier(data, ("study_date", "date", "dt"), date=True),
-                    markdown,
-                )
-                del record, data, result, markdown
+                yield _report(row, record)
             except GuideImportError as exc:
-                raise GuideImportError(f"Record {row}: {exc}") from exc
+                yield InvalidRecord(row, str(exc))
+            del record
     except JSONStreamError as exc:
         raise GuideImportError(str(exc)) from exc
 
 
-def read_reports(source) -> tuple[list[Report], int]:
-    """Collect and deduplicate reports for callers that need an in-memory result."""
-    reports = {}
+def read_reports(source) -> tuple[list[Report], int, list[InvalidRecord]]:
+    """Collect reports for callers that need an in-memory result.
+
+    Identical reports for one patient, date and modality are merged. Different
+    reports for the same patient and date are kept, and matching decides whether
+    a task can choose exactly one of them.
+    """
+    groups: dict[tuple[str, str], list[Report]] = {}
     duplicates = 0
+    invalid = []
     for report in iter_reports(source):
-        previous = reports.get(report.study_uid)
-        if previous:
-            if (previous.patient_id, previous.date, previous.markdown) != (
-                report.patient_id,
-                report.date,
-                report.markdown,
-            ):
-                raise GuideImportError(
-                    f"Record {report.row}: Conflicting reports for the study in record {previous.row}"
-                )
+        if isinstance(report, InvalidRecord):
+            invalid.append(report)
+            continue
+        group = groups.setdefault(report.key, [])
+        if any(
+            (previous.modality, previous.markdown) == (report.modality, report.markdown)
+            for previous in group
+        ):
             duplicates += 1
         else:
-            reports[report.study_uid] = report
-    return list(reports.values()), duplicates
+            group.append(report)
+    return [report for group in groups.values() for report in group], duplicates, invalid
 
 
 def _named_guide(row: int, name, markdown) -> NamedGuide:
@@ -416,36 +452,64 @@ def plan_named_updates(
     return updates, unmatched
 
 
-def plan_updates(
-    reports: list[Report], tasks: list[TaskIdentity]
-) -> tuple[dict[int, str | TextReference], list[int]]:
-    """Apply one study report to all matching image/video tasks, never by short SOP suffix."""
-    by_uid = {report.study_uid: report for report in reports}
-    updates, matched = {}, set()
+def _task_dates(values: set[str]) -> set[str] | None:
+    try:
+        return {_date(value) for value in values}
+    except GuideImportError:
+        return None
+
+
+def plan_updates(reports: list[Report], tasks: list[TaskIdentity]) -> ReportPlan:
+    """Match reports to image/video tasks by the DicomTag PatientID and StudyDate.
+
+    Modality is checked only when both the report and the task have one. A task
+    with mixed identities, a contradicting Modality, or more than one different
+    candidate report is skipped. The import fails only when no task matches.
+    """
+    by_key: dict[tuple[str, str], list[Report]] = {}
+    for report in reports:
+        by_key.setdefault(report.key, []).append(report)
+    patients_with_reports = {patient for patient, _ in by_key}
+    updates, matched, skipped = {}, set(), []
     for task in tasks:
         tags = {
             key: {value.strip() for value in task.tags.get(key, set()) if value.strip()}
             for key in IDENTITY_TAGS
         }
-        uids = tags.get(STUDY_UID, set())
-        if not uids.intersection(by_uid):
+        patients = tags[PATIENT_ID]
+        dates = _task_dates(tags[STUDY_DATE])
+        if dates is None:
+            # An unreadable StudyDate cannot be checked against this patient's reports.
+            if patients & patients_with_reports:
+                skipped.append(task.id)
             continue
-        if len(uids) != 1:
-            raise GuideImportError(f"Task {task.id}: conflicting study identities")
-        report = by_uid[next(iter(uids))]
-        dates = {_date(value) for value in tags.get(STUDY_DATE, set())}
-        patients = tags.get(PATIENT_ID, set())
-        if len(dates) > 1 or (report.date and dates and report.date not in dates):
-            raise GuideImportError(f"Task {task.id}: study date mismatch")
-        if len(patients) > 1 or (
-            report.patient_id and patients and report.patient_id not in patients
-        ):
-            raise GuideImportError(f"Task {task.id}: patient ID mismatch")
-        updates[task.id] = report.markdown
-        matched.add(report.study_uid)
+        candidates = [
+            report
+            for patient in patients
+            for date in dates
+            for report in by_key.get((patient, date), ())
+        ]
+        if not candidates:
+            continue
+        if len(patients) != 1 or len(dates) != 1:
+            # A task mixing studies cannot choose one report.
+            skipped.append(task.id)
+            continue
+        modalities = {_modality(value) for value in tags[MODALITY]}
+        candidates = [
+            report
+            for report in candidates
+            if not report.modality or not modalities or report.modality in modalities
+        ]
+        if len(candidates) != 1:
+            skipped.append(task.id)
+            continue
+        updates[task.id] = candidates[0].markdown
+        matched.add(candidates[0].row)
     if not updates:
         raise GuideImportError("No matching tasks in this project; no guides were changed")
-    return updates, [report.row for report in reports if report.study_uid not in matched]
+    unmatched = [report.row for report in reports if report.row not in matched]
+    return ReportPlan(updates, unmatched, skipped)
 
 
 def merge_markdown(existing: str, generated: str) -> str:

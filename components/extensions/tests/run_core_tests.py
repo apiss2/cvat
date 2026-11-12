@@ -400,9 +400,13 @@ def test_task_guides_save_large_bodies_through_the_native_import_job(
     is_report = format_name == "Task Guide DICOM Report Import 1.0"
     if is_report:
         label = models.Label.objects.create(project=project, name="DicomTag", type="tag")
-        spec = models.AttributeSpec.objects.create(
-            label=label, name="StudyInstanceUID", input_type="text", mutable=False
-        )
+        specs = {
+            name: models.AttributeSpec.objects.create(
+                label=label, name=name, input_type="text", mutable=False
+            )
+            for name in ("PatientID", "StudyDate", "Modality")
+        }
+        identity = {"PatientID": "P1", "StudyDate": "20250101", "Modality": "CT"}
         for task in tasks:
             data = models.Data.objects.create(
                 size=1,
@@ -421,12 +425,18 @@ def test_task_guides_save_large_bodies_through_the_native_import_job(
             tag = models.LabeledImage.objects.create(
                 job=models.Job.objects.create(segment=segment), label=label, frame=0
             )
-            models.LabeledImageAttributeVal.objects.create(
-                image=tag, job_id=tag.job_id, spec=spec, value="1.2.3"
-            )
+            for name, value in identity.items():
+                models.LabeledImageAttributeVal.objects.create(
+                    image=tag, job_id=tag.job_id, spec=specs[name], value=value
+                )
         members = {
             "reports.json": json.dumps(
-                [{"input": {"study_uid": "1.2.3"}, "result": {"findings": text}}]
+                [
+                    {
+                        "input": {"pid": "P1", "dt": "2025-01-01", "mod": "ct"},
+                        "result": {"findings": text},
+                    }
+                ]
             )
         }
     elif format_name == "Task Guide JSON 1.0":

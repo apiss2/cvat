@@ -12,6 +12,7 @@ from cvat.apps.dataset_manager.formats.registry import importer
 from .task_guide_core import (
     IDENTITY_TAGS,
     GuideImportError,
+    InvalidRecord,
     TaskIdentity,
     iter_markdown_zip,
     iter_named_json,
@@ -48,26 +49,29 @@ def _import_context(project):
 
 
 def _stage_reports(reports, store):
+    # Group by the matching key. Identical reports are merged; different reports
+    # for the same patient and date are left for matching to resolve or skip.
     staged = {}
     duplicates = 0
+    invalid = []
     for report in reports:
-        previous = staged.get(report.study_uid)
-        if previous is not None:
-            if (previous.patient_id, previous.date) != (
-                report.patient_id,
-                report.date,
-            ) or not store.matches(previous.markdown, report.markdown):
-                raise GuideImportError(
-                    f"Record {report.row}: Conflicting reports for the study in record {previous.row}"
-                )
+        if isinstance(report, InvalidRecord):
+            invalid.append(report.row)
+            continue
+        group = staged.setdefault(report.key, [])
+        if any(
+            previous.modality == report.modality
+            and store.matches(previous.markdown, report.markdown)
+            for previous in group
+        ):
             duplicates += 1
         else:
-            staged[report.study_uid] = replace(report, markdown=store.write(report.markdown))
-    return list(staged.values()), duplicates
+            group.append(replace(report, markdown=store.write(report.markdown)))
+    return [report for group in staged.values() for report in group], duplicates, invalid
 
 
 def _stage_named_guides(guides, store):
-    return [replace(guide, markdown=store.write(guide.markdown)) for guide in guides], 0
+    return [replace(guide, markdown=store.write(guide.markdown)) for guide in guides], 0, []
 
 
 def _stage_entries(source, input_format, store):
@@ -183,12 +187,17 @@ def import_project_guides(source, project, *, input_format="dicom", temp_dir=Non
     from django.db import transaction
 
     with TextStore(dir=temp_dir) as store:
-        entries, duplicates = _stage_entries(source, input_format, store)
+        entries, duplicates, invalid = _stage_entries(source, input_format, store)
         with transaction.atomic():
-            _apply_staged_guides(project, input_format, store, entries, duplicates)
+            _apply_staged_guides(project, input_format, store, entries, duplicates, invalid)
 
 
-def _apply_staged_guides(project, input_format, store, entries, duplicates):
+def _positions(rows):
+    text = ", ".join(map(str, rows[:20]))
+    return text + (", ..." if len(rows) > 20 else "")
+
+
+def _apply_staged_guides(project, input_format, store, entries, duplicates, invalid):
     from cvat.apps.engine import models
     from cvat.apps.engine.permissions import ProjectPermission
 
@@ -208,7 +217,7 @@ def _apply_staged_guides(project, input_format, store, entries, duplicates):
     tasks = list(task_query.order_by("id"))
     identities = {task.id: TaskIdentity(task.id, task.name) for task in tasks}
     if input_format == "dicom":
-        # Read only the three scalar identity attributes needed for report matching.
+        # Read only the scalar identity attributes needed for report matching.
         values = (
             models.LabeledImageAttributeVal.objects.filter(
                 image__job__segment__task__project_id=project.pk,
@@ -225,9 +234,11 @@ def _apply_staged_guides(project, input_format, store, entries, duplicates):
         for task_id, tag, value in values.iterator():
             if task_id in identities:
                 identities[task_id].tags.setdefault(tag, set()).add(value)
-        updates, unmatched = plan_updates(entries, list(identities.values()))
+        plan = plan_updates(entries, list(identities.values()))
+        updates, unmatched, skipped_tasks = plan.updates, plan.unmatched, plan.skipped_tasks
     else:
         updates, unmatched = plan_named_updates(entries, list(identities.values()))
+        skipped_tasks = []
 
     # Validate every identity, permission and merged body before the first write.
     # Project import permission alone does not grant task-guide write permission.
@@ -237,15 +248,20 @@ def _apply_staged_guides(project, input_format, store, entries, duplicates):
     created, updated = _save_updates(prepared, store)
     if created or updated:
         project.touch()
-    # Counts and record positions only: never put patient identifiers/reports in request logs.
+    # Counts, record positions and task IDs only: never put patient identifiers or
+    # report text in request logs.
     meta.status = (
         f"Task guides: {created} created, {updated} updated, {unchanged} unchanged; "
         f"{len(unmatched)} unmatched records, {duplicates} duplicate records"
     )
+    if input_format == "dicom":
+        meta.status += f", {len(invalid)} invalid records, {len(skipped_tasks)} skipped tasks"
     if unmatched:
-        meta.status += "; unmatched positions: " + ", ".join(map(str, unmatched[:20]))
-        if len(unmatched) > 20:
-            meta.status += ", ..."
+        meta.status += "; unmatched positions: " + _positions(unmatched)
+    if invalid:
+        meta.status += "; invalid positions: " + _positions(invalid)
+    if skipped_tasks:
+        meta.status += "; skipped task IDs: " + _positions(skipped_tasks)
     meta.progress = 1.0
     meta.save()
 
