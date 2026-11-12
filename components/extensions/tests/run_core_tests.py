@@ -479,7 +479,7 @@ def test_task_guides_save_large_bodies_through_the_native_import_job(
 
 
 def test_dicom_task_guide_exact_uid_and_partial_result_through_native_requests(
-    project, user, queue, monkeypatch
+    project, user, queue, policy, monkeypatch
 ):
     from cvat.apps.dataset_manager.formats.task_guide_core import merge_markdown
     from cvat.apps.redis_handler.apps import QUEUE_TO_PARSED_JOB_ID_CLS, SELECTOR_TO_QUEUE
@@ -515,8 +515,14 @@ def test_dicom_task_guide_exact_uid_and_partial_result_through_native_requests(
     monkeypatch.setitem(SELECTOR_TO_QUEUE, "import", queue.name)
     monkeypatch.setitem(QUEUE_TO_PARSED_JOB_ID_CLS, queue.name, ImportRequestId)
     job.set_status(JobStatus.FINISHED)
-    response = dispatch("get", reverse("request-detail", kwargs={"pk": job.id}), user)
+    request_url = reverse("request-detail", kwargs={"pk": job.id})
+    policy.permissions.clear()
+    response = dispatch("get", request_url, user)
     assert response.status_code == 200
+    (permission,) = policy.permissions
+    assert isinstance(permission, ProjectPermission)
+    assert permission.scope == ProjectPermission.Scopes.VIEW
+    assert permission.get_resource()["id"] == project.pk
     assert response.data["status"] == "finished"
     message = response.data["message"]
     assert message.startswith("WARNING: Task guides:")
@@ -524,6 +530,10 @@ def test_dicom_task_guide_exact_uid_and_partial_result_through_native_requests(
     assert "invalid positions: 3" in message
     assert f"skipped task IDs: {other.pk}" in message
     assert not any(value in message for value in ("P1", "P2", "1.2.3", "1.2.4", "9.9.9", findings))
+    policy.allow = False
+    denied = dispatch("get", request_url, user)
+    assert denied.status_code == 403
+    assert "message" not in denied.data
 
 
 @pytest.mark.parametrize("failure", ["late_input", "second_save"])
