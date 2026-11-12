@@ -3,5 +3,5 @@ pytest==9.0.2
 PyYAML==6.0.3
 opencv-python-headless==4.11.0.86
 # Reproduce the CVAT session API renderer and versioning contract in isolation.
-Django==5.2.14
-djangorestframework==3.17.1
+Django==5.2.18
+djangorestframework==3.18.3

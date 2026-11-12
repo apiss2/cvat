@@ -26,6 +26,7 @@ _RUNTIME = configure_cvat(prefix="cvat-upgrade-migrations-", create_schema=False
 from django.db import connection
 from django.db.migrations.exceptions import IrreversibleError
 from django.db.migrations.executor import MigrationExecutor
+from django.utils import timezone
 
 SOURCE_MIGRATION = ("quality_control", "0014_rename_consensus_replica_in_job_filter")
 TARGET_MIGRATION = ("quality_control", "0018_qualityrequirement_boundary_f")
@@ -197,3 +198,28 @@ def test_quality_policy_survives_upgrade_and_blocks_lossy_rollback(old_quality):
         "quality_control", "QualityRequirement"
     )
     assert remaining.objects.get(pk=root.pk).iou_threshold == policy
+
+
+def test_quality_upgrade_preserves_existing_conflicts():
+    old_apps = migrate(TARGET_MIGRATION)
+    project = old_apps.get_model("engine", "Project").objects.create(name="Before upgrade")
+    report = old_apps.get_model("quality_control", "QualityReport").objects.create(
+        project=project, target_last_updated=timezone.now(), data={}
+    )
+    old_conflicts = old_apps.get_model("quality_control", "AnnotationConflict").objects
+    conflict = old_conflicts.create(
+        report=report,
+        frame=7,
+        type="mismatching_attributes",
+        severity="warning",
+        attribute_names=["visibility"],
+    )
+    old_row = old_conflicts.values().get(pk=conflict.pk)
+    old_apps.get_model("quality_control", "AnnotationId").objects.create(
+        conflict=conflict, obj_id=42, job_id=3, type="tag"
+    )
+
+    apps = migrate(("quality_control", "0019_annotationconflict_requirements"))
+    new_conflicts = apps.get_model("quality_control", "AnnotationConflict").objects
+    assert new_conflicts.values().get(pk=conflict.pk) == {**old_row, "requirements": []}
+    assert new_conflicts.get(pk=conflict.pk).annotation_ids.get().obj_id == 42
