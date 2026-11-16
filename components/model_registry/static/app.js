@@ -58,7 +58,7 @@ function kindChanged() {
     $('interactor-options').hidden = !prompting; $('sample-prompts-field').hidden = !prompting;
     for (const id of ['min-pos-points', 'min-neg-points', 'box-mode', 'sample-prompts']) $(id).disabled = !prompting;
     for (const id of ['min-distance', 'max-error', 'min-area']) $(id).disabled = !polygonOutput;
-    $('label-help').textContent = prompting ? 'Promptingは対象1個のマスクを返します。モデルの説明用ラベルを1件だけ登録してください。実際のラベルはCVATで選びます。' : $('model-kind').value === 'polyline' ? 'Line detectionのクラスIDとラベル名を登録します。1枚の画像から任意の本数の線を出力でき、各線はCVATのポリラインになります。クラスIDはモデルの出力と一致させてください。' : $('model-kind').value === 'tag' ? 'ClassificationのクラスIDとラベル名を登録します。分類結果は画像や動画の各フレームのタグになります。画像全体を分類する場合は、実行時にROIを指定しないでください。' : segmentation ? 'Segmentationのラベルをモデルの出力順に登録してください。この順番に従って、各領域にラベルを付けます。' : 'DetectionのクラスIDとラベル名を登録します。クラスIDはモデルの出力と一致させてください。';
+    $('label-help').textContent = prompting ? 'Promptingは対象1個のマスクを返します。モデルの説明用ラベルを1件だけ登録してください。実際のラベルはCVATで選びます。' : $('model-kind').value === 'polyline' ? 'Line detectionのクラスIDとラベル名を登録します。1枚の画像から任意の本数の線を出力でき、各線はCVATのポリラインになります。クラスIDはモデルの出力と一致させてください。' : $('model-kind').value === 'tag' ? 'ClassificationのクラスIDとラベル名を登録します。分類結果は画像や動画の各フレームのタグになります。画像全体を分類する場合は、実行時にROIを指定しないでください。' : polygonOutput ? 'Segmentationのラベルをモデルの出力順に登録してください。この順番に従って、各領域にラベルを付けます。' : 'DetectionのクラスIDとラベル名を登録します。クラスIDはモデルの出力と一致させてください。';
 }
 function labelRow(value = { id: 0, name: '' }) {
     const row = document.createElement('div'); row.className = 'label-row';

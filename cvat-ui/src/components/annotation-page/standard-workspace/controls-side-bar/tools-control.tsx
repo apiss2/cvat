@@ -573,7 +573,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                         continue;
                     }
 
-                    const approximated = response.polygons === undefined ? this.approximateResponsePoints(polygonPoints) : [];
+                    const approximated = response.polygons === undefined ?
+                        this.approximateResponsePoints(polygonPoints) : [];
                     const confidenceAttr = item.attributes.find((attr) => attr.spec_id === 0);
                     const confidence = confidenceAttr ? +confidenceAttr.value : 1;
                     showConfidenceControl = showConfidenceControl || !!confidenceAttr;
@@ -1601,7 +1602,9 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         const interactionContent: JSX.Element | null = showInteractionContent ? (
             <>
-                { convertMasksToPolygons && this.interaction.latestResponse.every(({ registryPolygons }) => registryPolygons === undefined) && (
+                { convertMasksToPolygons && this.interaction.latestResponse.every(
+                    ({ registryPolygons }) => registryPolygons === undefined,
+                ) && (
                     <ApproximationAccuracy
                         approxPolyAccuracy={approxPolyAccuracy}
                         onChange={(value: number) => {

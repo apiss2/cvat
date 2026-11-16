@@ -125,8 +125,12 @@ def _sample_contour(contour: np.ndarray, settings: PolygonSettings) -> np.ndarra
     # OpenCV supplies a fast initial simplification. Check its approximation
     # against finite segments (not just their supporting infinite lines).
     lookup = {tuple(point): i for i, point in enumerate(original)}
-    approx = cv2.approxPolyDP(original.astype(np.float32), settings.max_error_px, True)
+    # OpenCV rejects epsilon >= 1e30; no contour needs more than its bounding-box diagonal.
+    epsilon = min(settings.max_error_px, float(np.linalg.norm(np.ptp(original, axis=0))))
+    approx = cv2.approxPolyDP(original.astype(np.float32), epsilon, True)
     indices = sorted({lookup[tuple(point)] for point in approx.reshape(-1, 2)})
+    if len(indices) > MAX_POLYGON_VERTICES:
+        raise ValueError("polygon exceeds 4096 vertices; increase polygon approximation error")
     if not ring_valid(indices) or not is_simple_polygon(original[indices]):
         indices = list(range(n))
     if len(indices) > MAX_POLYGON_VERTICES:

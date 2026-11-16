@@ -2093,3 +2093,20 @@ class Issue4996_Cases(_LambdaTestCaseBase):
                 self.function_url, self.user, data=data, query_params={"org_id": self.org["id"]}
             )
             self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+def test_registry_interactor_roi_translates_mask_and_all_polygons():
+    from cvat.apps.lambda_manager.utils import ROIHelper
+
+    response = {
+        "mask": [[1, 0], [0, 1]],
+        "polygons": [[0, 0, 1, 0, 1, 1], [0, 0, 0, 1, 1, 1]],
+    }
+    translated = ROIHelper.translate_interactor_response(
+        response, roi={"xtl": 2, "ytl": 3, "xbr": 4, "ybr": 5},
+        image_width=6, image_height=7,
+    )
+    assert translated["polygons"] == [[2, 3, 3, 3, 3, 4], [2, 3, 2, 4, 3, 4]]
+    assert translated["mask"][3][2] == 1
+    assert translated["mask"][4][3] == 1
+    assert sum(map(sum, translated["mask"])) == 2
