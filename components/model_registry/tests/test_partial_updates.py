@@ -98,6 +98,11 @@ def test_metadata_patch_merges_polygon_and_all_omitted_fields(updates, package):
     assert value.weights == manifest.weights
     assert value.polygon.min_area_px == 25
     assert value.polygon.min_distance_px == 3
+    assert value.polygon.max_error_px == 2
+    legacy = manifest.model_dump()
+    legacy["polygon"] = {"min_distance_px": 3., "spacing_percent": 2., "min_area_px": 20.}
+    migrated = updates.merge_manifest(legacy, {"polygon": {"max_error_px": 0.5}})
+    assert migrated.polygon.model_dump() == {"min_distance_px": 3., "max_error_px": 0.5, "min_area_px": 20.}
 
 
 @pytest.mark.parametrize("patch", [{"name": ""}, {"weights": []}, {"weights": ["../x.onnx"]}, {"surprise": True}, []])

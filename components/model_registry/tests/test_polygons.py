@@ -10,7 +10,7 @@ from registry.wire import validate_wire
 def manifest(**options):
     return Manifest(name='segmentation', weights=['model.onnx'],
                     labels=[{'id':27,'name':'region','type':'polygon'}],
-                    polygon={'min_distance_px':0.,'spacing_percent':0.,'min_area_px':0.,**options})
+                    polygon={'min_distance_px':0.,'max_error_px':0.,'min_area_px':0.,**options})
 
 
 def ring(obj):
@@ -60,31 +60,46 @@ def test_degenerate_single_pixel_line_and_empty_output_are_omitted():
     assert encode_results(np.zeros_like(bitmap),manifest(),(20,20,3))==[]
 
 
-@pytest.mark.parametrize('minimum,percent',[(0.,10.),(3.,0.),(6.,2.),(12.,5.)])
-def test_closed_polygon_has_minimum_chord_distance(minimum,percent):
+@pytest.mark.parametrize('minimum,error',[(0.,0.),(3.,0.),(6.,2.),(12.,5.)])
+def test_rectangle_needs_only_four_vertices(minimum,error):
     bitmap=np.zeros((1,60,60),np.uint8);bitmap[0,5:46,5:46]=1
-    m=manifest(min_distance_px=minimum,spacing_percent=percent)
+    m=manifest(min_distance_px=minimum,max_error_px=error)
     output=encode_results(bitmap,m,(60,60,3))
     assert len(output)==1
     points=ring(output[0]);distance=np.linalg.norm(np.roll(points,-1,axis=0)-points,axis=1)
-    assert np.all(distance>=minimum-1e-9),distance
+    assert len(points)==4
+    assert np.all(distance>=minimum-1e-9)
     assert validate_wire(output,m,60,60)==output
-    if minimum==0.:
-        assert len(points)==10  # 10 percent of the 160-pixel external perimeter.
 
 
 def test_impossible_spacing_omits_component_instead_of_breaking_minimum():
     bitmap=np.ones((1,20,20),np.uint8)
     assert encode_results(bitmap,manifest(min_distance_px=100.),(20,20,3))==[]
-    assert encode_results(bitmap,manifest(spacing_percent=50.),(20,20,3))==[]
 
 
 def test_closing_edge_is_checked_and_pruned():
     contour=np.asarray([[0,0],[0,20],[20,20],[20,0],[1,0]],np.int32)
-    m=PolygonSettings(min_distance_px=3.,spacing_percent=0.,min_area_px=0.)
+    m=PolygonSettings(min_distance_px=3.,max_error_px=0.,min_area_px=0.)
     points=_sample_contour(contour,m)
     assert points is not None
+    assert len(points)==4
     assert np.min(np.linalg.norm(np.roll(points,-1,axis=0)-points,axis=1))>=3.-1e-9
+
+
+def test_sharp_feature_requires_error_budget_before_removal():
+    contour=np.asarray([[0,0],[0,20],[20,20],[20,2],[18,0],[2,0]],np.int32)
+    assert _sample_contour(contour, PolygonSettings(min_distance_px=3.,max_error_px=0.,min_area_px=0.)) is None
+    points = _sample_contour(contour, PolygonSettings(min_distance_px=3.,max_error_px=2.,min_area_px=0.))
+    assert points is not None
+    assert len(points) == 4
+
+
+def test_legacy_polygon_settings_are_normalized():
+    settings = PolygonSettings(min_distance_px=3., spacing_percent=2.5, min_area_px=7.)
+    assert settings.model_dump() == {"min_distance_px": 3., "max_error_px": 2.5, "min_area_px": 7.}
+    assert PolygonSettings(spacing_percent=0., max_error_px=1.).max_error_px == 1.
+    with pytest.raises(ValueError):
+        PolygonSettings(spacing_percent=-1.)
 
 
 @pytest.mark.parametrize('bitmap',[
@@ -138,7 +153,9 @@ def test_wire_rejects_invalid_polygon(coordinates):
     with pytest.raises(ValueError):validate_wire([item],m,20,20)
 
 
-def test_vertex_budget_requires_more_spacing():
+def test_vertex_budget_requires_more_approximation(monkeypatch):
+    import registry.codec as codec
+    monkeypatch.setattr(codec, 'MAX_POLYGON_VERTICES', 3)
     bitmap=np.ones((1,20,20),np.uint8)
     with pytest.raises(ValueError,match='4096 vertices'):
-        encode_results(bitmap,manifest(spacing_percent=.001),(20,20,3))
+        encode_results(bitmap,manifest(),(20,20,3))

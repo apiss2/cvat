@@ -197,4 +197,11 @@ class ROIHelper:
         if "shapes" in response and isinstance(response["shapes"], list):
             cls.translate_detector_shapes(response["shapes"], dx=roi["xtl"], dy=roi["ytl"])
 
+        if "polygons" in response:
+            response["polygons"] = [
+                [value + (roi["xtl"] if index % 2 == 0 else roi["ytl"])
+                 for index, value in enumerate(points)]
+                for points in response["polygons"]
+            ]
+
         return response

@@ -43,10 +43,10 @@
             <div class="panel form-panel"><div class="form-section-heading"><span class="step-number" aria-hidden="true">2</span><div><h2>出力ラベルと変換</h2><p>モデルが出力するラベルを登録します。タスクのラベルとの対応は、自動アノテーションの実行時に指定します。</p></div></div>
                 <p id="label-help" class="help"></p><div id="labels"></div><button type="button" id="add-label" class="secondary">＋ ラベルを追加</button>
                 <fieldset id="polygon-options"><legend>ポリゴン変換</legend><div class="fields-row">
-                    <label>隣接する頂点の最小距離（px）<input id="min-distance" type="number" min="0" step="any" value="2" aria-describedby="min-distance-help" required><span id="min-distance-help" class="help">大きくすると頂点が減り、細かい凹凸を省略します。</span></label>
-                    <label>周長に対する頂点の間隔（%）<input id="spacing-percent" type="number" min="0" max="100" step="any" value="1" aria-describedby="spacing-percent-help" required><span id="spacing-percent-help" class="help">大きくすると輪郭上の頂点の間隔が広がり、形状を単純化します。</span></label>
+                    <label>隣接する頂点の最小距離（px）<input id="min-distance" type="number" min="0" step="any" value="2" aria-describedby="min-distance-help" required><span id="min-distance-help" class="help">最後と最初の頂点も含め、隣接頂点間の直線距離の下限です。</span></label>
+                    <label>輪郭の近似許容誤差（px）<input id="max-error" type="number" min="0" step="any" value="1" aria-describedby="max-error-help" required><span id="max-error-help" class="help">元の輪郭と近似した線分の距離の上限です。小さくすると細部を保持します。</span></label>
                     <label>最小面積（px²）<input id="min-area" type="number" min="0" step="any" value="10" aria-describedby="min-area-help" required><span id="min-area-help" class="help">小さな領域を除外する基準です。小さい対象を残す場合は値を下げてください。</span></label></div>
-                    <p class="help">頂点の間隔や最小面積の条件を満たさない領域は出力されません。領域内の穴は塗りつぶされます。試験推論で輪郭を確認してください。</p>
+                    <p class="help">頂点間の距離、近似誤差、最小面積の条件を満たせない領域はポリゴンに変換されません。領域内の穴は塗りつぶされます。Promptingでマスクのまま保存する場合は適用されません。試験推論で輪郭を確認してください。</p>
                 </fieldset>
                 <fieldset id="interactor-options" hidden><legend>Promptingの入力</legend><div class="fields-row">
                     <label>正の点の最小数<input id="min-pos-points" type="number" min="0" max="1000" step="1" value="1" required></label>

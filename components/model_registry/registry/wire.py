@@ -12,7 +12,13 @@ from .schema import Manifest
 
 def validate_wire(result: list | dict, manifest: Manifest, width: int, height: int) -> list | dict:
     if manifest.kind == "interactor":
-        return validate_interactor_wire(result, width, height)
+        output = validate_interactor_wire(result, width, height)
+        if "polygons" in output:
+            label = manifest.labels[0].name
+            objects = [{"type": "polygon", "label": label, "confidence": 1., "points": points}
+                       for points in output["polygons"]]
+            validate_wire(objects, manifest.model_copy(update={"kind": "detector", "interactor": None}), width, height)
+        return output
     if not isinstance(result, list) or len(result) > MAX_OBJECTS:
         raise ValueError("invalid worker object count")
     labels = {label.name: label.type for label in manifest.labels}
@@ -84,8 +90,10 @@ def validate_interactor_wire(result, width: int, height: int) -> dict:
         raise ValueError("interactor output must be a mask response")
     if result == {"shapes": []}:
         return result
-    if set(result) != {"mask"} or width * height > MAX_MASK_VALUES:
+    if set(result) not in ({"mask"}, {"mask", "polygons"}) or width * height > MAX_MASK_VALUES:
         raise ValueError("invalid interactor output fields or pixel budget")
+    if "polygons" in result and (not isinstance(result["polygons"], list) or len(result["polygons"]) > MAX_OBJECTS):
+        raise ValueError("invalid interactor polygon count")
     mask = result["mask"]
     if (not isinstance(mask, list) or len(mask) != height
             or any(not isinstance(row, list) or len(row) != width for row in mask)):

@@ -111,8 +111,13 @@ def test_binary_mask_retains_holes_disconnected_regions_and_empty(manifest):
     bitmap[2:12, 3:15] = 1
     bitmap[5:8, 6:9] = 0
     bitmap[30:35, 40:45] = 1
-    result = encode_interactor(bitmap, (48, 64, 3))
+    result = encode_interactor(bitmap, (48, 64, 3), manifest.polygon)
     assert validate_wire(result, manifest, 64, 48) == result
+    assert len(result["polygons"]) == 2
+    assert all(len(points) == 8 for points in result["polygons"])
+    invalid = {**result, "polygons": [[0, 0, 1, 0, 0, 1]]}
+    with pytest.raises(ValueError):
+        validate_wire(invalid, manifest, 64, 48)
     np.testing.assert_array_equal(result["mask"], bitmap)
     assert encode_interactor(np.zeros_like(bitmap), (48, 64, 3)) == {"shapes": []}
     assert validate_wire({"shapes": []}, manifest, 64, 48) == {"shapes": []}
@@ -155,6 +160,8 @@ def test_real_onnx_worker_points_negative_box_empty_and_roi_local(monkeypatch, m
         result = client.post("/predict", json=payload)
         assert result.status_code == 200, result.text
         mask = np.asarray(result.json()["mask"])
+        assert len(result.json()["polygons"]) == 1
+        assert len(result.json()["polygons"][0]) == 8
         assert mask.sum() == 32 * 24 - 8 * 8
         assert mask[10, 14] == 1 and mask[18, 22] == 0
         payload["neg_points"] = [[15, 11]]

@@ -52,11 +52,12 @@ async function api(path, options = {}) {
 async function run(handler) { try { await handler(); } catch (error) { if (!(error instanceof StaleSession) && !(error instanceof AccessUnavailable)) notice(error.message, true); } }
 function button(text, handler) { const b = document.createElement('button'); b.textContent = text; b.type = 'button'; b.addEventListener('click', () => run(handler)); return b; }
 function kindChanged() {
-    const segmentation = $('model-kind').value === 'polygon'; $('polygon-options').hidden = !segmentation;
     const prompting = $('model-kind').value === 'interactor';
+    const polygonOutput = $('model-kind').value === 'polygon' || prompting;
+    $('polygon-options').hidden = !polygonOutput;
     $('interactor-options').hidden = !prompting; $('sample-prompts-field').hidden = !prompting;
     for (const id of ['min-pos-points', 'min-neg-points', 'box-mode', 'sample-prompts']) $(id).disabled = !prompting;
-    for (const id of ['min-distance', 'spacing-percent', 'min-area']) $(id).disabled = !segmentation;
+    for (const id of ['min-distance', 'max-error', 'min-area']) $(id).disabled = !polygonOutput;
     $('label-help').textContent = prompting ? 'Promptingは対象1個のマスクを返します。モデルの説明用ラベルを1件だけ登録してください。実際のラベルはCVATで選びます。' : $('model-kind').value === 'polyline' ? 'Line detectionのクラスIDとラベル名を登録します。1枚の画像から任意の本数の線を出力でき、各線はCVATのポリラインになります。クラスIDはモデルの出力と一致させてください。' : $('model-kind').value === 'tag' ? 'ClassificationのクラスIDとラベル名を登録します。分類結果は画像や動画の各フレームのタグになります。画像全体を分類する場合は、実行時にROIを指定しないでください。' : segmentation ? 'Segmentationのラベルをモデルの出力順に登録してください。この順番に従って、各領域にラベルを付けます。' : 'DetectionのクラスIDとラベル名を登録します。クラスIDはモデルの出力と一致させてください。';
 }
 function labelRow(value = { id: 0, name: '' }) {
@@ -79,7 +80,7 @@ function resetForm(model = null) {
     $('min-pos-points').value = interactor?.min_pos_points ?? 1; $('min-neg-points').value = interactor?.min_neg_points ?? 0;
     $('box-mode').value = interactor?.startswith_box ? 'required' : interactor?.startswith_box_optional === false ? 'disabled' : 'optional';
     $('sample-prompts').value = JSON.stringify(interactor?.sample || { pos_points: [[0, 0]], neg_points: [], obj_bbox: null }, null, 2);
-    const polygon = model?.manifest?.polygon || {}; $('min-distance').value = polygon.min_distance_px ?? 2; $('spacing-percent').value = polygon.spacing_percent ?? 1; $('min-area').value = polygon.min_area_px ?? 10;
+    const polygon = model?.manifest?.polygon || {}; $('min-distance').value = polygon.min_distance_px ?? 2; $('max-error').value = polygon.max_error_px ?? 1; $('min-area').value = polygon.min_area_px ?? 10;
     (model?.manifest?.labels || [{ id: 0, name: 'object' }]).forEach(labelRow); $('cancel-update').hidden = !model; kindChanged();
     const updating = Boolean(model?.active_revision);
     const panel = $('retained-model-files');
@@ -123,8 +124,8 @@ function readModelSettings(previous) {
     });
     const settings = { name: $('name').value.trim(), description: $('description').value,
         author_contact: $('author-contact').value.trim(), labels };
-    if (kind === 'polygon') settings.polygon = { min_distance_px: Number($('min-distance').value),
-        spacing_percent: Number($('spacing-percent').value), min_area_px: Number($('min-area').value) };
+    if (kind === 'polygon' || kind === 'interactor') settings.polygon = { min_distance_px: Number($('min-distance').value),
+        max_error_px: Number($('max-error').value), min_area_px: Number($('min-area').value) };
     if (kind === 'interactor') {
         if (labels.length !== 1) throw new Error('Promptingの説明用ラベルは1件だけにしてください。');
         settings.kind = 'interactor';
@@ -259,7 +260,8 @@ async function selectModel(id) {
     $('detail-contact').textContent = `連絡先: ${model.manifest?.author_contact || '未設定'}`; $('detail-description').textContent = model.manifest?.description || '';
     $('detail-labels').textContent = (model.manifest?.labels || []).map((label, index) => `${index}: ${label.name} (ID=${label.id}, ${label.type})`).join('\n');
     const polygon = model.manifest?.polygon;
-    $('detail-polygon').textContent = model.manifest?.kind === 'interactor' ? 'Prompting: AI assistanceのPromptingタブで利用します。マスクの穴と離れた領域を保持します。' : polygon && model.manifest?.labels?.[0]?.type === 'polygon' ? `ポリゴン変換: 頂点の最小距離 ${polygon.min_distance_px} px、周長比 ${polygon.spacing_percent}%、最小面積 ${polygon.min_area_px} px²` : '';
+    const polygonSummary = polygon && model.manifest?.labels?.some((label) => label.type === 'polygon') ? `ポリゴン変換: 頂点の最小距離 ${polygon.min_distance_px} px、輪郭の近似許容誤差 ${polygon.max_error_px} px、最小面積 ${polygon.min_area_px} px²` : '';
+    $('detail-polygon').textContent = model.manifest?.kind === 'interactor' ? `Prompting: マスクの穴と離れた領域を保持します。ポリゴン化する場合: ${polygonSummary}` : polygonSummary;
     const managed = Boolean(model.can_manage); $('owner-detail').hidden = !managed;
     for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = id === 'update-model' && Boolean(model.deleted || !model.active_revision); }
     $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-summary').textContent = ''; $('test-tags').textContent = ''; $('preview').hidden = true;
@@ -362,6 +364,16 @@ async function preview(file, result, modelId, revision) {
             }
         }
     }
+    // Overlay the same polygon outlines that the Prompting editor will use.
+    if (Array.isArray(result.polygons)) {
+        context.strokeStyle = '#00b8b8';
+        for (const points of result.polygons) {
+            context.beginPath(); context.moveTo(points[0], points[1]);
+            for (let i = 2; i < points.length; i += 2) context.lineTo(points[i], points[i + 1]);
+            context.closePath(); context.stroke();
+        }
+        context.strokeStyle = '#e84b40';
+    }
     for (const obj of Array.isArray(result) ? result : []) {
         if (obj.type === 'rectangle') { const [x1, y1, x2, y2] = obj.points; context.strokeRect(x1, y1, x2 - x1, y2 - y1); }
         else if (obj.type === 'polyline') { context.beginPath(); context.moveTo(obj.points[0], obj.points[1]); for (let i = 2; i < obj.points.length; i += 2) context.lineTo(obj.points[i], obj.points[i + 1]); context.stroke(); }
@@ -384,8 +396,8 @@ $('test-form').addEventListener('submit', (event) => { event.preventDefault(); r
             const tags = objects.filter((object) => object.type === 'tag');
             $('test-tags').textContent = tags.length ? `分類タグ: ${tags.map((tag) => `${tag.label}（信頼度 ${tag.confidence.toFixed(3)}）`).join('、')}` :
                 manifest?.labels?.some((label) => label.type === 'tag') ? '分類タグ: なし' : '';
-            $('test-summary').textContent = manifest?.kind === 'interactor' ? `出力マスク: ${result.results.mask ? 1 : 0}件。Promptで指定した対象を画像で確認してください。` : `出力件数: ${objects.length}件（図形 ${objects.length - tags.length}件、タグ ${tags.length}件）。結果を画像とタグ一覧で確認してください。`;
-            $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: result.results.length, results: result.results }, null, 2);
+            $('test-summary').textContent = manifest?.kind === 'interactor' ? `出力マスク: ${result.results.mask ? 1 : 0}件、変換後のポリゴン: ${result.results.polygons?.length ?? 0}件。ポリゴンの輪郭は青緑色で表示します。` : `出力件数: ${objects.length}件（図形 ${objects.length - tags.length}件、タグ ${tags.length}件）。結果を画像とタグ一覧で確認してください。`;
+            $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: Array.isArray(result.results) ? result.results.length : result.results.polygons?.length ?? 0, results: result.results }, null, 2);
             await preview(file, result.results, model.id, revision);
         }
     } finally { $('test-button').disabled = Boolean(selected?.deleted || !selected?.active_revision); await refreshLogs(); }

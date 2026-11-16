@@ -95,41 +95,63 @@ def is_simple_polygon(points: np.ndarray) -> bool:
 
 
 def _sample_contour(contour: np.ndarray, settings: PolygonSettings) -> np.ndarray | None:
-    points = contour.reshape(-1, 2).astype(np.float64)
-    if len(points) < 3:
-        return None
-    following = np.roll(points, -1, axis=0)
-    lengths = np.linalg.norm(following - points, axis=1)
-    if (lengths <= GEOMETRY_EPSILON).any():
-        return None
-    perimeter = float(lengths.sum())
-    step = max(settings.min_distance_px, perimeter * settings.spacing_percent / 100.0)
-    if step > 0:
-        count = int(math.floor(perimeter / step))
-        if count < 3:
-            return None
-        if count > MAX_POLYGON_VERTICES:
-            raise ValueError("polygon exceeds 4096 vertices; increase polygon spacing settings")
-        # floor count keeps the actual equal arc interval at least the requested step.
-        positions = np.arange(count, dtype=np.float64) * (perimeter / count)
-        cumulative = np.concatenate(([0.0], np.cumsum(lengths)))
-        segments = np.searchsorted(cumulative, positions, side="right") - 1
-        fractions = (positions - cumulative[segments]) / lengths[segments]
-        points = points[segments] + (following[segments] - points[segments]) * fractions[:, None]
-    elif len(points) > MAX_POLYGON_VERTICES:
-        raise ValueError("polygon exceeds 4096 vertices; increase polygon spacing settings")
+    """Approximate a closed contour without inserting points on straight edges.
 
-    # Arc distance does not guarantee a chord distance near a corner. Delete short
-    # adjacent chords until the closed ring (including last -> first) satisfies it.
-    while len(points) >= 3:
-        lengths = np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1)
+    Every retained chord must approximate its corresponding original contour arc
+    within the configured point-to-segment distance. Spacing is a strict lower
+    bound, including the closing edge; incompatible components are omitted.
+    """
+    import cv2
+
+    original = contour.reshape(-1, 2).astype(np.float64)
+    n = len(original)
+    if n < 3 or len(np.unique(original, axis=0)) != n:
+        return None
+    tolerance = settings.max_error_px + GEOMETRY_EPSILON
+
+    def arc_error(a: int, b: int) -> float:
+        arc = original[a:b + 1] if a < b else np.concatenate((original[a:], original[:b + 1]))
+        start, end = original[a], original[b]
+        direction = end - start
+        fraction = np.clip(((arc - start) @ direction) / (direction @ direction), 0., 1.)
+        return float(np.max(np.linalg.norm(arc - start - fraction[:, None] * direction, axis=1)))
+
+    def ring_valid(indices: list[int]) -> bool:
+        return len(indices) >= 3 and all(
+            arc_error(a, b) <= tolerance
+            for a, b in zip(indices, indices[1:] + indices[:1])
+        )
+
+    # OpenCV supplies a fast initial simplification. Check its approximation
+    # against finite segments (not just their supporting infinite lines).
+    lookup = {tuple(point): i for i, point in enumerate(original)}
+    approx = cv2.approxPolyDP(original.astype(np.float32), settings.max_error_px, True)
+    indices = sorted({lookup[tuple(point)] for point in approx.reshape(-1, 2)})
+    if not ring_valid(indices) or not is_simple_polygon(original[indices]):
+        indices = list(range(n))
+    if len(indices) > MAX_POLYGON_VERTICES:
+        raise ValueError("polygon exceeds 4096 vertices; increase polygon approximation error")
+
+    while len(indices) >= 3:
+        ring = original[indices]
+        lengths = np.linalg.norm(np.roll(ring, -1, axis=0) - ring, axis=1)
         short = np.flatnonzero(lengths + GEOMETRY_EPSILON < settings.min_distance_px)
         if not len(short):
             break
+        if len(indices) == 3:
+            return None
         edge = int(short[0])
-        points = np.delete(points, edge + 1 if edge < len(points) - 1 else edge, axis=0)
-    if len(points) < 3:
-        return None
+        candidates = []
+        for pos in (edge, (edge + 1) % len(indices)):
+            error = arc_error(indices[pos - 1], indices[(pos + 1) % len(indices)])
+            if error <= tolerance:
+                candidates.append((error, pos))
+        if not candidates:
+            return None
+        # Prefer the endpoint whose removal changes the outline least.
+        del indices[min(candidates)[1]]
+
+    points = original[indices]
     area = polygon_area(points)
     if area <= GEOMETRY_EPSILON or area + GEOMETRY_EPSILON < settings.min_area_px:
         return None
@@ -146,13 +168,25 @@ def _check_bitmap(bitmap, h: int, w: int) -> np.ndarray:
     return bitmap
 
 
-def encode_interactor(result, image_shape: tuple) -> dict:
+def encode_interactor(result, image_shape: tuple, settings: PolygonSettings | None = None) -> dict:
     h, w = image_shape[:2]
     if h * w > MAX_MASK_VALUES:
         raise ValueError("interactor mask exceeds pixel budget")
     bitmap = _check_bitmap(result, h, w)
     # Use CVAT's existing dense-mask adapter, retaining holes and disconnected regions.
-    return {"mask": bitmap.astype(np.uint8).tolist()} if bitmap.any() else {"shapes": []}
+    if not bitmap.any():
+        return {"shapes": []}
+    output = {"mask": bitmap.astype(np.uint8).tolist()}
+    if settings is not None:
+        polygons = []
+        total_vertices = 0
+        for points in _polygons(bitmap, settings):
+            total_vertices += len(points)
+            if len(polygons) >= MAX_OBJECTS or total_vertices > MAX_TOTAL_POLYGON_VERTICES:
+                raise ValueError("interactor polygons exceed object or vertex budget")
+            polygons.append(points.ravel().tolist())
+        output["polygons"] = polygons
+    return output
 
 
 def _polygons(bitmap: np.ndarray, settings: PolygonSettings):

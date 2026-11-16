@@ -25,6 +25,8 @@ interface InteractorShape extends MinimalShape {
 // Also supported service "confidence" attribute in attributes list with "spec_id" equal to 0
 export type InteractorResults = {
     shapes: InteractorShape[];
+    // Optional registry-generated polygons for the dense mask, in image coordinates.
+    polygons?: number[][];
 };
 
 export interface TrackerResults {
@@ -100,7 +102,10 @@ class LambdaManager {
                 } else {
                     rle.push(0, 0, maskWidth - 1, maskHeight - 1);
                 }
-                return { shapes: [{ points: rle, type: ShapeType.MASK, attributes: [] }] };
+                return {
+                    shapes: [{ points: rle, type: ShapeType.MASK, attributes: [] }],
+                    ...(Array.isArray(result.polygons) ? { polygons: result.polygons } : {}),
+                };
             }
 
             if (Array.isArray(result.shapes)) {
