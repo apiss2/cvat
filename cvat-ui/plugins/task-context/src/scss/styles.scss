@@ -25,3 +25,29 @@
         overflow-wrap: anywhere;
     }
 }
+
+// Task information shares the available Info height with the statistics table.
+.cvat-job-info-modal-window > .cvat-task-context {
+    display: flex;
+    flex-direction: column;
+    min-height: 120px;
+    margin: 8px 0;
+    padding: 12px;
+}
+
+.cvat-job-info-modal-window > .cvat-task-context > .cvat-task-context-heading {
+    flex-shrink: 0;
+}
+
+.cvat-job-info-modal-window > .cvat-task-context > .cvat-task-context-content,
+.cvat-job-info-modal-window > .cvat-task-context > .cvat-task-context-loading,
+.cvat-job-info-modal-window > .cvat-task-context > .ant-alert {
+    min-height: 0;
+    overflow: auto;
+}
+
+// Only compact statistics when the task information panel is actually rendered in Info.
+// Ant Design sets the scroll body's max-height inline from Table.scroll.y.
+.cvat-job-info-modal-window > .cvat-task-context ~ .cvat-job-info-statistics .ant-table-body {
+    max-height: 200px !important;
+}

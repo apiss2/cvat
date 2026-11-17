@@ -91,11 +91,21 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
     );
 
     const is2D = dimension === DimensionType.DIMENSION_2D;
-    const baseProps = {
+    const baseProps: React.ComponentProps<typeof Modal> = {
         cancelButtonProps: { style: { display: 'none' } },
         okButtonProps: { style: { width: 100 } },
         onOk: closeStatistics,
         width: 1024,
+        style: { top: 24, paddingBottom: 24 },
+        styles: {
+            content: {
+                display: 'flex',
+                flexDirection: 'column',
+                maxHeight: 'calc(100vh - 48px)',
+            },
+            body: { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' },
+            footer: { flexShrink: 0 },
+        },
         open: visible,
         destroyOnClose: true,
         closable: false,
@@ -265,12 +275,12 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
     return (
         <Modal {...baseProps}>
             <div className='cvat-job-info-modal-window'>
-                <Row justify='start'>
+                <Row justify='start' className='cvat-job-info-overview-heading'>
                     <Col>
                         <Text className='cvat-text'>Overview</Text>
                     </Col>
                 </Row>
-                <Row justify='start'>
+                <Row justify='start' className='cvat-job-info-overview-details'>
                     <Col span={4}>
                         <Text strong className='cvat-text'>
                             Assignee

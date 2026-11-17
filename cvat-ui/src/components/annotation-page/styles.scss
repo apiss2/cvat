@@ -297,7 +297,7 @@
         margin-top: $grid-unit-size;
     }
 
-    > div:nth-child(1) {
+    > .cvat-job-info-overview-heading {
         > div {
             > span {
                 font-size: 20px;
@@ -305,7 +305,7 @@
         }
     }
 
-    > div:nth-child(2) {
+    > .cvat-job-info-overview-details {
         > div {
             display: grid;
         }
@@ -334,6 +334,51 @@
             }
         }
     }
+}
+
+/* Scroll individual sections normally. The window scrolls only if their minimum sizes do not fit. */
+.cvat-job-info-modal-window {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.cvat-job-info-modal-window > .cvat-job-info-overview-heading,
+.cvat-job-info-modal-window > .cvat-job-info-overview-details,
+.cvat-job-info-modal-window > .cvat-job-info-bug-tracker {
+    flex-shrink: 0;
+}
+
+.cvat-job-info-modal-window > .cvat-job-info-statistics {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    min-height: 120px;
+}
+
+/* Ant Design Table/Spin wrapper chain: every intermediate flex item must be able to shrink.
+ * Recheck the rendered DOM and Info layout tests when updating Ant Design. */
+.cvat-job-info-modal-window > .cvat-job-info-statistics > .ant-col,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table-wrapper,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-spin-nested-loading,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-spin-container,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table-container {
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    min-height: 0;
+}
+
+.cvat-job-info-modal-window .cvat-job-info-statistics > .ant-col > span,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table-header {
+    flex-shrink: 0;
+}
+
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table-body {
+    min-height: 48px;
 }
 
 .ant-dropdown-menu.cvat-annotation-menu {
