@@ -69,12 +69,36 @@ async function run(f, opts = {}) {
         opts.cancelled ?? (() => false), opts.progress ?? (() => {}));
 }
 
-test('unconfigured filters select every available ordinary-job frame without reading annotations', async () => {
+test('unconfigured filters select every non-deleted frame without reading jobs or annotations', async () => {
     const f = fixture();
     f.meta.deleted_frames = [1];
+    f.jobs.length = 0;
     const plan = await buildPlan(f.api, scope, { taskFilter: {}, jobFilter: {}, filters: [] });
     assert.deepEqual(plan.frames.map((frame) => frame.frame), [0, 2, 3]);
-    assert.equal(f.gets.some(([path]) => path.endsWith('/annotations')), false);
+    assert.equal(f.gets.some(([path]) => path === '/jobs' || path.endsWith('/annotations')), false);
+    const report = await run(f, { plan });
+    assert.equal(report.error, undefined);
+    assert.deepEqual(f.calls.map((call) => call.args.frame), [0, 2, 3]);
+    assert.equal(f.gets.some(([path]) => path === '/jobs'), false);
+});
+
+test('Job condition matches no frames when no jobs are returned', async () => {
+    const f = fixture();
+    f.jobs.length = 0;
+    const plan = await buildPlan(f.api, scope, { ...condition, jobFilter: { '==': [{ var: 'id' }, 1] } });
+    assert.equal(plan.frames.length, 0);
+    assert.ok(f.gets.some(([path]) => path === '/jobs'));
+});
+
+test('empty task is skipped without requesting unavailable data metadata', async () => {
+    const f = fixture();
+    f.task.size = 0;
+    f.task.dimension = '';
+    for (const target of [scope, { type: 'project', id: 7 }]) {
+        const plan = await buildPlan(f.api, target, condition);
+        assert.equal(plan.frames.length, 0);
+    }
+    assert.equal(f.gets.some(([path]) => path.endsWith('/data/meta') || path === '/jobs'), false);
 });
 
 test('task, job and image conditions are intersected and rechecked before inference', async () => {

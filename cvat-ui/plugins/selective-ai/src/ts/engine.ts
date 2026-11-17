@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { thresholdParameters } from './model-options';
-import { CancelledError, hasRule, selectFrames, taskFilterForID, validateCondition, type Condition, type JobInfo } from './selection';
+import { CancelledError, hasRule, selectFrames, allFrames, taskFilterForID, validateCondition, type Condition, type JobInfo } from './selection';
 export type { Condition } from './selection';
 
 export interface Scope { type: 'task' | 'project'; id: number }
@@ -99,11 +99,10 @@ async function taskMatches(api: API, id: number, rule: object, cancelled: () => 
 
 async function eligibleFrames(api: API, task: TaskInfo, meta: Meta, condition: Condition,
     cancelled: () => boolean): Promise<number[]> {
-    const jobs = await getAll<JobInfo>(api, '/jobs', {
-        task_id: task.id, type: 'annotation', sort: 'id',
-        ...(hasRule(condition.jobFilter) ? { filter: JSON.stringify(condition.jobFilter) } : {}),
-    }, cancelled);
-    const candidates = selectFrames(meta, jobs, task.id);
+    const candidates = hasRule(condition.jobFilter) ?
+        selectFrames(meta, await getAll<JobInfo>(api, '/jobs', {
+            task_id: task.id, type: 'annotation', sort: 'id', filter: JSON.stringify(condition.jobFilter),
+        }, cancelled), task.id) : allFrames(meta);
     if (!candidates.length || !condition.filters.some(hasRule)) return candidates;
     if (cancelled()) throw new CancelledError();
     const result = await api.matchingFrames(task.id, candidates, condition.filters, cancelled);
@@ -115,7 +114,8 @@ async function eligibleFrames(api: API, task: TaskInfo, meta: Meta, condition: C
 }
 
 function checkTask(task: TaskInfo, scope: Scope): void {
-    if (!positiveID(task.id) || task.dimension !== '2d' || !Number.isSafeInteger(task.size) || task.size < 0 ||
+    if (!positiveID(task.id) || !Number.isSafeInteger(task.size) || task.size < 0 ||
+        (task.dimension !== '2d' && !(task.size === 0 && task.dimension === '')) ||
         (scope.type === 'task' ? task.id !== scope.id : task.project_id !== scope.id)) {
         throw new Error(`Task #${task.id}: 対象外、未初期化、または2D以外のタスクです。`);
     }
@@ -141,6 +141,8 @@ export async function buildPlan(
     for (const task of tasks) {
         if (cancelled()) throw new CancelledError();
         checkTask(task, scope);
+        // Empty tasks have no data/meta endpoint until data upload finishes.
+        if (task.size === 0) continue;
         const meta = await checkedGet<Meta>(api, `/tasks/${task.id}/data/meta`, {}, cancelled);
         if (meta.size !== task.size) throw new Error(`Task #${task.id}: フレーム数が変更されています。`);
         for (const frame of await eligibleFrames(api, task, meta, condition, cancelled)) {

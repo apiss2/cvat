@@ -11,11 +11,11 @@
 編集済みのアノテーションを保存し、対象タスクまたはプロジェクトの操作メニューから「条件を指定して自動アノテーション」を開きます。
 タスクではそのタスク、プロジェクトではその中の読み取り可能な全タスクが対象です。一覧が複数ページでも取得します。複数のタスクやプロジェクトを同時選択した状態での実行は対象外です。
 
-Task、Job、画像の各欄を開き、CVATと同じ条件ビルダーで指定します。初期状態は全条件なしです。指定済みの欄には青い印、入力途中の欄には警告色の印が付きます。TaskとJobは標準の一覧フィルターを使用し、画像は条件に合うアノテーションがあるフレームを選びます。三つの範囲はANDで組み合わせます。画像条件を指定しない場合、アノテーションの有無を問いません。通常のAnnotation Jobの範囲を対象とし、Ground TruthやReplicaを直接指定しません。重複するフレームは一度だけ選び、削除済みフレームは除外します。
+Task、Job、画像の各欄を開き、CVATと同じ条件ビルダーで指定します。初期状態は全条件なしです。指定済みの欄には青い印、入力途中の欄には警告色の印が付きます。TaskとJobは標準の一覧フィルターを使用し、画像は条件に合うアノテーションがあるフレームを選びます。三つの範囲はANDで組み合わせます。画像条件を指定しない場合、アノテーションの有無を問いません。Job条件を指定した場合だけ通常のAnnotation Jobの範囲に限定し、Ground TruthやReplicaを直接指定しません。Job条件がない場合はタスクの全フレームが対象です。重複するフレームは一度だけ選び、削除済みフレームは除外します。
 画像条件のAND、OR、NOTはアノテーション単位で評価されます。例えばLabelがAではないという条件は、Aが存在しない画像を意味しません。
 
 「対象画像を一覧表示」で対象一覧を確認し、画像ごとのチェックを変更します。一覧の表示までは推論も書き込みも行いません。フレーム番号はCVAT内で0から始まるタスク相対番号で、元動画の開始位置や間引き間隔を加えた番号ではありません。
-プロジェクトに未初期化または対応外のタスクがある場合は、黙って除外せず対象一覧の取得を失敗させます。
+画像が未登録の空タスクは候補に含めません。画像が存在する対応外のタスクは対象一覧の取得を失敗させます。
 
 ## モデルとラベルを設定する
 
@@ -52,8 +52,8 @@ CVAT_EXTENSIONS=model_registry,frame_navigation_filter,selective_ai
 
 ## 開発者向けの実装と制約
 
-cvat-ui/plugins/selective-ai/の範囲で、projectActions.itemsとtaskActions.itemsを使います。標準の実行画面、サーバー、データベースを変更しません。配備対象の選択は共通のcomponents/extensions/manage.pyで管理します。
-filter-editor.tsxは標準のTaskとJob一覧のフィールド定義、条件付きエクスポートの画像フィールド定義を再利用します。画像検索はCVAT本体のTask.annotations.searchで行い、Job一覧の範囲と交差させます。通常の連続したJob範囲とフレーム数の不一致は、範囲外の画像へ実行しないためエラーにします。filtered_exportの有効化は不要です。
+cvat-ui/plugins/selective-ai/と共通フィルター定義の範囲で、projectActions.itemsとtaskActions.itemsを使います。標準の実行画面、サーバー、データベースを変更しません。配備対象の選択は共通のcomponents/extensions/manage.pyで管理します。
+filter-editor.tsxは標準のTaskとJob一覧のフィールド定義、cvat-ui/plugins/shared/annotation-filter-config.tsの共通画像フィールド定義を再利用します。条件付きエクスポートもこの共通定義を使用し、互いのプラグイン内部には依存しません。画像検索はCVAT本体のTask.annotations.searchで行い、Job条件がある場合はJob一覧の範囲と交差させます。通常の連続したJob範囲とフレーム数の不一致は、範囲外の画像へ実行しないためエラーにします。filtered_exportの有効化は不要です。
 
 mapper.tsxは既存のLabelsMapperとそのスタイルを再利用します。入力配列をモデル単位で保持し、進捗更新で選択を初期化しません。実行中は対応付けの操作を隠しますが、状態は保持します。
 
@@ -62,7 +62,7 @@ mapper.tsxは既存のLabelsMapperとそのスタイルを再利用します。�
 ```text
 GET   /api/tasks?project_id=...&filter=...&page=...&page_size=100
 GET   /api/tasks?filter=...&page=...&page_size=100
-GET   /api/jobs?task_id=...&type=annotation&filter=...&page=...&page_size=100
+GET   /api/jobs?task_id=...&type=annotation&filter=...&page=...&page_size=100  (Job条件を指定した場合のみ)
 GET   /api/labels?task_id=...
 GET   /api/labels?project_id=...
 GET   /api/tasks/{id}

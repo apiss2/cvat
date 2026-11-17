@@ -4,7 +4,7 @@ import {
     AntdConfig, AntdWidgets, Builder, Query, Utils as QbUtils,
     type Config, type ImmutableTree,
 } from '@react-awesome-query-builder/antd';
-import { buildFields, completeTree } from './filter-config';
+import { buildFields, completeTree } from '../../../shared/annotation-filter-config';
 import type { LabelSpec } from './api';
 
 interface Props {

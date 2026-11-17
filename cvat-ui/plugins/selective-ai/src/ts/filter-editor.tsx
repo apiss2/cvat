@@ -5,17 +5,16 @@ import {
     type Config, type ImmutableTree,
 } from '@react-awesome-query-builder/antd';
 import Collapse from 'antd/lib/collapse';
-import { buildFields, completeTree } from '../../../filtered-export/src/ts/filter-config';
+import { buildFields, completeTree } from '../../../shared/annotation-filter-config';
 import { config as tasksConfig } from 'components/tasks-page/tasks-filter-configuration';
 import { config as jobsConfig } from 'components/jobs-page/jobs-filter-configuration';
 import type { LabelSpec } from './engine';
 
 type FilterLabel = Parameters<typeof buildFields>[0][number];
 const filterLabel = (label: LabelSpec): FilterLabel => ({
-    id: label.id!, name: label.name, type: label.type,
+    name: label.name,
     attributes: (label.attributes ?? []).map((attribute) => ({
-        id: attribute.id!, name: attribute.name, input_type: attribute.input_type ?? 'text',
-        default_value: attribute.default_value ?? '', values: attribute.values ?? [],
+        name: attribute.name, input_type: attribute.input_type ?? 'text', values: attribute.values ?? [],
     })),
     sublabels: (label.sublabels ?? []).map(filterLabel),
 });

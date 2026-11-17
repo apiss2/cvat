@@ -24,7 +24,7 @@ function load(name, mocks = {}, globals = {}) {
     return module.exports;
 }
 const { createAPI, errorMessage } = load('api.ts');
-const { buildFields, completeTree } = load('filter-config.ts');
+const { buildFields, completeTree } = load('../../../shared/annotation-filter-config.ts');
 const filters = [{ and: [{ '==': [{ var: 'type' }, 'tag'] }, { '==': [{ var: 'label' }, 'ready'] }] }];
 const selection = { filters, format: 'CVAT for images 1.1', saveImages: true };
 

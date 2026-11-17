@@ -30,17 +30,27 @@ export function taskFilterForID(rule: object, id: number): string {
     return JSON.stringify({ and: [{ '==': [{ var: 'id' }, id] }, rule] });
 }
 
-// Ordinary annotation jobs use inclusive, task-relative start/stop positions.
-// The range union handles overlaps without converting source-video frame numbers.
-export function selectFrames(meta: FrameMeta, jobs: JobInfo[], taskId: number): number[] {
-    if (!Number.isSafeInteger(meta.size) || meta.size < 0 || !Array.isArray(jobs)) {
-        throw new Error('フレームまたはJobの情報が不正です。');
+function frameInfo(meta: FrameMeta): { valid: (frame: number) => boolean; deleted: Set<number> } {
+    if (!Number.isSafeInteger(meta.size) || meta.size < 0) {
+        throw new Error('フレーム情報が不正です。');
     }
     const valid = (frame: number): boolean => Number.isSafeInteger(frame) && frame >= 0 && frame < meta.size;
     if (!Array.isArray(meta.deleted_frames ?? []) || !(meta.deleted_frames ?? []).every(valid)) {
         throw new Error('削除フレーム情報が不正です。');
     }
-    const deleted = new Set(meta.deleted_frames ?? []);
+    return { valid, deleted: new Set(meta.deleted_frames ?? []) };
+}
+
+export function allFrames(meta: FrameMeta): number[] {
+    const { deleted } = frameInfo(meta);
+    return Array.from({ length: meta.size }, (_, frame) => frame).filter((frame) => !deleted.has(frame));
+}
+
+// Ordinary annotation jobs use inclusive, task-relative start/stop positions.
+// The range union handles overlaps without converting source-video frame numbers.
+export function selectFrames(meta: FrameMeta, jobs: JobInfo[], taskId: number): number[] {
+    const { valid, deleted } = frameInfo(meta);
+    if (!Array.isArray(jobs)) throw new Error('Job一覧が不正です。');
     const selected = new Set<number>();
     for (const job of jobs) {
         if (job.task_id !== taskId || job.type !== 'annotation' || !valid(job.start_frame) ||
