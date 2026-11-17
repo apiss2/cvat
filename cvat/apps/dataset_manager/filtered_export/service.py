@@ -128,11 +128,20 @@ def source_revision(instance, tasks, labels, filters, jobs):
     if filters.task_filter:
         scope["task_scope"] = [_task_values(task) for task in tasks]
     if filters.job_filter:
-        scope["job_scope"] = [
-            [task.pk, _job_values(job), segment.pk, segment.start_frame,
-             segment.stop_frame, segment.type, list(segment.frames or [])]
-            for task in tasks for segment, job in jobs[task.pk]
-        ]
+        segments = {}
+        job_scope = []
+        for task in tasks:
+            for segment, job in jobs.get(task.pk, ()):
+                job_scope.append([task.pk, _job_values(job), segment.pk])
+                if segment.pk not in segments:
+                    # Range membership is determined by the bounds and task data.
+                    # Only sparse segments need their explicit frame list.
+                    segments[segment.pk] = [
+                        segment.start_frame, segment.stop_frame, segment.type,
+                        segment.frames if segment.type == "specific_frames" else None,
+                    ]
+        scope["job_scope"] = job_scope
+        scope["segment_scope"] = segments
     return fingerprint({
         "instance": [instance.__class__.__name__, instance.pk,
                      instance.updated_date.isoformat(), instance.organization_id],
@@ -150,7 +159,10 @@ def _validate_filter(instance, filters):
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
     tasks = _tasks(instance)
-    jobs = {task.pk: _annotation_jobs(task) for task in tasks} if filters.job_filter else {}
+    jobs = {
+        task.pk: _annotation_jobs(task) for task in tasks
+        if filters.matches_task(_task_values(task))
+    } if filters.job_filter else {}
     return tasks, labels, jobs
 
 

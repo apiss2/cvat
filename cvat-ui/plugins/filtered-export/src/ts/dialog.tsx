@@ -78,6 +78,13 @@ export function openDialog(api: API, title: string, onClose: () => void): Dialog
         };
         return (
             <Modal open wrapClassName='cvat-filtered-export-modal' title={`条件を指定してエクスポート: ${title}`} width={900}
+                style={{ top: 12, maxWidth: 'calc(100vw - 24px)', paddingBottom: 0 }}
+                styles={{
+                    content: { display: 'flex', flexDirection: 'column', maxHeight: 'calc(100dvh - 24px)' },
+                    header: { flexShrink: 0, overflowWrap: 'anywhere' },
+                    body: { flex: '1 1 auto', minHeight: 0, minWidth: 0, overflow: 'auto' },
+                    footer: { flexShrink: 0 },
+                }}
                 onCancel={() => { if (!session.busy) dispose(); }} closable={!busy} maskClosable={false} keyboard={!busy}
                 footer={[
                     <Button key='close' disabled={busy} onClick={dispose}>閉じる</Button>,
@@ -102,7 +109,8 @@ export function openDialog(api: API, title: string, onClose: () => void): Dialog
                     {preview && <>
                         {preview.count ? <strong>出力対象: {preview.count}フレーム</strong> :
                             <Alert type='warning' message='対象画像がありません。' />}
-                        <Table size='small' rowKey='id' dataSource={preview.tasks} pagination={{ pageSize: 8 }} columns={[
+                        <Table size='small' rowKey='id' dataSource={preview.tasks} pagination={{ pageSize: 8 }}
+                            scroll={{ x: 480 }} columns={[
                             { title: 'タスクID', dataIndex: 'id' }, { title: 'タスク名', dataIndex: 'name' },
                             { title: '対象数', dataIndex: 'count' }, { title: '有効フレーム数', dataIndex: 'total' },
                         ]} />

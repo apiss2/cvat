@@ -59,19 +59,27 @@ export default function FilterEditor({ labels, disabled, onChange }: Props): JSX
                 <div className='query-builder-container'><div className='query-builder'><Builder {...props} /></div></div>
             )} />
     );
-    const summary = (indices: number[]): string => {
-        if (indices.some((index) => !report.validity[index])) return '未入力';
-        return indices.some((index) => Object.keys(report.rules[index]).length) ? '条件あり' : 'すべて';
+    const indicator = (indices: number[]): JSX.Element | null => {
+        const invalid = indices.some((index) => !report.validity[index]);
+        const active = indices.some((index) => Object.keys(report.rules[index]).length > 0);
+        if (!invalid && !active) return null;
+        const label = invalid ? '未入力の条件' : 'フィルター設定済み';
+        return (
+            <span role='img' aria-label={label} title={label} style={{
+                display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                backgroundColor: invalid ? '#d4380d' : '#1677ff',
+            }} />
+        );
     };
     return (
         <div className='cvat-filters-modal'>
-            <Collapse accordion size='small' defaultActiveKey='images' items={[
-                { key: 'task', label: 'Task', extra: summary([2]), children: render(task, 2, setTask) },
-                { key: 'job', label: 'Job', extra: summary([3]), children: render(job, 3, setJob) },
+            <Collapse accordion size='small' items={[
+                { key: 'task', label: 'Task', extra: indicator([2]), children: render(task, 2, setTask) },
+                { key: 'job', label: 'Job', extra: indicator([3]), children: render(job, 3, setJob) },
                 {
                     key: 'images',
                     label: <span title='条件に合うアノテーションがある画像を選択し、他のアノテーションも出力します。'>画像</span>,
-                    extra: summary([0, 1]),
+                    extra: indicator([0, 1]),
                     children: <>
                         {hasElements && <strong>Objects</strong>}
                         {render(objects, 0, setObjects)}

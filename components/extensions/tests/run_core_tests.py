@@ -272,6 +272,35 @@ def test_filtered_export_routes_are_reachable_from_the_root_urlconf(
     assert route.kwargs.get("preview_only", False) == (operation == "preview")
 
 
+@pytest.mark.parametrize("mode", ["annotation", "interpolation"])
+def test_filtered_export_job_frames_use_real_segment_model(user, mode):
+    from cvat.apps.dataset_manager.filtered_export.selection import AnnotationFilter
+    from cvat.apps.dataset_manager.filtered_export.service import _annotation_jobs, _job_frames
+
+    data = models.Data.objects.create(
+        size=6, start_frame=10, stop_frame=25, frame_filter="step=3",
+        chunk_size=1, image_quality=100, original_chunk_type="video" if mode == "interpolation" else "imageset",
+        compressed_chunk_type="imageset",
+    )
+    task = models.Task.objects.create(
+        name="filtered export", owner=user, data=data, dimension="2d",
+        mode=mode, media_type="image",
+    )
+    first = models.Segment.objects.create(task=task, start_frame=0, stop_frame=2)
+    second = models.Segment.objects.create(task=task, start_frame=2, stop_frame=4)
+    third = models.Segment.objects.create(task=task, start_frame=4, stop_frame=5)
+    models.Job.objects.create(segment=first, state="completed")
+    models.Job.objects.create(segment=second, state="completed")
+    models.Job.objects.create(segment=third, state="new")
+    assert list(first.frame_set) == [10, 13, 16]
+    assert list(second.frame_set) == [16, 19, 22]
+    assert list(third.frame_set) == [22, 25]
+    filters = AnnotationFilter.parse([], job_filter={"==": [{"var": "state"}, "completed"]})
+    # Reload the model and relationships from the DB, rather than supplying a mock frame_set.
+    task = models.Task.objects.get(pk=task.pk)
+    assert _job_frames(task, _annotation_jobs(task), filters) == {0, 1, 2, 3, 4}
+
+
 @pytest.mark.parametrize("method", ["get", "head"])
 @pytest.mark.parametrize("trailing_slash", [False, True])
 def test_legacy_annotation_download_keeps_its_gone_response(

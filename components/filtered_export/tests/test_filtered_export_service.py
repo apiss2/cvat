@@ -445,3 +445,35 @@ class TestService:
             with pytest.raises(ValidationError):
                 self.service.preview("task", 1, AnnotationFilter.parse([], **kwargs))
         assert not self.loads
+
+    def test_revision_does_not_read_jobs_for_excluded_tasks(self):
+        self.tasks[2].subset = "train"
+        self.filters = AnnotationFilter.parse(
+            [], task_filter=rule("subset", "test"), job_filter=rule("state", "completed"),
+        )
+        with patch.object(self.service, "_annotation_jobs", wraps=self.service._annotation_jobs) as load:
+            self.service.preview("project", 20, self.filters)
+        load.assert_called_once_with(self.task)
+
+    def test_revision_uses_range_bounds_without_expanding_frames(self):
+        class BoundsOnly:
+            pk = 10
+            start_frame = 0
+            stop_frame = 999999
+            type = "range"
+
+            @property
+            def frames(self):
+                raise AssertionError("Range segments need no explicit frame list")
+
+            @property
+            def frame_set(self):
+                raise AssertionError("Revision must not enumerate a range")
+
+        segment = BoundsOnly()
+        job = types.SimpleNamespace(pk=10, stage="annotation", state="completed", status="annotation")
+        self.filters = AnnotationFilter.parse([], job_filter=rule("state", "completed"))
+        args = (self.project, [self.task], self.labels, self.filters, {self.task.pk: [(segment, job)]})
+        first = self.service.source_revision(*args)
+        segment.stop_frame += 1
+        assert self.service.source_revision(*args) != first

@@ -237,3 +237,20 @@ test('all three scope editors invalidate the preview and remove duplicated expla
     assert.ok(!dialog.includes('description='));
     assert.ok(!dialog.includes('例:'));
 });
+
+test('filter panels start closed and indicate only configured or unfinished filters', () => {
+    const code = fs.readFileSync(path.join(source, 'filter-editor.tsx'), 'utf8');
+    assert.ok(!code.includes('defaultActiveKey'));
+    assert.ok(!code.includes('条件あり'));
+    assert.ok(code.includes('if (!invalid && !active) return null;'));
+    assert.ok(code.includes('aria-label={label}'));
+    assert.equal((code.match(/useState<ImmutableTree>\(emptyTree\)/g) || []).length, 4);
+});
+
+test('dialog bounds its height and scrolls its body instead of its action buttons', () => {
+    const code = fs.readFileSync(path.join(source, 'dialog.tsx'), 'utf8');
+    assert.ok(code.includes("maxHeight: 'calc(100dvh - 24px)'"));
+    assert.ok(code.includes("body: { flex: '1 1 auto', minHeight: 0, minWidth: 0, overflow: 'auto' }"));
+    assert.ok(code.includes('footer: { flexShrink: 0 }'));
+    assert.ok(code.includes("maxWidth: 'calc(100vw - 24px)'"));
+});
