@@ -74,7 +74,9 @@ test('the shared Info modal bounds its body and keeps the original statistics ta
                 assert.equal(modal.props.styles.content.flexDirection, 'column');
                 assert.equal(modal.props.styles.content.maxHeight, 'calc(100vh - 48px)');
                 assert.equal(modal.props.styles.body.minHeight, 0);
-                assert.equal(modal.props.styles.body.overflowY, 'auto');
+                assert.equal(modal.props.styles.body.display, 'flex');
+                assert.equal(modal.props.styles.body.flexDirection, 'column');
+                assert.equal(modal.props.styles.body.overflow, 'hidden');
                 assert.equal(modal.props.styles.footer.flexShrink, 0);
                 const table = find(modal, (node) => node.type === 'Table');
                 if (collecting) {
