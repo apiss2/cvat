@@ -17,7 +17,11 @@ const builder: ComponentBuilder = ({ core, store, dispatch, actionCreators }) =>
         if (dialog) { dialog.focus(); return; }
         if (!identity()) return;
         const api = createAPI((request) => Axios.request(request), core.config.backendAPI,
-            store.getState().organizations.current?.slug ?? '', identity);
+            store.getState().organizations.current?.slug ?? '', identity, async (id) => {
+                const [task] = await core.tasks.get({ id });
+                if (!task || task.id !== id) throw new Error('対象Taskを取得できません。');
+                return task;
+            });
         dialog = openDialog({
             api, scope, title: `${scope.type} #${target.id} ${target.name}`,
             loadModels: async () => (await core.lambda.list()).models as unknown as Model[],
@@ -30,7 +34,7 @@ const builder: ComponentBuilder = ({ core, store, dispatch, actionCreators }) =>
         const component = (({ targetProps }: { targetProps: { taskInstance?: Target; projectInstance?: Target } }) => {
             const target = type === 'task' ? targetProps.taskInstance : targetProps.projectInstance;
             return {
-                key: 'selective-ai', label: 'タグ条件で自動アノテーション',
+                key: 'selective-ai', label: '条件を指定して自動アノテーション',
                 disabled: !target || target.dimension !== '2d' || store.getState()[type === 'task' ? 'tasks' : 'projects'].selected.length > 1,
                 onClick: () => { if (target) open({ type, id: target.id }, target); },
             };

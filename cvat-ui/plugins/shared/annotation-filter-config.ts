@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
 import type { Config, Field } from '@react-awesome-query-builder/antd';
-import type { LabelSpec } from './api';
+// Shared field schema: neither consumer depends on the other's API or plugin entrypoint.
+interface LabelSpec {
+    name: string;
+    attributes: { name: string; input_type: string; values: string[] }[];
+    sublabels: LabelSpec[];
+}
 
 // The display filter's field names and JsonLogic representation are retained.
 // Browser-local ObjectID and transient Votes are not persisted export criteria.

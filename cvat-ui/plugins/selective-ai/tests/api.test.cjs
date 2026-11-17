@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createAPI } = require('./load.cjs')('api.ts');
+const load = require('./load.cjs');
+const { createAPI } = load('api.ts', { './selection': load('selection.ts') });
 
 test('adapter uses shared transport and pins organization on all requests', async () => {
     const calls = [];
@@ -40,4 +41,16 @@ test('relative path escape and foreign next URLs cannot be sent', async () => {
     let sent = 0; const api = createAPI(async () => { sent++; return { data: {} }; }, '/api', '', () => 'u1');
     for (const path of ['//evil.invalid/', 'https://evil.invalid', '/../tasks']) await assert.rejects(api.get(path));
     assert.throws(() => api.infer(5, '../requests', {})); assert.equal(sent, 0);
+});
+
+test('identity changes while loading matching frames prevent search and mutation', async () => {
+    let identity = 'user1';
+    let searched = false;
+    const api = createAPI(async () => { throw new Error('unexpected transport'); }, '/api', '', () => identity,
+        async () => {
+            identity = 'user2';
+            return { size: 2, annotations: { clear: async () => { searched = true; } } };
+        });
+    await assert.rejects(api.matchingFrames(5, [0], [{ '==': [{ var: 'label' }, 'A'] }], () => false), /利用者または組織/);
+    assert.equal(searched, false);
 });
