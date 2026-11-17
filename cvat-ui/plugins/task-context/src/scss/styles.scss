@@ -25,3 +25,9 @@
         overflow-wrap: anywhere;
     }
 }
+
+// Only compact statistics when the task information panel is actually rendered in Info.
+// Ant Design sets the scroll body's max-height inline from Table.scroll.y.
+.cvat-job-info-modal-window > .cvat-task-context ~ .cvat-job-info-statistics .ant-table-body {
+    max-height: 200px !important;
+}
