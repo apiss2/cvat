@@ -90,6 +90,8 @@ test('the shared Info modal bounds its body and keeps the original statistics ta
                 }
                 const window = find(modal, (node) => node.props?.className === 'cvat-job-info-modal-window');
                 const children = window.children.flat();
+                assert.equal(children[0].props.className, 'cvat-job-info-overview-heading');
+                assert.equal(children[1].props.className, 'cvat-job-info-overview-details');
                 const statistics = children.findIndex((node) => node?.props?.className === 'cvat-job-info-statistics');
                 assert.ok(statistics >= 0);
                 const section = children.findIndex((node) => node?.type === Section);
@@ -104,4 +106,42 @@ test('only a rendered task context panel in Info can compact the following stati
     const css = fs.readFileSync(path.resolve(__dirname, '../src/scss/styles.scss'), 'utf8');
     assert.match(css, /\.cvat-job-info-modal-window > \.cvat-task-context ~ \.cvat-job-info-statistics \.ant-table-body\s*\{\s*max-height: 200px !important;\s*\}/);
     assert.equal((css.match(/max-height:\s*200px/g) || []).length, 1);
+});
+
+test('the shared Info styles keep the fallback scroll region and the Ant Design flex chain', () => {
+    const css = fs.readFileSync(path.resolve(__dirname, '../../../src/components/annotation-page/styles.scss'), 'utf8');
+    const windowSelector = '.cvat-job-info-modal-window';
+    const statistics = `${windowSelector} .cvat-job-info-statistics`;
+    // Inspect flat layout rules, not the unrelated nested SCSS rules earlier in the file.
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selectors, declarations]) => ({
+        selectors: selectors.replace(/\/\*[\s\S]*?\*\//g, '').split(',').map((selector) => selector.trim()),
+        declarations: Object.fromEntries(declarations.split(';').map((part) => part.trim())
+            .filter((part) => part.includes(':')).map((part) => {
+                const split = part.indexOf(':');
+                return [part.slice(0, split).trim(), part.slice(split + 1).trim()];
+            })),
+    }));
+    function check(selector, expected) {
+        const matches = rules.filter((rule) => rule.selectors.includes(selector));
+        assert.ok(matches.length, `Missing layout rule: ${selector}`);
+        const declarations = Object.assign({}, ...matches.map((rule) => rule.declarations));
+        for (const [property, value] of Object.entries(expected)) {
+            assert.equal(declarations[property], value, `${selector}: ${property}`);
+        }
+    }
+    check(windowSelector, { display: 'flex', 'flex-direction': 'column', 'min-height': '0', 'overflow-y': 'auto' });
+    for (const name of ['overview-heading', 'overview-details', 'bug-tracker']) {
+        check(`${windowSelector} > .cvat-job-info-${name}`, { 'flex-shrink': '0' });
+    }
+    check(`${windowSelector} > .cvat-job-info-statistics`, {
+        display: 'flex', 'flex-direction': 'column', 'flex-wrap': 'nowrap', 'min-height': '120px',
+    });
+    const flexible = { display: 'flex', 'flex-direction': 'column', flex: '0 1 auto', 'min-height': '0' };
+    check(`${windowSelector} > .cvat-job-info-statistics > .ant-col`, flexible);
+    for (const name of ['table-wrapper', 'spin-nested-loading', 'spin-container', 'table', 'table-container']) {
+        check(`${statistics} .ant-${name}`, flexible);
+    }
+    check(`${statistics} > .ant-col > span`, { 'flex-shrink': '0' });
+    check(`${statistics} .ant-table-header`, { 'flex-shrink': '0' });
+    check(`${statistics} .ant-table-body`, { 'min-height': '48px' });
 });
