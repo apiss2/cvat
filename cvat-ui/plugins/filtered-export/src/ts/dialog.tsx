@@ -29,6 +29,8 @@ export function openDialog(api: API, title: string, onClose: () => void): Dialog
     function Dialog(): JSX.Element {
         const [options, setOptions] = useState<Options>();
         const [filters, setFilters] = useState<object[]>([]);
+        const [taskFilter, setTaskFilter] = useState<object>({});
+        const [jobFilter, setJobFilter] = useState<object>({});
         const [filterValid, setFilterValid] = useState(false);
         const [format, setFormat] = useState('');
         const [saveImages, setSaveImages] = useState(true);
@@ -45,11 +47,12 @@ export function openDialog(api: API, title: string, onClose: () => void): Dialog
             }).catch((reason) => { if (!session.disposed) setError(errorMessage(reason)); });
         }, []);
         const previousFilters = useRef('');
-        const changeFilters = useCallback((next: object[], valid: boolean): void => {
-            const signature = JSON.stringify([next, valid]);
+        const changeFilters = useCallback((next: object[], valid: boolean, taskRule: object, jobRule: object): void => {
+            const signature = JSON.stringify([next, valid, taskRule, jobRule]);
             if (previousFilters.current === signature) return;
             previousFilters.current = signature;
-            setFilters(next); setFilterValid(valid); setPreview(undefined); setError('');
+            setFilters(next); setTaskFilter(taskRule); setJobFilter(jobRule);
+            setFilterValid(valid); setPreview(undefined); setError('');
         }, []);
         const run = async (exporting: boolean): Promise<void> => {
             if (session.busy || session.disposed || enqueued || !options || !filterValid ||
@@ -57,11 +60,11 @@ export function openDialog(api: API, title: string, onClose: () => void): Dialog
             session.busy = true; setBusy(true); setError(''); setUncertain(false);
             try {
                 if (exporting && preview) {
-                    await api.export({ filters, format, saveImages }, preview.revision);
+                    await api.export({ filters, taskFilter, jobFilter, format, saveImages }, preview.revision);
                     if (!session.disposed) setEnqueued(true);
                 } else {
                     setPreview(undefined);
-                    const result = await api.preview(filters);
+                    const result = await api.preview(filters, taskFilter, jobFilter);
                     if (!session.disposed) setPreview(result);
                 }
             } catch (reason) {
@@ -79,30 +82,26 @@ export function openDialog(api: API, title: string, onClose: () => void): Dialog
                 footer={[
                     <Button key='close' disabled={busy} onClick={dispose}>閉じる</Button>,
                     <Button key='preview' disabled={!options || !filterValid || busy || enqueued}
-                        onClick={() => void run(false)}>対象件数を確認</Button>,
+                        loading={busy && !preview} onClick={() => void run(false)}>対象件数を確認</Button>,
                     <Button key='export' type='primary' disabled={!preview?.count || !filterValid || !format || busy || enqueued}
-                        loading={busy} onClick={() => void run(true)}>エクスポート</Button>,
+                        loading={busy && !!preview} onClick={() => void run(true)}>エクスポート</Button>,
                 ]}
             >
-                <Space direction='vertical' style={{ width: '100%' }}>
-                    <Alert type='info' message='条件に合うアノテーションがある画像を選択します。'
-                        description='表示フィルターと同じく、条件は一つのアノテーションに対して評価します。選択画像の他のアノテーションは除外しません。保存済みデータを使用し、元データは変更しません。' />
+                <Space direction='vertical' size={12} style={{ width: '100%' }}>
                     {error && <Alert type='error' message={error} />}
-                    {uncertain && <Alert type='warning' message='応答を確認できなかった場合も、処理が開始されている可能性があります。再実行前にRequestsを確認してください。' />}
-                    {(enqueued || uncertain) && <a href='/requests'>Requestsで処理状況とダウンロードを確認</a>}
-                    {enqueued && <Alert type='success' message='エクスポートを受け付けました。この画面は閉じられます。' />}
+                    {uncertain && <Alert type='warning' message={<>再実行前に <a href='/requests'>Requests</a> で受付状況を確認してください。</>} />}
+                    {enqueued && <Alert type='success' message={<>受付完了。<a href='/requests'>Requests</a> からダウンロードできます。</>} />}
                     {options && <FilterEditor labels={options.labels} disabled={busy || enqueued} onChange={changeFilters} />}
-                    <span>例: Typeがtag、かつLabelが対象のタグ名。条件が空の場合はすべての有効画像を選択します。</span>
                     <Form layout='vertical' disabled={!options || busy || enqueued}>
-                        <Form.Item label='出力形式'>
+                        <Form.Item label='出力形式' style={{ marginBottom: 8 }}>
                             <Select value={format || undefined} options={options?.formats.map((name) => ({ value: name, label: name }))}
                                 onChange={setFormat} />
                         </Form.Item>
-                        <Form.Item><Checkbox checked={saveImages} onChange={(event) => setSaveImages(event.target.checked)}>画像を含める</Checkbox></Form.Item>
+                        <Form.Item style={{ marginBottom: 0 }}><Checkbox checked={saveImages} onChange={(event) => setSaveImages(event.target.checked)}>画像を含める</Checkbox></Form.Item>
                     </Form>
-                    <span>保存できるアノテーションや未対応データの扱いは、通常の各出力形式の仕様に従います。</span>
                     {preview && <>
-                        <Alert type={preview.count ? 'info' : 'warning'} message={`出力対象: ${preview.count}フレーム`} />
+                        {preview.count ? <strong>出力対象: {preview.count}フレーム</strong> :
+                            <Alert type='warning' message='対象画像がありません。' />}
                         <Table size='small' rowKey='id' dataSource={preview.tasks} pagination={{ pageSize: 8 }} columns={[
                             { title: 'タスクID', dataIndex: 'id' }, { title: 'タスク名', dataIndex: 'name' },
                             { title: '対象数', dataIndex: 'count' }, { title: '有効フレーム数', dataIndex: 'total' },

@@ -4,21 +4,26 @@ import {
     AntdConfig, AntdWidgets, Builder, Query, Utils as QbUtils,
     type Config, type ImmutableTree,
 } from '@react-awesome-query-builder/antd';
-import { buildFields, completeTree } from './filter-config';
+import Collapse from 'antd/lib/collapse';
+import { buildFields, buildScopeFields, completeTree } from './filter-config';
 import type { LabelSpec } from './api';
 
 interface Props {
     labels: LabelSpec[];
     disabled: boolean;
-    onChange(filters: object[], valid: boolean): void;
+    onChange(filters: object[], valid: boolean, taskFilter: object, jobFilter: object): void;
 }
 const emptyTree = (): ImmutableTree => QbUtils.loadTree({ type: 'group', id: QbUtils.uuid() });
 
 export default function FilterEditor({ labels, disabled, onChange }: Props): JSX.Element {
     const [objects, setObjects] = useState<ImmutableTree>(emptyTree);
     const [elements, setElements] = useState<ImmutableTree>(emptyTree);
-    const configs = useMemo(() => [false, true].map((keypoints): Config => ({
-        ...AntdConfig, fields: buildFields(labels, keypoints),
+    const [task, setTask] = useState<ImmutableTree>(emptyTree);
+    const [job, setJob] = useState<ImmutableTree>(emptyTree);
+    const configs = useMemo(() => [
+        buildFields(labels), buildFields(labels, true), buildScopeFields('task'), buildScopeFields('job'),
+    ].map((fields): Config => ({
+        ...AntdConfig, fields,
         settings: { ...AntdConfig.settings,
             renderField: (props: any) => <AntdWidgets.FieldDropdown {...props} />,
         },
@@ -31,15 +36,19 @@ export default function FilterEditor({ labels, disabled, onChange }: Props): JSX
         },
     })), [configs, disabled]);
     const hasElements = labels.some((label) => label.sublabels.length > 0);
+    const trees = [objects, elements, task, job];
+    const active = (index: number): boolean => index !== 1 || hasElements;
+    const validTree = (tree: ImmutableTree, index: number): boolean => completeTree(
+        QbUtils.getTree(tree), configs[index].operators,
+    ) && QbUtils.isValidTree(tree, configs[index]);
     useEffect(() => {
-        const trees = hasElements ? [objects, elements] : [objects];
-        const valid = trees.every((tree, index) => completeTree(
-            QbUtils.getTree(tree), configs[index].operators,
-        ) && QbUtils.isValidTree(tree, configs[index]));
-        const filters = trees.map((tree, index) => QbUtils.jsonLogicFormat(tree, configs[index]).logic || {});
+        const valid = trees.every((tree, index) => !active(index) || validTree(tree, index));
+        const rules = trees.map((tree, index) => active(index) ?
+            QbUtils.jsonLogicFormat(tree, configs[index]).logic || {} : {});
+        const filters = rules.slice(0, 2);
         while (filters.length && !Object.keys(filters[filters.length - 1]).length) filters.pop();
-        onChange(filters, valid);
-    }, [objects, elements, configs, hasElements, onChange]);
+        onChange(filters, valid, rules[2], rules[3]);
+    }, [objects, elements, task, job, configs, hasElements, onChange]);
     const render = (tree: ImmutableTree, index: number, change: (value: ImmutableTree) => void): JSX.Element => (
         <Query {...displayedConfigs[index]}
             value={tree} onChange={(next) => { if (!disabled) change(next); }}
@@ -47,11 +56,28 @@ export default function FilterEditor({ labels, disabled, onChange }: Props): JSX
                 <div className='query-builder-container'><div className='query-builder'><Builder {...props} /></div></div>
             )} />
     );
+    const summary = (indices: number[]): string => {
+        const shown = indices.filter(active);
+        if (shown.some((index) => !validTree(trees[index], index))) return '未入力';
+        return shown.some((index) => Object.keys(
+            QbUtils.jsonLogicFormat(trees[index], configs[index]).logic || {},
+        ).length) ? '条件あり' : 'すべて';
+    };
     return (
         <div className='cvat-filters-modal'>
-            <strong>Objects</strong>
-            {render(objects, 0, setObjects)}
-            {hasElements && <><strong>Elements</strong>{render(elements, 1, setElements)}</>}
+            <Collapse size='small' defaultActiveKey={['images']} items={[
+                { key: 'task', label: 'Task', extra: summary([2]), children: render(task, 2, setTask) },
+                { key: 'job', label: 'Job', extra: summary([3]), children: render(job, 3, setJob) },
+                {
+                    key: 'images',
+                    label: <span title='条件に合うアノテーションがある画像を選択し、他のアノテーションも出力します。'>画像</span>,
+                    extra: summary([0, 1]),
+                    children: <>
+                        {render(objects, 0, setObjects)}
+                        {hasElements && <><strong>Elements</strong>{render(elements, 1, setElements)}</>}
+                    </>,
+                },
+            ]} />
         </div>
     );
 }
