@@ -250,6 +250,7 @@ def _pixel_element(path: Path, ds, syntax):
 def _decoded_frames(path: Path, ds, *, temp_dir: Path | None = None):
     from pydicom.pixels import get_decoder
     from pydicom.pixels.utils import as_pixel_options
+    from pydicom.uid import JPEG2000TransferSyntaxes, JPEGLSTransferSyntaxes, JPEGTransferSyntaxes
 
     from .video import is_video_transfer_syntax, iter_video_frames
 
@@ -266,6 +267,16 @@ def _decoded_frames(path: Path, ds, *, temp_dir: Path | None = None):
     except NotImplementedError as exc:
         raise DicomImportError("Unsupported DICOM transfer syntax") from exc
     options = as_pixel_options(ds)
+    # JPEG-family decoders return color-by-pixel data (or set their own
+    # output layout). A stored PlanarConfiguration=1 must not make pydicom
+    # reshape that interleaved output as separate planes before color conversion.
+    # Native pixels and RLE retain their own layout; keep the original tags.
+    if (
+        options.get("samples_per_pixel") == 3
+        and options.get("planar_configuration") == 1
+        and syntax in JPEGTransferSyntaxes + JPEGLSTransferSyntaxes + JPEG2000TransferSyntaxes
+    ):
+        options["planar_configuration"] = 0
     options.update(pixel_keyword="PixelData", pixel_vr=element.VR or "OW")
     with path.open("rb") as source:
         source.seek(element.value_tell)
