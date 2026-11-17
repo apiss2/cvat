@@ -247,10 +247,22 @@ def _pixel_element(path: Path, ds, syntax):
     return element
 
 
+def _needs_planar_correction(ds, syntax) -> bool:
+    from pydicom.uid import JPEG2000, JPEG2000Lossless
+
+    # DICOM requires PlanarConfiguration=0 for YBR_RCT. Correct only the
+    # known invalid combination; other layouts retain their existing meaning.
+    return (
+        syntax in (JPEG2000Lossless, JPEG2000)
+        and getattr(ds, "PhotometricInterpretation", None) == "YBR_RCT"
+        and getattr(ds, "SamplesPerPixel", None) == 3
+        and getattr(ds, "PlanarConfiguration", None) == 1
+    )
+
+
 def _decoded_frames(path: Path, ds, *, temp_dir: Path | None = None):
     from pydicom.pixels import get_decoder
     from pydicom.pixels.utils import as_pixel_options
-    from pydicom.uid import JPEG2000TransferSyntaxes, JPEGLSTransferSyntaxes, JPEGTransferSyntaxes
 
     from .video import is_video_transfer_syntax, iter_video_frames
 
@@ -267,15 +279,9 @@ def _decoded_frames(path: Path, ds, *, temp_dir: Path | None = None):
     except NotImplementedError as exc:
         raise DicomImportError("Unsupported DICOM transfer syntax") from exc
     options = as_pixel_options(ds)
-    # JPEG-family decoders return color-by-pixel data (or set their own
-    # output layout). A stored PlanarConfiguration=1 must not make pydicom
-    # reshape that interleaved output as separate planes before color conversion.
-    # Native pixels and RLE retain their own layout; keep the original tags.
-    if (
-        options.get("samples_per_pixel") == 3
-        and options.get("planar_configuration") == 1
-        and syntax in JPEGTransferSyntaxes + JPEGLSTransferSyntaxes + JPEG2000TransferSyntaxes
-    ):
+    if _needs_planar_correction(ds, syntax):
+        # The decoder returns interleaved RGB, not separate component planes.
+        # Change the decoder options only, never the dataset or saved tags.
         options["planar_configuration"] = 0
     options.update(pixel_keyword="PixelData", pixel_vr=element.VR or "OW")
     with path.open("rb") as source:
@@ -477,6 +483,7 @@ class Plan:
     skipped_tasks: set[str] = field(default_factory=set)
     failed_tasks: dict[str, str] = field(default_factory=dict)
     high_bit_checked: int = 0
+    planar_configuration_corrected: int = 0
     ignored_files: int = 0
     study_uids: dict[str, str] = field(default_factory=dict)
 
@@ -546,8 +553,10 @@ def prepare(
                     # Group directories are numbered; basenames retain the reference naming.
                     folder = folders.setdefault(task_name, output / str(len(folders)))
                     folder.mkdir(exist_ok=True)
+                    planar_corrected = False
                     if reader is None:
                         _count, _shape, checked = _pixel_parameters(ds)
+                        planar_corrected = _needs_planar_correction(ds, _transfer_syntax(ds))
                         factory = lambda: iter_dicom_frames(decoding_path, ds, temp_dir=folder)
                     else:
                         pixels, checked = decode_pixels(ds)
@@ -575,6 +584,7 @@ def prepare(
                     else:
                         write_mp4(target, factory, ds)
                     plan.high_bit_checked += int(checked)
+                    plan.planar_configuration_corrected += int(planar_corrected)
                     if not duplicate:
                         task.media.append(target)
                         task.tags[filename] = tags
