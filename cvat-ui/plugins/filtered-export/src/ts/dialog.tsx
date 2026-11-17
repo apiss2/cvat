@@ -90,7 +90,7 @@ export function openDialog(api: API, title: string, onClose: () => void): Dialog
                 <Space direction='vertical' size={12} style={{ width: '100%' }}>
                     {error && <Alert type='error' message={error} />}
                     {uncertain && <Alert type='warning' message={<>再実行前に <a href='/requests'>Requests</a> で受付状況を確認してください。</>} />}
-                    {enqueued && <Alert type='success' message={<>受付完了。<a href='/requests'>Requests</a> からダウンロードできます。</>} />}
+                    {enqueued && <Alert type='success' message={<>受付完了。<a href='/requests'>Requests</a> で処理状況を確認できます。</>} />}
                     {options && <FilterEditor labels={options.labels} disabled={busy || enqueued} onChange={changeFilters} />}
                     <Form layout='vertical' disabled={!options || busy || enqueued}>
                         <Form.Item label='出力形式' style={{ marginBottom: 8 }}>

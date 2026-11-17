@@ -230,7 +230,7 @@ test('all three scope editors invalidate the preview and remove duplicated expla
     const editor = fs.readFileSync(path.join(source, 'filter-editor.tsx'), 'utf8');
     const dialog = fs.readFileSync(path.join(source, 'dialog.tsx'), 'utf8');
     for (const scope of ['task', 'job', 'images']) assert.ok(editor.includes("key: '" + scope + "'"));
-    assert.ok(editor.includes('onChange(filters, valid, rules[2], rules[3])'));
+    assert.ok(editor.includes('onChange(filters, validity.every(Boolean), rules[2], rules[3])'));
     assert.ok(dialog.includes('JSON.stringify([next, valid, taskRule, jobRule])'));
     assert.ok(dialog.includes('setPreview(undefined)'));
     assert.ok(dialog.includes('api.preview(filters, taskFilter, jobFilter)'));

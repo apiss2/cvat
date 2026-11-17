@@ -36,19 +36,22 @@ export default function FilterEditor({ labels, disabled, onChange }: Props): JSX
         },
     })), [configs, disabled]);
     const hasElements = labels.some((label) => label.sublabels.length > 0);
-    const trees = [objects, elements, task, job];
-    const active = (index: number): boolean => index !== 1 || hasElements;
-    const validTree = (tree: ImmutableTree, index: number): boolean => completeTree(
-        QbUtils.getTree(tree), configs[index].operators,
-    ) && QbUtils.isValidTree(tree, configs[index]);
-    useEffect(() => {
-        const valid = trees.every((tree, index) => !active(index) || validTree(tree, index));
+    const report = useMemo(() => {
+        const trees = [objects, elements, task, job];
+        const active = (index: number): boolean => index !== 1 || hasElements;
+        const validity = trees.map((tree, index) => !active(index) || (completeTree(
+            QbUtils.getTree(tree), configs[index].operators,
+        ) && QbUtils.isValidTree(tree, configs[index])));
         const rules = trees.map((tree, index) => active(index) ?
             QbUtils.jsonLogicFormat(tree, configs[index]).logic || {} : {});
         const filters = rules.slice(0, 2);
         while (filters.length && !Object.keys(filters[filters.length - 1]).length) filters.pop();
-        onChange(filters, valid, rules[2], rules[3]);
-    }, [objects, elements, task, job, configs, hasElements, onChange]);
+        return { validity, rules, filters };
+    }, [objects, elements, task, job, configs, hasElements]);
+    useEffect(() => {
+        const { validity, rules, filters } = report;
+        onChange(filters, validity.every(Boolean), rules[2], rules[3]);
+    }, [report, onChange]);
     const render = (tree: ImmutableTree, index: number, change: (value: ImmutableTree) => void): JSX.Element => (
         <Query {...displayedConfigs[index]}
             value={tree} onChange={(next) => { if (!disabled) change(next); }}
@@ -57,15 +60,12 @@ export default function FilterEditor({ labels, disabled, onChange }: Props): JSX
             )} />
     );
     const summary = (indices: number[]): string => {
-        const shown = indices.filter(active);
-        if (shown.some((index) => !validTree(trees[index], index))) return '未入力';
-        return shown.some((index) => Object.keys(
-            QbUtils.jsonLogicFormat(trees[index], configs[index]).logic || {},
-        ).length) ? '条件あり' : 'すべて';
+        if (indices.some((index) => !report.validity[index])) return '未入力';
+        return indices.some((index) => Object.keys(report.rules[index]).length) ? '条件あり' : 'すべて';
     };
     return (
         <div className='cvat-filters-modal'>
-            <Collapse size='small' defaultActiveKey={['images']} items={[
+            <Collapse accordion size='small' defaultActiveKey='images' items={[
                 { key: 'task', label: 'Task', extra: summary([2]), children: render(task, 2, setTask) },
                 { key: 'job', label: 'Job', extra: summary([3]), children: render(job, 3, setJob) },
                 {
@@ -73,6 +73,7 @@ export default function FilterEditor({ labels, disabled, onChange }: Props): JSX
                     label: <span title='条件に合うアノテーションがある画像を選択し、他のアノテーションも出力します。'>画像</span>,
                     extra: summary([0, 1]),
                     children: <>
+                        {hasElements && <strong>Objects</strong>}
                         {render(objects, 0, setObjects)}
                         {hasElements && <><strong>Elements</strong>{render(elements, 1, setElements)}</>}
                     </>,
