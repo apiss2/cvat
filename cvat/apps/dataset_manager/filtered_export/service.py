@@ -132,7 +132,7 @@ def source_revision(instance, tasks, labels, filters, jobs):
         job_scope = []
         for task in tasks:
             for segment, job in jobs.get(task.pk, ()):
-                job_scope.append([task.pk, _job_values(job), segment.pk])
+                job_scope.append([task.pk, job.pk, job.stage, job.state, job.status, segment.pk])
                 if segment.pk not in segments:
                     # Range membership is determined by the bounds and task data.
                     # Only sparse segments need their explicit frame list.

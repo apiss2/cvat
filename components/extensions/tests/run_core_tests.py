@@ -275,13 +275,19 @@ def test_filtered_export_routes_are_reachable_from_the_root_urlconf(
 @pytest.mark.parametrize("mode", ["annotation", "interpolation"])
 def test_filtered_export_job_frames_use_real_segment_model(user, mode):
     from cvat.apps.dataset_manager.filtered_export.selection import AnnotationFilter
-    from cvat.apps.dataset_manager.filtered_export.service import _annotation_jobs, _job_frames
+    from cvat.apps.dataset_manager.filtered_export.service import _annotation_jobs, _job_frames, _plan
 
     data = models.Data.objects.create(
         size=6, start_frame=10, stop_frame=25, frame_filter="step=3",
-        chunk_size=1, image_quality=100, original_chunk_type="video" if mode == "interpolation" else "imageset",
+        chunk_size=1, image_quality=100, deleted_frames=[1],
+        original_chunk_type="video" if mode == "interpolation" else "imageset",
         compressed_chunk_type="imageset",
     )
+    if mode == "interpolation":
+        models.Video.objects.create(data=data, path="video.mp4", width=64, height=48)
+    else:
+        for frame in range(10, 26, 3):
+            models.Image.objects.create(data=data, frame=frame, path=f"{frame}.png", width=64, height=48)
     task = models.Task.objects.create(
         name="filtered export", owner=user, data=data, dimension="2d",
         mode=mode, media_type="image",
@@ -299,6 +305,10 @@ def test_filtered_export_job_frames_use_real_segment_model(user, mode):
     # Reload the model and relationships from the DB, rather than supplying a mock frame_set.
     task = models.Task.objects.get(pk=task.pk)
     assert _job_frames(task, _annotation_jobs(task), filters) == {0, 1, 2, 3, 4}
+    selected, counts, revision = _plan(task, filters)
+    assert selected == {task.pk: {0, 2, 3, 4}}
+    assert counts == [{"id": task.pk, "name": task.name, "count": 4, "total": 5}]
+    assert len(revision) == 64
 
 
 @pytest.mark.parametrize("method", ["get", "head"])

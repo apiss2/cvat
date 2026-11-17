@@ -477,3 +477,14 @@ class TestService:
         first = self.service.source_revision(*args)
         segment.stop_frame += 1
         assert self.service.source_revision(*args) != first
+
+    def test_revision_detects_changed_explicit_segment_frames(self):
+        segment = types.SimpleNamespace(
+            pk=10, start_frame=0, stop_frame=4, type="specific_frames", frames=[100, 106],
+        )
+        job = types.SimpleNamespace(pk=10, stage="annotation", state="completed", status="annotation")
+        filters = AnnotationFilter.parse([], job_filter=rule("state", "completed"))
+        args = (self.project, [self.task], self.labels, filters, {self.task.pk: [(segment, job)]})
+        first = self.service.source_revision(*args)
+        segment.frames = [100, 109]
+        assert self.service.source_revision(*args) != first
