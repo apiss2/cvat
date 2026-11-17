@@ -21,6 +21,14 @@ MAX_MASK_VALUES = 24_000_000
 MAX_POLYGON_VERTICES = 4096
 MAX_TOTAL_POLYGON_VERTICES = 100_000
 GEOMETRY_EPSILON = 1e-9
+# Search range for rerouting an edge shorter than min_distance_px: contour points
+# on either side of each replaced vertex, and replaced vertices on either side.
+REROUTE_WINDOW = 12
+REROUTE_DEPTH = 3
+
+
+class PolygonLimitError(ValueError):
+    """Polygon conversion needs more vertices or objects than the limits allow."""
 
 
 def decode_image(text: str) -> np.ndarray:
@@ -94,66 +102,158 @@ def is_simple_polygon(points: np.ndarray) -> bool:
     return True
 
 
-def _sample_contour(contour: np.ndarray, settings: PolygonSettings) -> np.ndarray | None:
-    """Approximate a closed contour without inserting points on straight edges.
+def _segment_distance(points: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """Distance from each point to the finite segment between two distinct points."""
+    direction = end - start
+    fraction = np.clip(((points - start) @ direction) / (direction @ direction), 0., 1.)
+    return np.linalg.norm(points - start - fraction[:, None] * direction, axis=1)
 
-    Every retained chord must approximate its corresponding original contour arc
-    within the configured point-to-segment distance. Spacing is a strict lower
-    bound, including the closing edge; incompatible components are omitted.
+
+def _simple_loops(points: np.ndarray):
+    """Split a closed walk through pixel centers wherever it revisits a pixel.
+
+    A contour revisits a pixel where the region is one pixel wide, and such a
+    walk can never be a simple polygon. Cutting it at every revisit yields each
+    part that encloses area as its own loop. The one-pixel-wide bridges and
+    whiskers between them enclose no area and are left out.
     """
-    import cv2
+    path: list[tuple] = []
+    position: dict[tuple, int] = {}
+    for point in map(tuple, points.tolist()):
+        start = position.get(point)
+        if start is None:
+            position[point] = len(path)
+            path.append(point)
+            continue
+        if len(path) - start >= 3:
+            yield np.asarray(path[start:], dtype=np.float64)
+        for removed in path[start + 1:]:
+            del position[removed]
+        del path[start + 1:]
+    if len(path) >= 3:
+        yield np.asarray(path, dtype=np.float64)
 
+
+def _arc_error(doubled: np.ndarray, a: int, b: int) -> float:
+    """Largest distance from the contour points a..b, walking forward, to the edge a-b.
+
+    The contour is passed twice in a row so that an arc may wrap past its end.
+    """
+    n = len(doubled) // 2
+    arc = doubled[a:(b if b > a else b + n) + 1]
+    return float(_segment_distance(arc, doubled[a], doubled[b]).max())
+
+
+def _split_contour(doubled: np.ndarray, tolerance: float) -> list[int]:
+    """Douglas-Peucker on a closed contour, measured against finite edges."""
+    n = len(doubled) // 2
+    original = doubled[:n]
+    far = int(np.argmax(np.linalg.norm(original - original[0], axis=1)))
+    keep = {0, far}
+    pending = [(0, far), (far, n)]
+    while pending:
+        a, b = pending.pop()
+        if b - a < 2:
+            continue
+        distance = _segment_distance(original[a + 1:b], original[a], original[b % n])
+        worst = int(np.argmax(distance))
+        if distance[worst] > tolerance:
+            middle = a + 1 + worst
+            keep.add(middle)
+            if len(keep) > MAX_POLYGON_VERTICES:
+                raise PolygonLimitError("polygon exceeds 4096 vertices; increase polygon approximation error")
+            pending += [(a, middle), (middle, b)]
+    indices = sorted(keep)
+    # The two starting points were kept unconditionally; drop one that lies on a straight run.
+    for anchor in (0, far):
+        at = indices.index(anchor)
+        if len(indices) > 3 and _arc_error(doubled, indices[at - 1], indices[(at + 1) % len(indices)]) <= tolerance:
+            del indices[at]
+    return indices
+
+
+def _reroute(doubled: np.ndarray, settings: PolygonSettings, first: int, last: int,
+             replaced: list[int]) -> list[int] | None:
+    """Fewest contour points that join two retained vertices by valid edges.
+
+    Candidates are the contour points near the replaced vertices. Every edge of
+    the returned route satisfies both the error and the distance limit.
+    """
+    n = len(doubled) // 2
+    tolerance = settings.max_error_px + GEOMETRY_EPSILON
+    span = (last - first) % n
+    offsets = {0, span}
+    for vertex in replaced:
+        center = (vertex - first) % n
+        offsets.update(range(max(1, center - REROUTE_WINDOW), min(span, center + REROUTE_WINDOW + 1)))
+    ordered = sorted(offsets)
+    # offset from first -> (vertices used, largest error, previous offset)
+    best = {0: (0, 0., 0)}
+    for at, target in enumerate(ordered[1:], 1):
+        b = (first + target) % n
+        options = []
+        for source in ordered[:at]:
+            if source not in best:
+                continue
+            a = (first + source) % n
+            if np.linalg.norm(doubled[b] - doubled[a]) + GEOMETRY_EPSILON < settings.min_distance_px:
+                continue
+            error = _arc_error(doubled, a, b)
+            if error <= tolerance:
+                options.append((best[source][0] + 1, max(best[source][1], error), source))
+        if options:
+            best[target] = min(options)
+    if span not in best:
+        return None
+    path = []
+    offset = best[span][2]
+    while offset:
+        path.append((first + offset) % n)
+        offset = best[offset][2]
+    return path
+
+
+def _sample_contour(contour: np.ndarray, settings: PolygonSettings) -> np.ndarray | None:
+    """Approximate a closed contour by a subset of its own points.
+
+    Douglas-Peucker splitting keeps every contour point within max_error_px of
+    the finite edge that replaces its arc, so straight runs get no extra
+    vertices. Edges shorter than min_distance_px, including the closing edge,
+    are then rerouted locally through other contour points under both limits.
+    The contour is omitted when no such route exists nearby.
+    """
     original = contour.reshape(-1, 2).astype(np.float64)
     n = len(original)
     if n < 3 or len(np.unique(original, axis=0)) != n:
         return None
-    tolerance = settings.max_error_px + GEOMETRY_EPSILON
-
-    def arc_error(a: int, b: int) -> float:
-        arc = original[a:b + 1] if a < b else np.concatenate((original[a:], original[:b + 1]))
-        start, end = original[a], original[b]
-        direction = end - start
-        fraction = np.clip(((arc - start) @ direction) / (direction @ direction), 0., 1.)
-        return float(np.max(np.linalg.norm(arc - start - fraction[:, None] * direction, axis=1)))
-
-    def ring_valid(indices: list[int]) -> bool:
-        return len(indices) >= 3 and all(
-            arc_error(a, b) <= tolerance
-            for a, b in zip(indices, indices[1:] + indices[:1])
-        )
-
-    # OpenCV supplies a fast initial simplification. Check its approximation
-    # against finite segments (not just their supporting infinite lines).
-    lookup = {tuple(point): i for i, point in enumerate(original)}
-    # OpenCV rejects epsilon >= 1e30; no contour needs more than its bounding-box diagonal.
-    epsilon = min(settings.max_error_px, float(np.linalg.norm(np.ptp(original, axis=0))))
-    approx = cv2.approxPolyDP(original.astype(np.float32), epsilon, True)
-    indices = sorted({lookup[tuple(point)] for point in approx.reshape(-1, 2)})
-    if len(indices) > MAX_POLYGON_VERTICES:
-        raise ValueError("polygon exceeds 4096 vertices; increase polygon approximation error")
-    if not ring_valid(indices) or not is_simple_polygon(original[indices]):
-        indices = list(range(n))
-    if len(indices) > MAX_POLYGON_VERTICES:
-        raise ValueError("polygon exceeds 4096 vertices; increase polygon approximation error")
-
+    doubled = np.concatenate((original, original))
+    indices = _split_contour(doubled, settings.max_error_px + GEOMETRY_EPSILON)
     while len(indices) >= 3:
+        count = len(indices)
         ring = original[indices]
         lengths = np.linalg.norm(np.roll(ring, -1, axis=0) - ring, axis=1)
         short = np.flatnonzero(lengths + GEOMETRY_EPSILON < settings.min_distance_px)
         if not len(short):
             break
-        if len(indices) == 3:
-            return None
         edge = int(short[0])
-        candidates = []
-        for pos in (edge, (edge + 1) % len(indices)):
-            error = arc_error(indices[pos - 1], indices[(pos + 1) % len(indices)])
-            if error <= tolerance:
-                candidates.append((error, pos))
-        if not candidates:
+        # Replace the vertices around the short edge, keeping one vertex fixed on
+        # each side. Every edge of the new route is valid, so each pass removes
+        # this short edge and creates none.
+        for depth in range(1, REROUTE_DEPTH + 1):
+            if count < 2 * depth + 2:
+                return None
+            replaced = [indices[(edge - depth + step) % count] for step in range(1, 2 * depth + 1)]
+            path = _reroute(doubled, settings, indices[(edge - depth) % count],
+                            indices[(edge + 1 + depth) % count], replaced)
+            if path is not None and count - len(replaced) + len(path) >= 3:
+                indices = sorted(set(indices).difference(replaced).union(path))
+                break
+        else:
             return None
-        # Prefer the endpoint whose removal changes the outline least.
-        del indices[min(candidates)[1]]
+    if len(indices) < 3:
+        return None
+    if len(indices) > MAX_POLYGON_VERTICES:
+        raise PolygonLimitError("polygon exceeds 4096 vertices; increase polygon approximation error")
 
     points = original[indices]
     area = polygon_area(points)
@@ -172,7 +272,7 @@ def _check_bitmap(bitmap, h: int, w: int) -> np.ndarray:
     return bitmap
 
 
-def encode_interactor(result, image_shape: tuple, settings: PolygonSettings | None = None) -> dict:
+def encode_interactor(result, image_shape: tuple, settings: PolygonSettings) -> dict:
     h, w = image_shape[:2]
     if h * w > MAX_MASK_VALUES:
         raise ValueError("interactor mask exceeds pixel budget")
@@ -181,15 +281,19 @@ def encode_interactor(result, image_shape: tuple, settings: PolygonSettings | No
     if not bitmap.any():
         return {"shapes": []}
     output = {"mask": bitmap.astype(np.uint8).tolist()}
-    if settings is not None:
-        polygons = []
-        total_vertices = 0
+    polygons = []
+    total_vertices = 0
+    try:
         for points in _polygons(bitmap, settings):
             total_vertices += len(points)
             if len(polygons) >= MAX_OBJECTS or total_vertices > MAX_TOTAL_POLYGON_VERTICES:
-                raise ValueError("interactor polygons exceed object or vertex budget")
+                raise PolygonLimitError("interactor polygons exceed object or vertex budget")
             polygons.append(points.ravel().tolist())
-        output["polygons"] = polygons
+    except PolygonLimitError:
+        # The mask is the result of an interactor and stays usable. Without
+        # polygons CVAT converts it itself, as it does for any other interactor.
+        return output
+    output["polygons"] = polygons
     return output
 
 
@@ -206,13 +310,15 @@ def _polygons(bitmap: np.ndarray, settings: PolygonSettings):
         if pixel_area < settings.min_area_px:
             continue
         component = (components[top:top + height, left:left + width] == index).astype(np.uint8)
+        # Every boundary pixel is needed to find the pixels a contour visits twice.
         contours, _ = cv2.findContours(
-            component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE, offset=(left, top),
+            component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE, offset=(left, top),
         )
         for contour in contours:
-            points = _sample_contour(contour, settings)
-            if points is not None:
-                yield points
+            for loop in _simple_loops(contour.reshape(-1, 2)):
+                points = _sample_contour(loop, settings)
+                if points is not None:
+                    yield points
 
 
 def polyline_points(points, w: int, h: int) -> np.ndarray:

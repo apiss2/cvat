@@ -1,7 +1,10 @@
 import numpy as np
 import pytest
 
-from registry.codec import encode_results, is_simple_polygon, polygon_area, _sample_contour
+from registry.codec import (
+    _polygons, _sample_contour, _segment_distance, _simple_loops, encode_results,
+    is_simple_polygon, polygon_area,
+)
 from registry.schema import Manifest, PolygonSettings
 from registry.sdk import Mask
 from registry.wire import validate_wire
@@ -92,6 +95,78 @@ def test_sharp_feature_requires_error_budget_before_removal():
     points = _sample_contour(contour, PolygonSettings(min_distance_px=3.,max_error_px=2.,min_area_px=0.))
     assert points is not None
     assert len(points) == 4
+
+
+def test_start_on_a_straight_run_adds_no_vertex():
+    contour=np.asarray([[5,0],[10,0],[10,10],[0,10],[0,0]],np.int32)
+    points=_sample_contour(contour,PolygonSettings(min_distance_px=0.,max_error_px=0.,min_area_px=0.))
+    assert sorted(points.tolist())==[[0.,0.],[0.,10.],[10.,0.],[10.,10.]]
+
+
+@pytest.mark.parametrize('length',[2,3,10])
+def test_one_pixel_wide_whisker_is_left_out_without_dropping_the_region(length):
+    m=manifest(min_distance_px=2.,max_error_px=1.)
+    plain=np.zeros((1,40,40),np.uint8);plain[0,15:30,10:30]=1
+    whisker=plain.copy();whisker[0,15-length:15,20]=1
+    output=encode_results(whisker,m,(40,40,3))
+    assert output==encode_results(plain,m,(40,40,3))
+    assert len(ring(output[0]))==4
+    assert validate_wire(output,m,40,40)==output
+
+
+def test_one_pixel_wide_bridge_splits_the_region_into_its_parts():
+    m=manifest(min_distance_px=2.,max_error_px=1.)
+    bitmap=np.zeros((1,40,60),np.uint8);bitmap[0,10:30,5:25]=1;bitmap[0,10:30,35:55]=1;bitmap[0,20,25:35]=1
+    output=encode_results(bitmap,m,(40,60,3))
+    assert sorted(ring(item)[:,0].min() for item in output)==[5.,35.]
+    assert all(polygon_area(ring(item))==19*19 for item in output)
+    assert validate_wire(output,m,60,40)==output
+
+
+def test_narrow_tip_is_rerouted_within_both_limits():
+    # The two tip pixels are closer than the minimum distance and neither can
+    # be removed within the error limit; other contour points must be used.
+    m=manifest(min_distance_px=2.,max_error_px=1.)
+    bitmap=np.zeros((1,30,30),np.uint8);bitmap[0,2:12,5:20]=1;bitmap[0,12:20,10:12]=1;bitmap[0,20,10]=1
+    output=encode_results(bitmap,m,(30,30,3))
+    assert len(output)==1
+    points=ring(output[0])
+    assert [10.,20.] in points.tolist()
+    assert np.min(np.linalg.norm(np.roll(points,-1,axis=0)-points,axis=1))>=2.-1e-9
+    assert validate_wire(output,m,30,30)==output
+
+
+def rough_mask(seed,size=96):
+    """Thresholded smoothed noise with lobes, thin necks and narrow tips."""
+    noise=np.random.default_rng(seed).random((size,size))
+    for _ in range(4):
+        noise=(noise+np.roll(noise,1,0)+np.roll(noise,-1,0)+np.roll(noise,1,1)+np.roll(noise,-1,1))/5
+    return (noise>np.quantile(noise,.6)).astype(np.uint8)
+
+
+@pytest.mark.parametrize('seed',range(4))
+def test_rough_regions_are_converted_within_both_limits(seed):
+    import cv2
+    settings=PolygonSettings()
+    count,components,stats,_=cv2.connectedComponentsWithStats(rough_mask(seed),connectivity=4)
+    regions=0
+    for index in range(1,count):
+        if stats[index][4]<50:
+            continue
+        regions+=1
+        component=(components==index).astype(np.uint8)
+        assert list(_polygons(component,settings)),'a region was dropped'
+        contours,_=cv2.findContours(component,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
+        for loop in _simple_loops(contours[0].reshape(-1,2)):
+            points=_sample_contour(loop,settings)
+            if points is None:
+                continue
+            assert is_simple_polygon(points)
+            edges=list(zip(points,np.roll(points,-1,axis=0)))
+            assert min(np.linalg.norm(b-a) for a,b in edges)>=settings.min_distance_px-1e-9
+            error=np.min([_segment_distance(loop,a,b) for a,b in edges],axis=0)
+            assert error.max()<=settings.max_error_px+1e-9
+    assert regions>=10
 
 
 def test_legacy_polygon_settings_are_normalized():

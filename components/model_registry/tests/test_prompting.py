@@ -119,8 +119,23 @@ def test_binary_mask_retains_holes_disconnected_regions_and_empty(manifest):
     with pytest.raises(ValueError):
         validate_wire(invalid, manifest, 64, 48)
     np.testing.assert_array_equal(result["mask"], bitmap)
-    assert encode_interactor(np.zeros_like(bitmap), (48, 64, 3)) == {"shapes": []}
+    assert encode_interactor(np.zeros_like(bitmap), (48, 64, 3), manifest.polygon) == {"shapes": []}
     assert validate_wire({"shapes": []}, manifest, 64, 48) == {"shapes": []}
+
+
+def test_polygons_follow_registered_limits_without_blocking_the_mask(manifest, monkeypatch):
+    import registry.codec as codec
+    bitmap = np.zeros((48, 64), dtype=np.uint8)
+    bitmap[2:5, 3:6] = 1  # Pixel-center area 4 is below the registered minimum of 10.
+    small = encode_interactor(bitmap, (48, 64, 3), manifest.polygon)
+    assert small["polygons"] == [] and validate_wire(small, manifest, 64, 48) == small
+    bitmap[2:12, 3:15] = 1
+    monkeypatch.setattr(codec, "MAX_POLYGON_VERTICES", 3)
+    # Beyond a polygon limit the mask is returned alone and CVAT converts it itself.
+    limited = encode_interactor(bitmap, (48, 64, 3), manifest.polygon)
+    assert set(limited) == {"mask"}
+    np.testing.assert_array_equal(limited["mask"], bitmap)
+    assert validate_wire(limited, manifest, 64, 48) == limited
 
 
 @pytest.mark.parametrize("result", [
@@ -128,9 +143,9 @@ def test_binary_mask_retains_holes_disconnected_regions_and_empty(manifest):
     np.full((48, 64), 255, dtype=np.uint8), np.zeros((47, 64), dtype=np.uint8),
     [],
 ])
-def test_worker_rejects_invalid_masks(result):
+def test_worker_rejects_invalid_masks(manifest, result):
     with pytest.raises(ValueError):
-        encode_interactor(result, (48, 64, 3))
+        encode_interactor(result, (48, 64, 3), manifest.polygon)
 
 
 @pytest.mark.parametrize("result", [
@@ -145,7 +160,7 @@ def test_control_plane_rejects_untrusted_masks(manifest, result):
 
 def test_mask_budget_is_checked_before_output_allocation(manifest):
     with pytest.raises(ValueError, match="budget"):
-        encode_interactor(None, (1, MAX_MASK_VALUES + 1, 3))
+        encode_interactor(None, (1, MAX_MASK_VALUES + 1, 3), manifest.polygon)
     with pytest.raises(ValueError, match="budget"):
         validate_wire({"mask": []}, manifest, MAX_MASK_VALUES + 1, 1)
 

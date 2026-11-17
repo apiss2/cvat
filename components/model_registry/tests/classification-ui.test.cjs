@@ -85,8 +85,6 @@ function setup() {
 function model(kind = 'tag') {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'examples/classification/manifest.json'), 'utf8'));
     manifest.labels.forEach((label) => { label.type = kind; });
-    manifest.polygon.max_error_px = manifest.polygon.spacing_percent;
-    delete manifest.polygon.spacing_percent;
     return { id: 'a'.repeat(20), active_revision: 'b'.repeat(16), owner: 'alice', can_manage: true,
         manifest, revisions: [{ revision: 'b'.repeat(16), manifest }] };
 }
@@ -168,8 +166,6 @@ test('registration exposes individual files without a ZIP entry', () => {
 
 function promptingModel() {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'examples/prompting/manifest.json'), 'utf8'));
-    manifest.polygon.max_error_px = manifest.polygon.spacing_percent;
-    delete manifest.polygon.spacing_percent;
     return { ...model('polygon'), manifest, revisions: [{ revision: 'b'.repeat(16), manifest }] };
 }
 
@@ -257,20 +253,24 @@ test('prompting list and revision-aware test display masks and send prompts', as
     await ui.submit('test-form');
     assert.equal(ui.get('notice').textContent, '');
     assert.equal(ui.get('preview').hidden, false);
-    assert.match(ui.get('test-summary').textContent, /出力マスク: 1件/);
+    assert.match(ui.get('test-summary').textContent, /出力マスク: 1件。ポリゴンは頂点数または件数の上限を超えた/);
+    ui.sandbox.response.results = { mask: [[0, 1], [1, 1]], polygons: [[1, 0, 1, 1, 0, 1]] };
+    await ui.submit('test-form');
+    assert.match(ui.get('test-summary').textContent, /出力マスク: 1件。変換後のポリゴン: 1件/);
+    assert.equal(JSON.parse(ui.get('test-result').textContent).objects, 1);
     const payload = JSON.parse(JSON.stringify(requestBodies[0]));
     assert.deepEqual(payload.obj_bbox, [[0, 0], [24, 20]]);
     assert.deepEqual(payload.pos_points, []);
     ui.sandbox.response.results = { shapes: [] };
     await ui.submit('test-form');
-    assert.match(ui.get('test-summary').textContent, /出力マスク: 0件/);
+    assert.equal(ui.get('test-summary').textContent, '出力マスク: 0件。');
     ui.sandbox.model.revisions.push({ revision: 'old-detector', manifest: model().manifest });
     ui.get('revision').value = 'old-detector'; ui.eval('testRevisionChanged()');
     assert.equal(ui.get('test-prompts-field').hidden, true);
     assert.equal(ui.get('test-prompts').disabled, true);
     ui.sandbox.response.results = [];
     await ui.submit('test-form');
-    assert.deepEqual(Object.keys(requestBodies[2]), ['image']);
+    assert.deepEqual(Object.keys(requestBodies[3]), ['image']);
 });
 
 test('changing revision during image reading keeps the submitted prompts with their revision', async () => {

@@ -261,7 +261,7 @@ async function selectModel(id) {
     $('detail-labels').textContent = (model.manifest?.labels || []).map((label, index) => `${index}: ${label.name} (ID=${label.id}, ${label.type})`).join('\n');
     const polygon = model.manifest?.polygon;
     const polygonSummary = polygon && model.manifest?.labels?.some((label) => label.type === 'polygon') ? `ポリゴン変換: 頂点の最小距離 ${polygon.min_distance_px} px、輪郭の近似許容誤差 ${polygon.max_error_px} px、最小面積 ${polygon.min_area_px} px²` : '';
-    $('detail-polygon').textContent = model.manifest?.kind === 'interactor' ? `Prompting: マスクの穴と離れた領域を保持します。ポリゴン化する場合: ${polygonSummary}` : polygonSummary;
+    $('detail-polygon').textContent = model.manifest?.kind === 'interactor' ? `Prompting: マスクは穴と離れた領域を保持します。CVATでポリゴンに変換する場合の${polygonSummary}` : polygonSummary;
     const managed = Boolean(model.can_manage); $('owner-detail').hidden = !managed;
     for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = id === 'update-model' && Boolean(model.deleted || !model.active_revision); }
     $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-summary').textContent = ''; $('test-tags').textContent = ''; $('preview').hidden = true;
@@ -396,8 +396,8 @@ $('test-form').addEventListener('submit', (event) => { event.preventDefault(); r
             const tags = objects.filter((object) => object.type === 'tag');
             $('test-tags').textContent = tags.length ? `分類タグ: ${tags.map((tag) => `${tag.label}（信頼度 ${tag.confidence.toFixed(3)}）`).join('、')}` :
                 manifest?.labels?.some((label) => label.type === 'tag') ? '分類タグ: なし' : '';
-            $('test-summary').textContent = manifest?.kind === 'interactor' ? `出力マスク: ${result.results.mask ? 1 : 0}件、変換後のポリゴン: ${result.results.polygons?.length ?? 0}件。ポリゴンの輪郭は青緑色で表示します。` : `出力件数: ${objects.length}件（図形 ${objects.length - tags.length}件、タグ ${tags.length}件）。結果を画像とタグ一覧で確認してください。`;
-            $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: Array.isArray(result.results) ? result.results.length : result.results.polygons?.length ?? 0, results: result.results }, null, 2);
+            $('test-summary').textContent = manifest?.kind === 'interactor' ? `出力マスク: ${result.results.mask ? 1 : 0}件。${Array.isArray(result.results.polygons) ? `変換後のポリゴン: ${result.results.polygons.length}件。輪郭を青緑色で表示します。` : result.results.mask ? 'ポリゴンは頂点数または件数の上限を超えたため生成していません。CVATでは標準の変換を使います。' : ''}` : `出力件数: ${objects.length}件（図形 ${objects.length - tags.length}件、タグ ${tags.length}件）。結果を画像とタグ一覧で確認してください。`;
+            $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: Array.isArray(result.results) ? result.results.length : result.results.mask ? 1 : 0, results: result.results }, null, 2);
             await preview(file, result.results, model.id, revision);
         }
     } finally { $('test-button').disabled = Boolean(selected?.deleted || !selected?.active_revision); await refreshLogs(); }

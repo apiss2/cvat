@@ -569,7 +569,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                     const points = Int32Array.from(item.points);
                     const contours = this.receiveContoursFromMask(points);
                     const polygonPoints = this.receivePointsFromMask(contours);
-                    if (polygonPoints.length < 3 && response.polygons === undefined) {
+                    if (polygonPoints.length < 3) {
                         continue;
                     }
 
@@ -828,7 +828,9 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         const { convertMasksToPolygons, thresholdValue } = this.state;
         const shapesToBeDrawn = this.interaction.latestResponse
             .filter(({ confidence }) => typeof confidence !== 'number' || confidence >= thresholdValue)
-            .flatMap(({ rle, contours, approximatedPoints, registryPolygons }) => {
+            .flatMap(({
+                rle, contours, approximatedPoints, registryPolygons,
+            }) => {
                 const polygons = registryPolygons ?? [approximatedPoints.flat()];
                 const shapes = convertMasksToPolygons ? polygons.filter((points) => points.length >= 6) : [rle];
                 return shapes.map((points) => ({

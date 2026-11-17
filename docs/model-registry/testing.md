@@ -10,6 +10,7 @@
 
 ```bash
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_api.py components/model_registry/tests/test_deletion.py components/model_registry/tests/test_runtime.py components/model_registry/tests/test_cli.py -q
+PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_polygons.py -q
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_classification.py -q
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_prompting.py -q
 PYTHONPATH=components/model_registry python -m pytest components/model_registry/tests/test_polylines.py -q
@@ -20,11 +21,12 @@ node --check components/model_registry/static/app.js
 python -m pytest -q components/extensions/tests/run_core_tests.py -k registered_interactor
 ```
 
+ポリゴン変換の試験は直線上に頂点を増やさないこと、近似誤差と頂点間の最小距離の両立、閉じる辺、幅1画素の突起と橋、細い先端、乱数から生成した凹凸のある領域が両方の条件を満たして出力されること、保存済みの旧設定の読み込み、頂点数の上限を確認します。実モデルの出力による精度の検証ではありません。
 Classificationの試験は出力と独立した応答検査、旧出力形式、内部パッケージ、ワーカーのHTTP処理を確認します。通常のONNXセッションは代替実装を使い、onnxとonnxruntimeがある場合だけIdentityモデルの実行試験も動きます。部分更新の試験は経路と候補の組み立てを確認しますが、認証やサービスを代替しています。
 Line detectionの試験は任意本数のポリライン、数値配列による頂点、交差を含む線、DetectionやClassificationとの混在、座標範囲と頂点数、図形数と頂点数の共通上限、管理サーバーでの再検査、作例の実ONNX実行と登録後のCVAT向け推論を確認します。JavaScriptの試験にはポリラインの登録と試験結果の表示も含みます。
-Promptingの試験は能力情報、点・除外点・矩形の制約、二値性と寸法、空の結果、穴と離れた領域、登録と試験Promptの保持、部分更新の失敗、旧版の実行と切り替えを確認します。実ONNXの試験は[ワーカー依存](../../components/model_registry/requirements-worker.txt)も準備し、IdentityモデルをCPUで実行します。SAMの認識精度を検証する試験ではありません。JavaScriptの試験には登録・更新、矩形と除外点の無効化、画像の読み込み中に版を変更した場合のPrompt、マスク表示も含みます。
+Promptingの試験は能力情報、点・除外点・矩形の制約、二値性と寸法、空の結果、穴と離れた領域、登録した設定によるポリゴンと上限超過時のマスクだけの応答、登録と試験Promptの保持、部分更新の失敗、旧版の実行と切り替えを確認します。実ONNXの試験は[ワーカー依存](../../components/model_registry/requirements-worker.txt)も準備し、IdentityモデルをCPUで実行します。SAMの認識精度を検証する試験ではありません。JavaScriptの試験には登録・更新、矩形と除外点の無効化、画像の読み込み中に版を変更した場合のPrompt、マスク表示も含みます。
 
-`registered_interactor`は[本体接続の専用環境](../development.md#本体との接続を確認する)で実行します。CVATの実ルーティング、関数種別、Jobのデータ閲覧権限、未認証・拒否時の非実行、ROIの画像切り出し、点と矩形の移動、dense maskの全画像への復元を確認します。画像配信と中継HTTP、推論、イベント保存、OPAの最終判断は代替実装です。実Docker、実OPA、ブラウザーでの保存確認は別途必要です。通常のONNXセッションは代替実装を使い、onnxとonnxruntimeがある場合だけIdentityモデルの実行試験も動きます。部分更新の試験は経路と候補の組み立てを確認しますが、認証やサービスを代替しています。
+`registered_interactor`は[本体接続の専用環境](../development.md#本体との接続を確認する)で実行します。CVATの実ルーティング、関数種別、Jobのデータ閲覧権限、未認証・拒否時の非実行、ROIの画像切り出し、点と矩形の移動、dense maskとポリゴンの全画像への復元を確認します。画像配信と中継HTTP、推論、イベント保存、OPAの最終判断は代替実装です。実Docker、実OPA、ブラウザーでの保存確認は別途必要です。通常のONNXセッションは代替実装を使い、onnxとonnxruntimeがある場合だけIdentityモデルの実行試験も動きます。部分更新の試験は経路と候補の組み立てを確認しますが、認証やサービスを代替しています。
 
 削除の試験は公開済みと未公開のモデル、所有者と管理者、全利用者の一覧からの除外を確認します。実ファイルを使い、推論、版の切り替え、更新のコピー・展開・検証、実行待ちの登録と削除を重ね、候補ファイルの残留や再公開を防ぐことも確認します。ワーカー停止・清掃の失敗、再試行、再起動、削除・清掃ログと最小限の記録の保持を含みます。CVAT認証とDockerは代替実装です。JavaScriptの試験は実際の登録、更新、削除のハンドラーをDOMの代替実装で呼び出します。実ブラウザーの描画や実CVAT認証の確認ではありません。接続試験用の作例は[examples](../../components/model_registry/examples/)にあり、学習済み認識モデルではありません。generate.pyで重み、画像、内部パッケージ検査用ZIPを再生成できますが、登録画面には個別ファイルを指定します。
 

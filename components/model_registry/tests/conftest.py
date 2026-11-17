@@ -41,7 +41,7 @@ class FakeRuntime:
         image = decode_image(payload['image'])
         bitmap = image.mean(axis=2) > 128
         if manifest.kind == 'interactor':
-            return encode_interactor(bitmap, image.shape)
+            return encode_interactor(bitmap, image.shape, manifest.polygon)
         if manifest.labels[0].type == 'polygon':
             output = np.stack([bitmap for _ in manifest.labels])
         elif manifest.labels[0].type == 'polyline':
