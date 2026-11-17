@@ -103,7 +103,7 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
                 flexDirection: 'column',
                 maxHeight: 'calc(100vh - 48px)',
             },
-            body: { minHeight: 0, overflowY: 'auto' },
+            body: { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' },
             footer: { flexShrink: 0 },
         },
         open: visible,
