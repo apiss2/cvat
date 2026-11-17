@@ -111,29 +111,52 @@ def _segment_distance(points: np.ndarray, start: np.ndarray, end: np.ndarray) ->
     return np.linalg.norm(points - start - fraction[:, None] * direction, axis=1)
 
 
-def _simple_loops(points: np.ndarray):
-    """Split a closed walk through pixel centers wherever it revisits a pixel.
+def _outer_pixel_contour(component: np.ndarray, left: int, top: int,
+                         bitmap: np.ndarray) -> np.ndarray:
+    """Trace the exterior of a four-connected component along exposed pixel edges.
 
-    A contour revisits a pixel where the region is one pixel wide, and such a
-    walk can never be a simple polygon. Cutting it at every revisit yields each
-    part that encloses area as its own loop. The one-pixel-wide bridges and
-    whiskers between them enclose no area and are left out.
+    Pixel (x, y) occupies [x, x+1] x [y, y+1]. At a diagonal contact the
+    clockwise turn keeps the foreground on the right; beveling the touching
+    corners by a quarter pixel avoids a self-touch or a touch between separate
+    components without excluding any foreground pixel center.
     """
-    path: list[tuple] = []
-    position: dict[tuple, int] = {}
-    for point in map(tuple, points.tolist()):
-        start = position.get(point)
-        if start is None:
-            position[point] = len(path)
+    padded = np.pad(component.astype(bool), 1)
+    center = padded[1:-1, 1:-1]
+    neighbors = (padded[:-2, 1:-1], padded[1:-1, 2:],
+                 padded[2:, 1:-1], padded[1:-1, :-2])
+    directions = ((1, 0), (0, 1), (-1, 0), (0, -1))
+    offsets = ((0, 0), (1, 0), (1, 1), (0, 1))
+    outgoing: dict[tuple[int, int], list[int]] = {}
+    for direction, (neighbor, (dx, dy)) in enumerate(zip(neighbors, offsets)):
+        ys, xs = np.nonzero(center & ~neighbor)
+        for x, y in zip((xs + left + dx).tolist(), (ys + top + dy).tolist()):
+            outgoing.setdefault((x, y), []).append(direction)
+
+    # The top-leftmost exposed vertex is on the exterior, never on a hole.
+    start = min(outgoing, key=lambda p: (p[1], p[0]))
+    point = start
+    incoming = 3
+    path = []
+    h, w = bitmap.shape
+    while True:
+        choices = outgoing[point]
+        right = (incoming + 1) % 4
+        direction = right if right in choices else choices[0]
+        x, y = point
+        vx, vy = directions[incoming]
+        ux, uy = directions[direction]
+        opposite_x = x + (vx - ux - 1) // 2
+        opposite_y = y + (vy - uy - 1) // 2
+        if (direction == right and 0 <= opposite_x < w and 0 <= opposite_y < h
+                and bitmap[opposite_y, opposite_x]):
+            path.extend(((x - vx * .25, y - vy * .25), (x + ux * .25, y + uy * .25)))
+        else:
             path.append(point)
-            continue
-        if len(path) - start >= 3:
-            yield np.asarray(path[start:], dtype=np.float64)
-        for removed in path[start + 1:]:
-            del position[removed]
-        del path[start + 1:]
-    if len(path) >= 3:
-        yield np.asarray(path, dtype=np.float64)
+        point = (x + ux, y + uy)
+        incoming = direction
+        if point == start:
+            break
+    return np.asarray(path, dtype=np.float64)
 
 
 def _arc_error(doubled: np.ndarray, a: int, b: int) -> float:
@@ -336,6 +359,34 @@ def encode_interactor(result, image_shape: tuple, settings: PolygonSettings) -> 
     return output
 
 
+def _bounds(points: np.ndarray) -> tuple[float, float, float, float]:
+    low, high = points.min(axis=0), points.max(axis=0)
+    return float(low[0]), float(low[1]), float(high[0]), float(high[1])
+
+
+def _rings_conflict(points: np.ndarray, outline: np.ndarray, other: np.ndarray,
+                    other_outline: np.ndarray) -> bool:
+    """Reject new intersections or containment introduced by approximation.
+
+    Nested exterior rings already overlap because the polygon format fills
+    holes; that pre-existing containment is not an approximation conflict.
+    """
+    import cv2
+
+    ends = np.roll(other, -1, axis=0)
+    for a, b in zip(points, np.roll(points, -1, axis=0)):
+        if _meets_any(a, b, other, ends):
+            return True
+    for inner, outer, source, outer_source in (
+        (points, other, outline, other_outline),
+        (other, points, other_outline, outline),
+    ):
+        if cv2.pointPolygonTest(outer.astype(np.float32), tuple(inner[0]), False) > 0:
+            if cv2.pointPolygonTest(outer_source.astype(np.float32), tuple(source[0]), False) <= 0:
+                return True
+    return False
+
+
 def _polygons(bitmap: np.ndarray, settings: PolygonSettings):
     # Imported only for inference. The control plane requires no OpenCV and never
     # runs uploaded Python or computes model predictions.
@@ -344,20 +395,37 @@ def _polygons(bitmap: np.ndarray, settings: PolygonSettings):
     count, components, stats, _ = cv2.connectedComponentsWithStats(
         bitmap.astype(np.uint8), connectivity=4, ltype=cv2.CV_32S,
     )
+    accepted = []
     for index in range(1, count):
         left, top, width, height, pixel_area = map(int, stats[index])
         if pixel_area < settings.min_area_px:
             continue
-        component = (components[top:top + height, left:left + width] == index).astype(np.uint8)
-        # Every boundary pixel is needed to find the pixels a contour visits twice.
-        contours, _ = cv2.findContours(
-            component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE, offset=(left, top),
-        )
-        for contour in contours:
-            for loop in _simple_loops(contour.reshape(-1, 2)):
-                points = _sample_contour(loop, settings)
-                if points is not None:
-                    yield points
+        component = components[top:top + height, left:left + width] == index
+        outline = _outer_pixel_contour(component, left, top, bitmap)
+        # Retry with less approximation when independent components touch or
+        # overlap. Never relax the registered spacing or area constraints.
+        for attempt, factor in enumerate(SPLIT_RETRY_FACTORS):
+            local = settings.model_copy(update={"max_error_px": settings.max_error_px * factor})
+            try:
+                points = _sample_contour(outline, local)
+            except PolygonLimitError:
+                if attempt == 0:
+                    raise
+                break
+            if points is None:
+                if attempt == 0:
+                    break
+                continue
+            x1, y1, x2, y2 = _bounds(points)
+            if any(
+                x1 <= ox2 and ox1 <= x2 and y1 <= oy2 and oy1 <= y2
+                and _rings_conflict(points, outline, other, other_outline)
+                for other, other_outline, (ox1, oy1, ox2, oy2) in accepted
+            ):
+                continue
+            accepted.append((points, outline, (x1, y1, x2, y2)))
+            yield points
+            break
 
 
 def polyline_points(points, w: int, h: int) -> np.ndarray:

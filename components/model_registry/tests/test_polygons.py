@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from registry.codec import (
-    _polygons, _sample_contour, _segment_distance, _simple_loops, encode_results,
+    _outer_pixel_contour, _polygons, _rings_conflict, _sample_contour, _segment_distance, encode_results,
     is_simple_polygon, polygon_area,
 )
 from registry.schema import Manifest, PolygonSettings
@@ -26,7 +26,7 @@ def test_binary_array_external_contour_hole_is_filled():
     result=encode_results(bitmap,m,(40,50,3))
     assert len(result)==1 and result[0]['type']=='polygon'
     assert 'mask' not in result[0] and result[0]['confidence']==1.
-    assert polygon_area(ring(result[0]))==33*29
+    assert polygon_area(ring(result[0]))==34*30
     assert validate_wire(result,m,50,40)==result
 
 
@@ -42,7 +42,10 @@ def test_label_order_and_disconnected_regions():
 
 def test_four_connected_diagonal_regions_remain_separate():
     bitmap=np.zeros((1,20,20),np.uint8);bitmap[0,2:8,2:8]=1;bitmap[0,8:14,8:14]=1
-    assert len(encode_results(bitmap,manifest(),(20,20,3)))==2
+    output=encode_results(bitmap,manifest(),(20,20,3))
+    assert len(output)==2
+    first,second=map(ring,output)
+    assert not _rings_conflict(first,first,second,second)
 
 
 def test_minimum_area_filters_foreground_pixels_before_filled_outer_area():
@@ -52,15 +55,17 @@ def test_minimum_area_filters_foreground_pixels_before_filled_outer_area():
 
 
 def test_minimum_area_also_filters_resulting_polygon_area():
-    bitmap=np.zeros((1,10,10),np.uint8);bitmap[0,2:6,2:6]=1
-    assert bitmap.sum()==16  # Pixel-center contour area is 9.
-    assert encode_results(bitmap,manifest(min_area_px=10.),(10,10,3))==[]
+    contour=np.array([[2,2],[2,5],[5,5],[5,2]])
+    assert _sample_contour(contour,PolygonSettings(min_distance_px=0.,max_error_px=0.,min_area_px=10.)) is None
 
 
-def test_degenerate_single_pixel_line_and_empty_output_are_omitted():
-    bitmap=np.zeros((1,20,20),np.uint8);bitmap[0,2,2]=1;bitmap[0,10,4:15]=1
-    assert encode_results(bitmap,manifest(),(20,20,3))==[]
-    assert encode_results(np.zeros_like(bitmap),manifest(),(20,20,3))==[]
+def test_single_pixel_line_and_image_edges_have_positive_area():
+    bitmap=np.zeros((1,20,20),np.uint8);bitmap[0,0,0]=1;bitmap[0,19,4:20]=1
+    m=manifest()
+    output=encode_results(bitmap,m,(20,20,3))
+    assert sorted(polygon_area(ring(item)) for item in output)==[1.,16.]
+    assert validate_wire(output,m,20,20)==output
+    assert encode_results(np.zeros_like(bitmap),m,(20,20,3))==[]
 
 
 @pytest.mark.parametrize('minimum,error',[(0.,0.),(3.,0.),(6.,2.),(12.,5.)])
@@ -104,23 +109,45 @@ def test_start_on_a_straight_run_adds_no_vertex():
 
 
 @pytest.mark.parametrize('length',[2,3,10])
-def test_one_pixel_wide_whisker_is_left_out_without_dropping_the_region(length):
-    m=manifest(min_distance_px=2.,max_error_px=1.)
+def test_one_pixel_wide_whisker_is_retained_with_exact_settings(length):
     plain=np.zeros((1,40,40),np.uint8);plain[0,15:30,10:30]=1
-    whisker=plain.copy();whisker[0,15-length:15,20]=1
-    output=encode_results(whisker,m,(40,40,3))
-    assert output==encode_results(plain,m,(40,40,3))
-    assert len(ring(output[0]))==4
-    assert validate_wire(output,m,40,40)==output
+    plain[0,15-length:15,20]=1
+    output=encode_results(plain,manifest(),(40,40,3))
+    assert len(output)==1
+    assert polygon_area(ring(output[0]))==plain.sum()
+    assert validate_wire(output,manifest(),40,40)==output
 
 
-def test_one_pixel_wide_bridge_splits_the_region_into_its_parts():
+def test_one_pixel_wide_bridge_preserves_one_component():
+    import cv2
+
     m=manifest(min_distance_px=2.,max_error_px=1.)
     bitmap=np.zeros((1,40,60),np.uint8);bitmap[0,10:30,5:25]=1;bitmap[0,10:30,35:55]=1;bitmap[0,20,25:35]=1
     output=encode_results(bitmap,m,(40,60,3))
-    assert sorted(ring(item)[:,0].min() for item in output)==[5.,35.]
-    assert all(polygon_area(ring(item))==19*19 for item in output)
+    assert len(output)==1
+    points=ring(output[0])
+    assert polygon_area(points)==810.
+    assert is_simple_polygon(points)
+    assert np.min(np.linalg.norm(np.roll(points,-1,axis=0)-points,axis=1))>=2.
+    for y,x in np.argwhere(bitmap[0]):
+        assert cv2.pointPolygonTest(points.astype(np.float32),(float(x)+.5,float(y)+.5),False)>0
     assert validate_wire(output,m,60,40)==output
+    bitmap[0,20,25:35]=0
+    assert len(encode_results(bitmap,m,(40,60,3)))==2
+
+
+def test_diagonal_saddle_in_one_component_has_simple_exterior():
+    bitmap=np.ones((1,3,3),np.uint8);bitmap[0,0,0]=0;bitmap[0,1,1]=0
+    output=encode_results(bitmap,manifest(),(3,3,3))
+    assert len(output)==1 and is_simple_polygon(ring(output[0]))
+
+
+def test_approximation_conflict_is_not_confused_with_distance_between_opposite_edges():
+    a=np.array([[0.,0.],[3.,0.],[3.,3.],[0.,3.]])
+    b=np.array([[4.,0.],[7.,0.],[7.,3.],[4.,3.]])
+    assert not _rings_conflict(a,a,b,b)
+    extended=b.copy();extended[[0,3],0]=2.
+    assert _rings_conflict(a,a,extended,b)
 
 
 def test_narrow_tip_is_rerouted_within_both_limits():
@@ -131,7 +158,7 @@ def test_narrow_tip_is_rerouted_within_both_limits():
     output=encode_results(bitmap,m,(30,30,3))
     assert len(output)==1
     points=ring(output[0])
-    assert [10.,20.] in points.tolist()
+    assert points[:,1].max()==21.
     assert np.min(np.linalg.norm(np.roll(points,-1,axis=0)-points,axis=1))>=2.-1e-9
     assert validate_wire(output,m,30,30)==output
 
@@ -199,16 +226,14 @@ def test_model_like_regions_are_converted_within_both_limits(seed):
         regions+=1
         component=(components==index).astype(np.uint8)
         assert list(_polygons(component,settings)),'a region was dropped'
-        contours,_=cv2.findContours(component,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
-        for loop in _simple_loops(contours[0].reshape(-1,2)):
-            points=_sample_contour(loop,settings)
-            if points is None:
-                continue
-            assert is_simple_polygon(points)
-            edges=list(zip(points,np.roll(points,-1,axis=0)))
-            assert min(np.linalg.norm(b-a) for a,b in edges)>=settings.min_distance_px-1e-9
-            error=np.min([_segment_distance(loop,a,b) for a,b in edges],axis=0)
-            assert error.max()<=settings.max_error_px+1e-9
+        loop=_outer_pixel_contour(component,0,0,component)
+        points=_sample_contour(loop,settings)
+        assert points is not None
+        assert is_simple_polygon(points)
+        edges=list(zip(points,np.roll(points,-1,axis=0)))
+        assert min(np.linalg.norm(b-a) for a,b in edges)>=settings.min_distance_px-1e-9
+        error=np.min([_segment_distance(loop,a,b) for a,b in edges],axis=0)
+        assert error.max()<=settings.max_error_px+1e-9
     assert regions>=5
 
 
@@ -260,7 +285,7 @@ def test_simple_convex_and_concave_polygons_accepted(points):
 
 @pytest.mark.parametrize('coordinates',[
     [0,0,10,0,10,10,0,1], # Short closing edge.
-    [0,0,20,0,20,10,0,10], # Beyond rightmost image pixel center.
+    [0,0,21,0,21,10,0,10], # Beyond right image edge.
     [0,0,10,0,10], # Odd number of coordinates.
     [0,0,True,0,10,10],
     [0,0,float('nan'),0,10,10],

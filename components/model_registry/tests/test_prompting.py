@@ -126,7 +126,7 @@ def test_binary_mask_retains_holes_disconnected_regions_and_empty(manifest):
 def test_polygons_follow_registered_limits_without_blocking_the_mask(manifest, monkeypatch):
     import registry.codec as codec
     bitmap = np.zeros((48, 64), dtype=np.uint8)
-    bitmap[2:5, 3:6] = 1  # Pixel-center area 4 is below the registered minimum of 10.
+    bitmap[2:5, 3:6] = 1  # Pixel area 9 is below the registered minimum of 10.
     small = encode_interactor(bitmap, (48, 64, 3), manifest.polygon)
     assert small["polygons"] == [] and validate_wire(small, manifest, 64, 48) == small
     bitmap[2:12, 3:15] = 1

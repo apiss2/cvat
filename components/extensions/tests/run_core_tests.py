@@ -199,7 +199,7 @@ def test_registered_interactor_native_routing_permissions_prompts_and_mask(
     assert mask[18, 22] == 0 and mask[10, 14] == 1
     # Registry polygons follow the mask from ROI-local to image coordinates.
     assert [sorted(zip(points[::2], points[1::2])) for points in response.data["polygons"]] == [
-        [(12, 8), (12, 31), (43, 8), (43, 31)]
+        [(12, 8), (12, 32), (44, 8), (44, 32)]
     ]
     # CVAT's AI tools send an empty box when only points are placed.
     points_only = {**request, "obj_bbox": []}

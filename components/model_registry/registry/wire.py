@@ -59,8 +59,8 @@ def validate_wire(result: list | dict, manifest: Manifest, width: int, height: i
             total_vertices += len(ring)
             if total_vertices > MAX_TOTAL_POLYGON_VERTICES:
                 raise ValueError("combined worker polygons exceed vertex budget")
-            if (ring < 0).any() or (ring[:, 0] > width - 1).any() or (ring[:, 1] > height - 1).any():
-                raise ValueError("worker polygon outside original image pixel centers")
+            if (ring < 0).any() or (ring[:, 0] > width).any() or (ring[:, 1] > height).any():
+                raise ValueError("worker polygon outside original image")
             distances = np.linalg.norm(np.roll(ring, -1, axis=0) - ring, axis=1)
             if (distances + GEOMETRY_EPSILON < manifest.polygon.min_distance_px).any():
                 raise ValueError("worker polygon violates minimum adjacent vertex distance")
