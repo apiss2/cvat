@@ -91,11 +91,21 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
     );
 
     const is2D = dimension === DimensionType.DIMENSION_2D;
-    const baseProps = {
+    const baseProps: React.ComponentProps<typeof Modal> = {
         cancelButtonProps: { style: { display: 'none' } },
         okButtonProps: { style: { width: 100 } },
         onOk: closeStatistics,
         width: 1024,
+        style: { top: 24, paddingBottom: 24 },
+        styles: {
+            content: {
+                display: 'flex',
+                flexDirection: 'column',
+                maxHeight: 'calc(100vh - 48px)',
+            },
+            body: { minHeight: 0, overflowY: 'auto' },
+            footer: { flexShrink: 0 },
+        },
         open: visible,
         destroyOnClose: true,
         closable: false,
@@ -318,7 +328,8 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
                             <Spin style={{ margin: '0 50%' }} />
                         ) : (
                             <Table
-                                scroll={{ x: 'max-content', y: 400 }}
+                                size='small'
+                                scroll={{ x: 'max-content', y: 200 }}
                                 bordered
                                 pagination={false}
                                 columns={is2D ? columns : columns3D}
