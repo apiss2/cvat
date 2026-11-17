@@ -25,6 +25,8 @@ GEOMETRY_EPSILON = 1e-9
 # on either side of each replaced vertex, and replaced vertices on either side.
 REROUTE_WINDOW = 12
 REROUTE_DEPTH = 3
+# Fractions of max_error_px for the Douglas-Peucker split when edges cross.
+SPLIT_RETRY_FACTORS = (1.0, 0.5, 0.25, 0.0)
 
 
 class PolygonLimitError(ValueError):
@@ -74,32 +76,32 @@ def is_simple_polygon(points: np.ndarray) -> bool:
     if len(points) < 3 or len(np.unique(points, axis=0)) != len(points):
         return False
     ends = np.roll(points, -1, axis=0)
-    lower = np.minimum(points, ends)
-    upper = np.maximum(points, ends)
     for index in range(len(points) - 2):
         first = index + 2
         last = len(points) - (1 if index == 0 else 0)
-        if first >= last:
-            continue
-        candidates = np.all(lower[first:last] <= upper[index] + GEOMETRY_EPSILON, axis=1)
-        candidates &= np.all(upper[first:last] >= lower[index] - GEOMETRY_EPSILON, axis=1)
-        if not candidates.any():
-            continue
-        a, b = points[index], ends[index]
-        c, d = points[first:last][candidates], ends[first:last][candidates]
-        ab = b - a
-        cd = d - c
-        cross_c = ab[0] * (c[:, 1] - a[1]) - ab[1] * (c[:, 0] - a[0])
-        cross_d = ab[0] * (d[:, 1] - a[1]) - ab[1] * (d[:, 0] - a[0])
-        cross_a = cd[:, 0] * (a[1] - c[:, 1]) - cd[:, 1] * (a[0] - c[:, 0])
-        cross_b = cd[:, 0] * (b[1] - c[:, 1]) - cd[:, 1] * (b[0] - c[:, 0])
-        crossing = (np.minimum(cross_c, cross_d) <= GEOMETRY_EPSILON)
-        crossing &= np.maximum(cross_c, cross_d) >= -GEOMETRY_EPSILON
-        crossing &= np.minimum(cross_a, cross_b) <= GEOMETRY_EPSILON
-        crossing &= np.maximum(cross_a, cross_b) >= -GEOMETRY_EPSILON
-        if crossing.any():
+        if first < last and _meets_any(points[index], ends[index], points[first:last], ends[first:last]):
             return False
     return True
+
+
+def _meets_any(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> bool:
+    """Whether segment a-b crosses or touches any segment c[i]-d[i]."""
+    near = np.all(np.minimum(c, d) <= np.maximum(a, b) + GEOMETRY_EPSILON, axis=1)
+    near &= np.all(np.maximum(c, d) >= np.minimum(a, b) - GEOMETRY_EPSILON, axis=1)
+    if not near.any():
+        return False
+    c, d = c[near], d[near]
+    ab = b - a
+    cd = d - c
+    cross_c = ab[0] * (c[:, 1] - a[1]) - ab[1] * (c[:, 0] - a[0])
+    cross_d = ab[0] * (d[:, 1] - a[1]) - ab[1] * (d[:, 0] - a[0])
+    cross_a = cd[:, 0] * (a[1] - c[:, 1]) - cd[:, 1] * (a[0] - c[:, 0])
+    cross_b = cd[:, 0] * (b[1] - c[:, 1]) - cd[:, 1] * (b[0] - c[:, 0])
+    crossing = (np.minimum(cross_c, cross_d) <= GEOMETRY_EPSILON)
+    crossing &= np.maximum(cross_c, cross_d) >= -GEOMETRY_EPSILON
+    crossing &= np.minimum(cross_a, cross_b) <= GEOMETRY_EPSILON
+    crossing &= np.maximum(cross_a, cross_b) >= -GEOMETRY_EPSILON
+    return bool(crossing.any())
 
 
 def _segment_distance(points: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
@@ -221,13 +223,41 @@ def _sample_contour(contour: np.ndarray, settings: PolygonSettings) -> np.ndarra
     vertices. Edges shorter than min_distance_px, including the closing edge,
     are then rerouted locally through other contour points under both limits.
     The contour is omitted when no such route exists nearby.
+
+    Douglas-Peucker can make edges cross near a narrow neck. A crossing result
+    is retried from a tighter split, which still satisfies max_error_px.
     """
     original = contour.reshape(-1, 2).astype(np.float64)
     n = len(original)
     if n < 3 or len(np.unique(original, axis=0)) != n:
         return None
     doubled = np.concatenate((original, original))
-    indices = _split_contour(doubled, settings.max_error_px + GEOMETRY_EPSILON)
+    for attempt, factor in enumerate(SPLIT_RETRY_FACTORS):
+        try:
+            indices = _split_contour(doubled, settings.max_error_px * factor + GEOMETRY_EPSILON)
+            indices = _enforce_spacing(doubled, indices, settings)
+        except PolygonLimitError:
+            if attempt == 0:
+                raise
+            return None  # A tighter split only adds vertices; the first result stands.
+        if indices is None:
+            return None
+        if len(indices) > MAX_POLYGON_VERTICES:
+            if attempt == 0:
+                raise PolygonLimitError("polygon exceeds 4096 vertices; increase polygon approximation error")
+            return None
+        points = original[indices]
+        area = polygon_area(points)
+        if area <= GEOMETRY_EPSILON or area + GEOMETRY_EPSILON < settings.min_area_px:
+            return None
+        if is_simple_polygon(points):
+            return points
+    return None
+
+
+def _enforce_spacing(doubled: np.ndarray, indices: list[int], settings: PolygonSettings) -> list[int] | None:
+    """Reroute every edge shorter than min_distance_px; None when one cannot be."""
+    original = doubled[:len(doubled) // 2]
     while len(indices) >= 3:
         count = len(indices)
         ring = original[indices]
@@ -238,30 +268,39 @@ def _sample_contour(contour: np.ndarray, settings: PolygonSettings) -> np.ndarra
         edge = int(short[0])
         # Replace the vertices around the short edge, keeping one vertex fixed on
         # each side. Every edge of the new route is valid, so each pass removes
-        # this short edge and creates none.
+        # this short edge and creates none. A route that crosses the rest of the
+        # outline (the far side of a narrow tip) is not used.
         for depth in range(1, REROUTE_DEPTH + 1):
             if count < 2 * depth + 2:
                 return None
+            first, last = indices[(edge - depth) % count], indices[(edge + 1 + depth) % count]
             replaced = [indices[(edge - depth + step) % count] for step in range(1, 2 * depth + 1)]
-            path = _reroute(doubled, settings, indices[(edge - depth) % count],
-                            indices[(edge + 1 + depth) % count], replaced)
-            if path is not None and count - len(replaced) + len(path) >= 3:
-                indices = sorted(set(indices).difference(replaced).union(path))
+            path = _reroute(doubled, settings, first, last, replaced)
+            if path is None or count - len(replaced) + len(path) < 3:
+                continue
+            candidate = sorted(set(indices).difference(replaced).union(path))
+            route = {first, last, *path}
+            if not _route_crosses(original[candidate], [i for i, v in enumerate(candidate) if v in route]):
+                indices = candidate
                 break
         else:
             return None
-    if len(indices) < 3:
-        return None
-    if len(indices) > MAX_POLYGON_VERTICES:
-        raise PolygonLimitError("polygon exceeds 4096 vertices; increase polygon approximation error")
+    return indices if len(indices) >= 3 else None
 
-    points = original[indices]
-    area = polygon_area(points)
-    if area <= GEOMETRY_EPSILON or area + GEOMETRY_EPSILON < settings.min_area_px:
-        return None
-    if not is_simple_polygon(points):
-        return None
-    return points
+
+def _route_crosses(points: np.ndarray, route: list[int]) -> bool:
+    """Whether an edge between consecutive route vertices meets a nonadjacent edge of the ring."""
+    count = len(points)
+    ends = np.roll(points, -1, axis=0)
+    members = set(route)
+    for i in route:
+        if (i + 1) % count not in members:
+            continue
+        others = np.ones(count, dtype=bool)
+        others[[i, (i + 1) % count, (i - 1) % count]] = False
+        if others.any() and _meets_any(points[i], ends[i], points[others], ends[others]):
+            return True
+    return False
 
 
 def _check_bitmap(bitmap, h: int, w: int) -> np.ndarray:
