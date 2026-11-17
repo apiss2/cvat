@@ -24,7 +24,7 @@ function load(name, mocks = {}, globals = {}) {
     return module.exports;
 }
 const { createAPI, errorMessage } = load('api.ts');
-const { buildFields, completeTree } = load('filter-config.ts');
+const { buildFields, buildScopeFields, completeTree } = load('filter-config.ts');
 const filters = [{ and: [{ '==': [{ var: 'type' }, 'tag'] }, { '==': [{ var: 'label' }, 'ready'] }] }];
 const selection = { filters, format: 'CVAT for images 1.1', saveImages: true };
 
@@ -199,4 +199,58 @@ test('editor uses supported read-only settings and does not update the display-f
     assert.ok(code.includes('if (!disabled) change(next)'));
     assert.ok(!code.includes('changeAnnotationsFilters'));
     assert.ok(!code.includes('dispatch'));
+});
+
+test('task and job filters are sent identically to preview and export', async () => {
+    const requests = [];
+    const api = createAPI(async (request) => { requests.push(request); return { data: {} }; },
+        '/api', 'project', 2, '', () => 'u');
+    const taskFilter = { '==': [{ var: 'subset' }, 'test'] };
+    const jobFilter = { '==': [{ var: 'state' }, 'completed'] };
+    await api.preview(filters, taskFilter, jobFilter);
+    await api.export({ ...selection, taskFilter, jobFilter }, 'revision');
+    const payload = { filters, task_filter: taskFilter, job_filter: jobFilter };
+    assert.deepEqual(plain(requests[0].data), payload);
+    assert.deepEqual(plain(requests[1].data), { ...payload, expected_revision: 'revision' });
+});
+
+test('task and job fields are disjoint by scope and completed is a state, not a stage', () => {
+    const task = buildScopeFields('task');
+    const job = buildScopeFields('job');
+    assert.deepEqual(Object.keys(task), ['id', 'name', 'subset', 'status']);
+    assert.deepEqual(Object.keys(job), ['id', 'stage', 'state', 'status']);
+    assert.deepEqual(plain(job.stage.fieldSettings.listValues).map((v) => v.value),
+        ['annotation', 'validation', 'acceptance']);
+    assert.deepEqual(plain(job.state.fieldSettings.listValues).map((v) => v.value),
+        ['new', 'in progress', 'completed', 'rejected']);
+    assert.equal(task.subset.type, 'text');
+});
+
+test('all three scope editors invalidate the preview and remove duplicated explanations', () => {
+    const editor = fs.readFileSync(path.join(source, 'filter-editor.tsx'), 'utf8');
+    const dialog = fs.readFileSync(path.join(source, 'dialog.tsx'), 'utf8');
+    for (const scope of ['task', 'job', 'images']) assert.ok(editor.includes("key: '" + scope + "'"));
+    assert.ok(editor.includes('onChange(filters, validity.every(Boolean), rules[2], rules[3])'));
+    assert.ok(dialog.includes('JSON.stringify([next, valid, taskRule, jobRule])'));
+    assert.ok(dialog.includes('setPreview(undefined)'));
+    assert.ok(dialog.includes('api.preview(filters, taskFilter, jobFilter)'));
+    assert.ok(!dialog.includes('description='));
+    assert.ok(!dialog.includes('例:'));
+});
+
+test('filter panels start closed and indicate only configured or unfinished filters', () => {
+    const code = fs.readFileSync(path.join(source, 'filter-editor.tsx'), 'utf8');
+    assert.ok(!code.includes('defaultActiveKey'));
+    assert.ok(!code.includes('条件あり'));
+    assert.ok(code.includes('if (!invalid && !active) return null;'));
+    assert.ok(code.includes('aria-label={label}'));
+    assert.equal((code.match(/useState<ImmutableTree>\(emptyTree\)/g) || []).length, 4);
+});
+
+test('dialog bounds its height and scrolls its body instead of its action buttons', () => {
+    const code = fs.readFileSync(path.join(source, 'dialog.tsx'), 'utf8');
+    assert.ok(code.includes("maxHeight: 'calc(100dvh - 24px)'"));
+    assert.ok(code.includes("body: { flex: '1 1 auto', minHeight: 0, minWidth: 0, overflow: 'auto' }"));
+    assert.ok(code.includes('footer: { flexShrink: 0 }'));
+    assert.ok(code.includes("maxWidth: 'calc(100vw - 24px)'"));
 });

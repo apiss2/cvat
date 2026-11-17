@@ -221,3 +221,22 @@ class TestView:
             changed = self.manager().signature
             assert original != changed
             original = changed
+
+    def test_scope_rules_reach_revision_signature_and_worker(self):
+        original = self.manager().signature
+        self.request.data.update(
+            task_filter=rule("subset", "test"), job_filter=rule("state", "completed")
+        )
+        manager = self.manager()
+        assert manager.signature != original
+        manager.validate_request()
+        assert self.check.call_args.args[2].to_payload() == {
+            key: value for key, value in self.request.data.items() if key != "expected_revision"
+        }
+        manager._init_callback_with_params()
+        assert manager.callback_kwargs["task_filter"] == self.request.data["task_filter"]
+        assert manager.callback_kwargs["job_filter"] == self.request.data["job_filter"]
+        for key in ("task_filter", "job_filter"):
+            for invalid in (None, [], "completed"):
+                with pytest.raises(ValidationError):
+                    self.views.read_filters({"filters": [], key: invalid})

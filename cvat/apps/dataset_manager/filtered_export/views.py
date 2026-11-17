@@ -18,11 +18,17 @@ from .service import IMAGE_EXPORT_FORMATS, check_revision, export_filtered, get_
 
 
 def read_filters(body, *, exporting=False):
-    allowed = {"filters", "expected_revision"} if exporting else {"filters"}
+    allowed = {"filters", "task_filter", "job_filter"}
+    if exporting:
+        allowed.add("expected_revision")
     if not isinstance(body, dict) or set(body) - allowed or "filters" not in body:
         raise ValidationError(f"Expected fields: {', '.join(sorted(allowed))}")
     try:
-        return AnnotationFilter.parse(body["filters"])
+        task_filter = body.get("task_filter", {})
+        job_filter = body.get("job_filter", {})
+        if not isinstance(task_filter, dict) or not isinstance(job_filter, dict):
+            raise ValueError("task_filter and job_filter must be JsonLogic objects")
+        return AnnotationFilter.parse(body["filters"], task_filter=task_filter, job_filter=job_filter)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
 
@@ -36,7 +42,7 @@ class FilteredDatasetExporter(DatasetExporter):
             raise ValidationError("Preview the selection before exporting")
         self.signature = fingerprint({
             "target": str(self.target), "id": self.db_instance.pk, "user": self.user_id,
-            "filters": self.filters.to_list(), "revision": self.expected_revision,
+            **self.filters.to_payload(), "revision": self.expected_revision,
             "format": self.export_args.format, "save_images": self.export_args.save_images,
         })
 
@@ -70,6 +76,7 @@ class FilteredDatasetExporter(DatasetExporter):
         self.callback_kwargs = {
             "target": str(self.target), "pk": self.db_instance.pk,
             "filters_spec": self.filters.to_list(), "expected_revision": self.expected_revision,
+            "task_filter": self.filters.task_filter, "job_filter": self.filters.job_filter,
             "format_name": self.export_args.format, "save_images": self.export_args.save_images,
             "signature": self.signature, "server_url": self.request.build_absolute_uri("/").rstrip("/"),
         }
