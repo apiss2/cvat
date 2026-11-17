@@ -353,6 +353,7 @@ def save_color_frames(path, pixels, *, encoding, planar):
         )
         ds.PhotometricInterpretation = "YBR_FULL_422" if encoding == "jpeg" else "RGB"
         ds.PixelData = encapsulate(encoded)
+        ds["PixelData"].VR = "OB"
         ds["PixelData"].is_undefined_length = True
     ds.PlanarConfiguration = planar
     ds.save_as(path, enforce_file_format=True)
@@ -412,7 +413,8 @@ def test_color_png_layout_and_original_tags(tmp_path, monkeypatch, encoding, pla
     np.testing.assert_array_equal(png, expected[:, :, ::-1])
     assert next(iter(task.tags.values())) == original_tags
     assert original_tags["PlanarConfiguration"] == str(planar)
-    assert source.read_bytes() == original_bytes
+    with source.open("rb") as stream:
+        assert stream.read(len(original_bytes) + 1) == original_bytes
 
 
 @pytest.mark.parametrize("encoding", ["native", "jpeg"])
@@ -443,7 +445,8 @@ def test_planar_color_multiframe_keeps_frame_order(tmp_path, monkeypatch, encodi
             original[8::16, 8::16, ::-1].astype(int),
             atol=12,
         )
-    assert source.read_bytes() == original_bytes
+    with source.open("rb") as stream:
+        assert stream.read(len(original_bytes) + 1) == original_bytes
 
 
 def test_monochrome_png_pixels_and_tags_unchanged(tmp_path, monkeypatch):
@@ -460,7 +463,8 @@ def test_monochrome_png_pixels_and_tags_unchanged(tmp_path, monkeypatch):
     np.testing.assert_array_equal(png, pixels)
     assert next(iter(task.tags.values())) == original_tags
     assert "PlanarConfiguration" not in original_tags
-    assert source.read_bytes() == original_bytes
+    with source.open("rb") as stream:
+        assert stream.read(len(original_bytes) + 1) == original_bytes
 
 
 def test_multiframe_high_bit_is_checked_and_original_metadata_is_kept(tmp_path, monkeypatch):
