@@ -48,6 +48,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
 
     function Dialog(): JSX.Element {
         const [loading, setLoading] = useState(true);
+        const [ready, setReady] = useState(false);
         const [busy, setBusy] = useState(false);
         const [stopping, setStopping] = useState(false);
         const [error, setError] = useState('');
@@ -78,6 +79,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
                     if (!alive) return;
                     setModels(available.filter((item) => item.kind === 'detector'));
                     setLabels(targetLabels);
+                    setReady(true);
                 }).catch((reason) => { if (alive) setError(String(reason)); })
                 .finally(() => { if (alive) setLoading(false); });
             return () => { alive = false; session.cancelled = true; };
@@ -101,7 +103,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
             if (session.disposed) close(); else setBusy(false);
         };
         const preview = async (): Promise<void> => {
-            if (session.busy || session.disposed || !filterValid || loading) return;
+            if (session.busy || session.disposed || !filterValid || !ready || loading) return;
             start(); invalidate();
             try {
                 const next = await buildPlan(options.api, options.scope, condition, () => session.cancelled);
@@ -152,7 +154,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
                 onCancel={close} closable={!busy} maskClosable={false} keyboard={!busy}
                 footer={(
                     <Space wrap>
-                        <Button onClick={() => { void preview(); }} disabled={busy || loading ||
+                        <Button onClick={() => { void preview(); }} disabled={busy || loading || !ready ||
                             !filterValid || ran}>対象画像を一覧表示</Button>
                         <Button type='primary' onClick={() => { void run(); }} disabled={busy || loading || !plan ||
                             !selected.size || !filterValid || !mappingValid || (thresholdEditable && threshold === null) || ran}>選択した画像に実行</Button>
@@ -169,9 +171,9 @@ export function openDialog(options: DialogOptions): DialogHandle {
                     <Alert type='warning' showIcon
                         message='結果は追記されます。実行中はタブを閉じず、対象タスクの編集を避けてください。再実行で重複する場合があります。' />
                     {error && <Alert type='error' showIcon message={error} />}
-                    {!loading && !models.length && <Alert type='info' message='利用できる推論モデルがありません。' />}
-                    {!loading && <FilterEditor labels={labels} disabled={busy || ran} onChange={changeFilters} />}
-                    <Form layout='vertical' disabled={busy || loading || ran}>
+                    {ready && !models.length && <Alert type='info' message='利用できる推論モデルがありません。' />}
+                    {ready && <FilterEditor labels={labels} disabled={busy || ran} onChange={changeFilters} />}
+                    <Form layout='vertical' disabled={busy || !ready || ran}>
                         <Form.Item label='推論モデル'>
                             <Select value={modelId} onChange={selectModel} placeholder='モデルを選択'
                                 options={models.map((item) => ({ value: String(item.id), label: item.name }))} />
