@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import type { API, Collection } from './engine';
+import { CancelledError, searchFrames, type AnnotationSession } from './selection';
 
 export interface Request {
     method: 'GET' | 'POST' | 'PATCH';
@@ -12,7 +13,8 @@ export type Transport = (request: Request) => Promise<{ data: unknown }>;
 
 // Pass CVAT's shared, already configured Axios instance. Do not store tokens or
 // create another client that omits CVAT's session, CSRF or organization handling.
-export function createAPI(send: Transport, base: string, org: string, identity: () => string): API {
+export function createAPI(send: Transport, base: string, org: string, identity: () => string,
+    loadTask: (id: number) => Promise<AnnotationSession>): API {
     const owner = identity();
     let invalidated = false;
     const guard = (): void => {
@@ -37,6 +39,17 @@ export function createAPI(send: Transport, base: string, org: string, identity: 
     };
     return {
         get: <T>(path: string, params?: Record<string, string | number>) => request<T>('GET', path, undefined, params),
+        matchingFrames: async (taskId, candidates, filters, cancelled) => {
+            taskPath(taskId);
+            const check = (): void => {
+                guard();
+                if (cancelled()) throw new CancelledError();
+            };
+            check();
+            const task = await loadTask(taskId);
+            check();
+            return searchFrames(task, candidates, filters, check);
+        },
         infer: (taskId, modelId, args) => {
             taskPath(taskId);
             if (!String(modelId) || String(modelId).includes('/') || String(modelId).includes('..')) {

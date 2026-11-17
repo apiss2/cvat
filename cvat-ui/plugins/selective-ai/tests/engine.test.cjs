@@ -2,10 +2,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const load = require('./load.cjs');
-const engine = load('engine.ts', { './model-options': load('model-options.ts') });
-const { selectFrames, buildPlan, executePlan, checkedOutput, buildMapping, getAll } = engine;
+const selection = load('selection.ts');
+const engine = load('engine.ts', { './model-options': load('model-options.ts'), './selection': selection });
+const { buildPlan, executePlan, checkedOutput, buildMapping, getAll } = engine;
 const scope = { type: 'task', id: 5 };
-const condition = { mode: 'any', labelIds: [1] };
+const rule = (name) => ({ '==': [{ var: 'label' }, name] });
+const condition = { taskFilter: {}, jobFilter: {}, filters: [rule('A')] };
+const maskCondition = { ...condition, filters: [rule('mask')] };
 const model = { id: 'onnx-model-r1', name: 'model', kind: 'detector', labels: [{ name: 'seg', type: 'mask' }] };
 const choices = { seg: { name: 'mask', attributes: {} } };
 const clone = (value) => structuredClone(value);
@@ -20,16 +23,32 @@ function fixture() {
         { frame: 2, label_id: 1 }, { frame: 2, label_id: 2 }],
     shapes: [{ id: 100, frame: 3, label_id: 10, points: [1, 2, 3, 4] }], tracks: [] };
     const calls = []; const writes = []; const gets = []; const active = [];
+    const jobs = [{ id: 1, task_id: 5, type: 'annotation', start_frame: 0, stop_frame: 3, frame_count: 4, state: 'new' }];
     const api = {
         async get(path, params = {}) {
             gets.push([path, clone(params)]);
             if (path === '/labels') return { count: labels.length, next: null, results: clone(labels) };
             if (path === '/lambda/requests') return clone(active);
-            if (path === '/tasks') return { count: 1, next: null, results: [clone(task)] };
+            if (path === '/tasks') {
+                const matches = !params.filter || !params.filter.includes('"completed"') || task.status === 'completed';
+                return { count: Number(matches), next: null, results: matches ? [clone(task)] : [] };
+            }
+            if (path === '/jobs') {
+                const matching = jobs.filter((job) => !params.filter || !params.filter.includes('"completed"') || job.state === 'completed');
+                const results = matching.map((job) => ({ ...clone(job), task_id: params.task_id }));
+                return { count: results.length, next: null, results };
+            }
             if (path === '/tasks/5') return clone(task);
             if (path === '/tasks/5/data/meta') return clone(meta);
             if (path === '/tasks/5/annotations') return clone(data);
             throw new Error(`Unexpected GET: ${path}`);
+        },
+        async matchingFrames(taskId, candidates, filters) {
+            const annotations = await this.get(`/tasks/${taskId}/annotations`);
+            const name = filters[0]['=='][1];
+            const matching = [...annotations.tags, ...annotations.shapes]
+                .filter((obj) => labels.find((label) => label.id === obj.label_id)?.name === name);
+            return candidates.filter((frame) => matching.some((obj) => obj.frame === frame));
         },
         async infer(taskId, modelId, args) {
             calls.push({ taskId, modelId, args: clone(args) });
@@ -41,7 +60,7 @@ function fixture() {
             data.shapes.push(...clone(output.shapes)); data.tags.push(...clone(output.tags));
         },
     };
-    return { api, labels, task, meta, data, calls, writes, gets, active };
+    return { api, labels, task, meta, data, calls, writes, gets, active, jobs };
 }
 async function run(f, opts = {}) {
     const plan = opts.plan ?? await buildPlan(f.api, scope, condition);
@@ -50,37 +69,28 @@ async function run(f, opts = {}) {
         opts.cancelled ?? (() => false), opts.progress ?? (() => {}));
 }
 
-test('any/all/none/untagged evaluate tags only, deduplicate tags and skip deleted frames', () => {
-    const tags = [{ frame: 0, label_id: 1 }, { frame: 0, label_id: 1 }, { frame: 1, label_id: 2 },
-        { frame: 2, label_id: 1 }, { frame: 2, label_id: 2 }];
-    const meta = { size: 5, deleted_frames: [4] };
-    assert.deepEqual(selectFrames(meta, tags, { mode: 'any', labelIds: [1, 2] }), [0, 1, 2]);
-    assert.deepEqual(selectFrames(meta, tags, { mode: 'all', labelIds: [1, 2] }), [2]);
-    assert.deepEqual(selectFrames(meta, tags, { mode: 'none', labelIds: [1] }), [1, 3]);
-    assert.deepEqual(selectFrames(meta, tags, { mode: 'untagged', labelIds: [] }), [3]);
+test('unconfigured filters select every available ordinary-job frame without reading annotations', async () => {
+    const f = fixture();
+    f.meta.deleted_frames = [1];
+    const plan = await buildPlan(f.api, scope, { taskFilter: {}, jobFilter: {}, filters: [] });
+    assert.deepEqual(plan.frames.map((frame) => frame.frame), [0, 2, 3]);
+    assert.equal(f.gets.some(([path]) => path.endsWith('/annotations')), false);
 });
 
-test('selection matches a reference predicate for every combination of three tag labels', () => {
-    for (let bits = 0; bits < 8; bits++) {
-        const tags = [1, 2, 3].filter((id) => bits & (1 << (id - 1))).map((label_id) => ({ label_id, frame: 0 }));
-        for (let chosen = 1; chosen < 8; chosen++) {
-            const labelIds = [1, 2, 3].filter((id) => chosen & (1 << (id - 1)));
-            const contains = (id) => tags.some((tag) => tag.label_id === id);
-            for (const mode of ['any', 'all', 'none']) {
-                const expected = mode === 'any' ? labelIds.some(contains) : mode === 'all' ? labelIds.every(contains) : !labelIds.some(contains);
-                assert.equal(selectFrames({ size: 1 }, tags, { mode, labelIds }).length, Number(expected));
-            }
-        }
-    }
-});
-
-test('invalid conditions or metadata fail closed rather than select every image', () => {
-    for (const condition of [{ mode: 'none', labelIds: [] }, { mode: 'invalid', labelIds: [1] },
-        { mode: 'any', labelIds: [-1] }, { mode: 'all', labelIds: [1.2] }]) {
-        assert.throws(() => selectFrames({ size: 2 }, [], condition));
-    }
-    assert.throws(() => selectFrames({ size: 2, deleted_frames: [2] }, [], condition));
-    assert.throws(() => selectFrames({ size: 2 }, [{ frame: 20, label_id: 1 }], condition));
+test('task, job and image conditions are intersected and rechecked before inference', async () => {
+    const f = fixture();
+    const scoped = { ...condition, taskFilter: { '==': [{ var: 'status' }, 'completed'] },
+        jobFilter: { '==': [{ var: 'state' }, 'completed'] } };
+    assert.equal((await buildPlan(f.api, scope, scoped)).frames.length, 0);
+    f.task.status = 'completed';
+    f.jobs[0].state = 'completed'; f.jobs[0].start_frame = 1; f.jobs[0].frame_count = 3;
+    const plan = await buildPlan(f.api, scope, scoped);
+    assert.deepEqual(plan.frames.map((item) => item.frame), [2]);
+    f.jobs[0].state = 'new';
+    const report = await run(f, { plan });
+    assert.equal(f.calls.length, 0);
+    assert.deepEqual(report.outcomes.map((item) => item.status), ['skipped']);
+    assert.ok(f.gets.some(([path, params]) => path === '/jobs' && params.type === 'annotation' && params.filter));
 });
 
 test('preview is read-only and API frame indices are not source start/step indices', async () => {
@@ -89,8 +99,8 @@ test('preview is read-only and API frame indices are not source start/step indic
     assert.equal(plan.frames[1].name, 'image-2.png');
     assert.equal(f.calls.length + f.writes.length, 0);
     assert.equal(JSON.stringify(plan).includes('shapes'), false);
-    const untagged = await buildPlan(f.api, scope, { mode: 'untagged', labelIds: [] });
-    assert.deepEqual(untagged.frames.map((item) => item.frame), [3], 'existing segmentation is not a tag');
+    const masks = await buildPlan(f.api, scope, maskCondition);
+    assert.deepEqual(masks.frames.map((item) => item.frame), [3]);
 });
 
 test('project preview includes all pages of tasks and never follows next URLs', async () => {
@@ -120,9 +130,9 @@ test('pagination rejects truncation, duplicates and count changes', async () => 
     for (const pages of badPages) await assert.rejects(getAll({ get: async () => pages.shift() }, '/tasks', {}));
 });
 
-test('missing tag labels, foreign project membership and 3D tasks cannot broaden a plan', async () => {
+test('invalid filters, foreign project membership and 3D tasks cannot broaden a plan', async () => {
     const f = fixture();
-    await assert.rejects(buildPlan(f.api, scope, { mode: 'none', labelIds: [999] }));
+    await assert.rejects(buildPlan(f.api, scope, { ...condition, filters: [null] }));
     await assert.rejects(buildPlan(f.api, { type: 'project', id: 8 }, condition));
     f.task.dimension = '3d'; await assert.rejects(buildPlan(f.api, scope, condition));
     assert.equal(f.writes.length, 0);
@@ -161,9 +171,9 @@ test('normal automatic annotation already queued or running blocks this task', a
     const report = await run(f); assert.match(report.error, /実行中/); assert.equal(f.calls.length, 0);
 });
 
-test('classification tags can be saved on untagged frames without clearing masks', async () => {
+test('classification tags can be saved on matching masks without clearing masks', async () => {
     const f = fixture(); const oldMask = clone(f.data.shapes[0]);
-    const plan = await buildPlan(f.api, scope, { mode: 'untagged', labelIds: [] });
+    const plan = await buildPlan(f.api, scope, maskCondition);
     f.api.infer = async (_, __, args) => ({ tags: [{ frame: args.frame, label_id: 1, source: 'auto' }], shapes: [], tracks: [] });
     const report = await run(f, { plan, model: { ...model, labels: [{ name: 'A', type: 'tag' }] }, choices: { A: { name: 'A', attributes: {} } } });
     assert.equal(report.outcomes[0].status, 'saved'); assert.deepEqual(f.data.shapes[0], oldMask);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import React, { useEffect, useState } from '@modules/react';
+import React, { useCallback, useEffect, useRef, useState } from '@modules/react';
 import { createRoot } from '@modules/react-dom/client';
 import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
@@ -16,6 +16,7 @@ import {
     type API, type Condition, type Frame, type LabelSpec, type Mapping, type Model, type Plan, type Report, type Scope,
 } from './engine';
 import { MappingEditor } from './mapper';
+import FilterEditor from './filter-editor';
 import { supportsThreshold, thresholdParameters } from './model-options';
 
 export interface DialogHandle { focus(): void; dispose(): void }
@@ -54,9 +55,11 @@ export function openDialog(options: DialogOptions): DialogHandle {
         const [labels, setLabels] = useState<LabelSpec[]>([]);
         const [modelId, setModelId] = useState<string>();
         const [choices, setChoices] = useState<Mapping>({});
-        const [condition, setCondition] = useState<Condition>({ mode: 'any', labelIds: [] });
+        const [condition, setCondition] = useState<Condition>({ taskFilter: {}, jobFilter: {}, filters: [] });
+        const [filterValid, setFilterValid] = useState(false);
+        const previousFilters = useRef('');
         const [threshold, setThreshold] = useState<number | null>(0.5);
-        const [convert, setConvert] = useState(false);
+        const [convert, setConvert] = useState(true);
         const [plan, setPlan] = useState<Plan>();
         const [selected, setSelected] = useState<Set<string>>(new Set());
         const [report, setReport] = useState<Report>();
@@ -81,6 +84,14 @@ export function openDialog(options: DialogOptions): DialogHandle {
         }, []);
 
         const invalidate = (): void => { setPlan(undefined); setSelected(new Set()); setReport(undefined); setRan(false); };
+        const changeFilters = useCallback((filters: object[], valid: boolean, taskFilter: object, jobFilter: object): void => {
+            const next = { filters, taskFilter, jobFilter };
+            const signature = JSON.stringify([next, valid]);
+            if (previousFilters.current === signature) return;
+            previousFilters.current = signature;
+            setCondition(next); setFilterValid(valid);
+            setPlan(undefined); setSelected(new Set()); setReport(undefined); setRan(false); setError('');
+        }, []);
         const start = (): void => {
             session.busy = true; session.cancelled = false;
             setBusy(true); setStopping(false); setError('');
@@ -90,7 +101,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
             if (session.disposed) close(); else setBusy(false);
         };
         const preview = async (): Promise<void> => {
-            if (session.busy || session.disposed) return;
+            if (session.busy || session.disposed || !filterValid || loading) return;
             start(); invalidate();
             try {
                 const next = await buildPlan(options.api, options.scope, condition, () => session.cancelled);
@@ -100,7 +111,7 @@ export function openDialog(options: DialogOptions): DialogHandle {
             } catch (reason) { if (!session.disposed) setError(String(reason)); } finally { finish(); }
         };
         const run = async (): Promise<void> => {
-            if (!plan || !model || session.disposed || session.busy || !mappingValid ||
+            if (!plan || !model || session.disposed || session.busy || !filterValid || !mappingValid ||
                 (thresholdEditable && threshold === null)) return;
             start(); setRan(true); setReport({ outcomes: [], cancelled: false });
             try {
@@ -130,65 +141,57 @@ export function openDialog(options: DialogOptions): DialogHandle {
         const statuses = new Map(report?.outcomes.map((outcome) => [`${outcome.taskId}:${outcome.frame}`, outcome.status]) ?? []);
         return (
             <Modal
-                open title={`タグ条件で自動アノテーション: ${options.title}`} width={1000}
-                onCancel={close} closable={!busy} maskClosable={!busy} keyboard={!busy} footer={null}
+                open title={`条件を指定して自動アノテーション: ${options.title}`} width={1000}
+                style={{ top: 12, maxWidth: 'calc(100vw - 24px)', paddingBottom: 0 }}
+                styles={{
+                    content: { display: 'flex', flexDirection: 'column', maxHeight: 'calc(100dvh - 24px)' },
+                    header: { flexShrink: 0, overflowWrap: 'anywhere' },
+                    body: { flex: '1 1 auto', minHeight: 0, minWidth: 0, overflow: 'auto' },
+                    footer: { flexShrink: 0 },
+                }}
+                onCancel={close} closable={!busy} maskClosable={false} keyboard={!busy}
+                footer={(
+                    <Space wrap>
+                        <Button onClick={() => { void preview(); }} disabled={busy || loading ||
+                            !filterValid || ran}>対象画像を一覧表示</Button>
+                        <Button type='primary' onClick={() => { void run(); }} disabled={busy || loading || !plan ||
+                            !selected.size || !filterValid || !mappingValid || (thresholdEditable && threshold === null) || ran}>選択した画像に実行</Button>
+                        {busy && <Button danger disabled={stopping} onClick={() => {
+                            session.cancelled = true; setStopping(true);
+                        }}>{stopping ? '中止中' : '中止'}</Button>}
+                        {ran && <Button disabled={busy} onClick={invalidate}>条件を変更</Button>}
+                        <Button disabled={busy} onClick={close}>閉じる</Button>
+                        {report && <Button disabled={busy} onClick={downloadReport}>結果を保存</Button>}
+                    </Space>
+                )}
             >
-                <Space direction='vertical' style={{ width: '100%' }} size='middle'>
-                    <Alert type='warning' showIcon message='保存済みのタグで対象画像を選び、推論結果を追加します。'
-                        description='先にアノテーションを保存してください。実行中はこのタブを閉じたり再読み込みしたりせず、対象タスクの編集や別の自動処理を避けてください。中止や失敗までに保存した結果は残ります。再実行すると重複する場合があります。' />
+                <Space direction='vertical' style={{ width: '100%' }} size={12}>
+                    <Alert type='warning' showIcon
+                        message='結果は追記されます。実行中はタブを閉じず、対象タスクの編集を避けてください。再実行で重複する場合があります。' />
                     {error && <Alert type='error' showIcon message={error} />}
-                    {!loading && !models.length && <Alert type='info' message='利用できるSegmentation、Detection、Classificationモデルがありません。モデル管理で公開状態を確認してください。公開済みのモデルが表示されない場合は管理者に連絡してください。' />}
+                    {!loading && !models.length && <Alert type='info' message='利用できる推論モデルがありません。' />}
+                    {!loading && <FilterEditor labels={labels} disabled={busy || ran} onChange={changeFilters} />}
                     <Form layout='vertical' disabled={busy || loading || ran}>
-                        <Form.Item label='対象画像の条件' extra='動画では、各フレームを1枚の画像として選択します。'>
-                            <Select value={condition.mode} onChange={(mode: Condition['mode']) => {
-                                setCondition({ mode, labelIds: mode === 'untagged' ? [] : condition.labelIds }); invalidate();
-                            }} options={[
-                                { value: 'any', label: '選択タグのいずれかが付いた画像' },
-                                { value: 'all', label: '選択タグのすべてが付いた画像' },
-                                { value: 'none', label: '選択タグのどれも付いていない画像' },
-                                { value: 'untagged', label: 'タグが付いていない画像（図形がある画像も含む）' },
-                            ]} />
-                        </Form.Item>
-                        {condition.mode !== 'untagged' && <Form.Item label='条件に使用するタグ'>
-                            <Select mode='multiple' value={condition.labelIds} optionFilterProp='label'
-                                onChange={(labelIds: number[]) => { setCondition({ ...condition, labelIds }); invalidate(); }}
-                                options={labels.filter((item) => ['tag', 'any'].includes(item.type))
-                                    .map((item) => ({ value: item.id, label: item.name }))} />
-                        </Form.Item>}
                         <Form.Item label='推論モデル'>
                             <Select value={modelId} onChange={selectModel} placeholder='モデルを選択'
                                 options={models.map((item) => ({ value: String(item.id), label: item.name }))} />
                         </Form.Item>
-                        {model && <Form.Item label='出力ラベルと属性の対応' extra='モデルの出力先となるタスクのラベルを選択してください。対応付けていないラベルは保存されません。'>
+                        {model && <Form.Item label='出力ラベルと属性の対応'>
                             <MappingEditor key={String(model.id)} model={model} labels={labels}
                                 disabled={busy || loading || ran} onChange={setChoices} />
                         </Form.Item>}
-                        {thresholdEditable && <Form.Item label='信頼度の閾値（0から1）' extra='値を大きくすると、信頼度の高い結果に絞り込みます。'>
+                        {thresholdEditable && <Form.Item label='信頼度の閾値'>
                             <InputNumber<number> value={threshold} min={0} max={1} step={0.05} onChange={setThreshold} />
                         </Form.Item>}
-                        {model && !thresholdEditable && <Alert type='info'
-                            message='このモデルは、この画面から信頼度の閾値を変更できません。' />}
                         <Checkbox checked={convert} onChange={(event) => setConvert(event.target.checked)}>マスクをポリゴンに変換</Checkbox>
                     </Form>
-                    <Space wrap>
-                        <Button onClick={() => { void preview(); }} disabled={busy || loading ||
-                            (condition.mode !== 'untagged' && !condition.labelIds.length)}>対象画像を一覧表示</Button>
-                        <Button type='primary' onClick={() => { void run(); }} disabled={busy || loading || !plan ||
-                            !selected.size || !mappingValid || (thresholdEditable && threshold === null) || ran}>選択した画像に実行</Button>
-                        {busy && <Button danger disabled={stopping} onClick={() => {
-                            session.cancelled = true; setStopping(true);
-                        }}>{stopping ? '現在の処理が終わり次第、中止します' : '中止'}</Button>}
-                        {ran && <Button disabled={busy} onClick={invalidate}>条件を変更</Button>}
-                        <Button disabled={busy} onClick={close}>閉じる</Button>
-                        {report && <Button disabled={busy} onClick={downloadReport}>実行結果を保存（JSON）</Button>}
-                    </Space>
                     {plan && <>
                         <div>{`${plan.tasks.length}タスク / 候補${plan.frames.length}画像 / 選択${selected.size}画像`}</div>
                         <Space>
                             <Button disabled={busy || ran} onClick={() => setSelected(new Set(plan.frames.map((frame) => frame.key)))}>全選択</Button>
                             <Button disabled={busy || ran} onClick={() => setSelected(new Set())}>全解除</Button>
                         </Space>
-                        <Table<Frame> size='small' rowKey='key' dataSource={plan.frames}
+                        <Table<Frame> size='small' rowKey='key' dataSource={plan.frames} scroll={{ x: 560 }}
                             pagination={{ pageSize: 20, showSizeChanger: false }}
                             rowSelection={{ selectedRowKeys: [...selected], preserveSelectedRowKeys: true,
                                 onChange: (keys) => setSelected(new Set(keys.map(String))),

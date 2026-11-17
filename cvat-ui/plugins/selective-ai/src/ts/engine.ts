@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 import { thresholdParameters } from './model-options';
+import { CancelledError, hasRule, selectFrames, taskFilterForID, validateCondition, type Condition, type JobInfo } from './selection';
+export type { Condition } from './selection';
 
 export interface Scope { type: 'task' | 'project'; id: number }
-export interface Condition { mode: 'any' | 'all' | 'none' | 'untagged'; labelIds: number[] }
 export interface LabelSpec {
     id?: number;
     name: string;
     type: string;
     parent?: number | null;
     color?: string;
-    attributes?: { name: string; input_type?: string; values?: string[] }[];
+    attributes?: { id?: number; name: string; input_type?: string; values?: string[]; default_value?: string }[];
     sublabels?: LabelSpec[];
 }
 export interface Model { id: string | number; name: string; kind: string; labels: LabelSpec[] }
@@ -32,6 +33,7 @@ export interface MappingItem { name: string; attributes: Record<string, string>;
 export interface Mapping { [name: string]: MappingItem }
 export interface API {
     get<T>(path: string, params?: Record<string, string | number>): Promise<T>;
+    matchingFrames(taskId: number, candidates: number[], filters: object[], cancelled: () => boolean): Promise<number[]>;
     infer(taskId: number, modelId: string | number, args: {
         frame: number; threshold?: number; mapping: Mapping; conv_mask_to_poly: boolean;
     }): Promise<Collection>;
@@ -41,18 +43,6 @@ export interface Outcome { taskId: number; frame: number; status: 'saved' | 'emp
 export interface Report { outcomes: Outcome[]; cancelled: boolean; error?: string }
 
 function positiveID(value: number): boolean { return Number.isSafeInteger(value) && value > 0; }
-
-export function validateCondition(condition: Condition): void {
-    if (!['any', 'all', 'none', 'untagged'].includes(condition.mode) ||
-        !Array.isArray(condition.labelIds) || !condition.labelIds.every(positiveID) ||
-        (condition.mode !== 'untagged' && !condition.labelIds.length)) {
-        throw new Error('タグ条件を確認してください。タグ条件には1個以上のラベルが必要です。');
-    }
-}
-
-class CancelledError extends Error {
-    constructor() { super('処理を中止しました。'); }
-}
 
 async function checkedGet<T>(
     api: API, path: string, params: Record<string, string | number>, cancelled: () => boolean,
@@ -100,43 +90,27 @@ export async function readLabels(
         .filter((label) => !label.parent);
 }
 
-function checkLabels(labels: LabelSpec[], condition: Condition): void {
-    validateCondition(condition);
-    const ids = new Set(labels.map((label) => label.id));
-    if (condition.mode !== 'untagged' && condition.labelIds.some((id) => !ids.has(id))) {
-        throw new Error('選択したタグラベルが削除または変更されました。プレビューをやり直してください。');
-    }
+async function taskMatches(api: API, id: number, rule: object, cancelled: () => boolean): Promise<boolean> {
+    if (!hasRule(rule)) return true;
+    const tasks = await getAll<TaskInfo>(api, '/tasks', { filter: taskFilterForID(rule, id) }, cancelled);
+    if (tasks.some((task) => task.id !== id)) throw new Error('Taskフィルターの応答が不正です。');
+    return tasks.length > 0;
 }
 
-export function selectFrames(meta: Meta, tags: Tag[], condition: Condition): number[] {
-    validateCondition(condition);
-    if (!Number.isSafeInteger(meta.size) || meta.size < 0 || !Array.isArray(tags)) {
-        throw new Error('フレーム情報またはタグの応答が不正です。');
-    }
-    const validFrame = (frame: number): boolean => Number.isSafeInteger(frame) && frame >= 0 && frame < meta.size;
-    if (!Array.isArray(meta.deleted_frames ?? []) || !(meta.deleted_frames ?? []).every(validFrame)) {
-        throw new Error('削除フレーム情報が不正です。');
-    }
-    const deleted = new Set(meta.deleted_frames ?? []);
-    const byFrame = new Map<number, Set<number>>();
-    for (const tag of tags) {
-        if (!validFrame(tag.frame) || !positiveID(tag.label_id)) throw new Error('タグのフレーム番号が不正です。');
-        const labels = byFrame.get(tag.frame) ?? new Set<number>();
-        labels.add(tag.label_id);
-        byFrame.set(tag.frame, labels);
-    }
-    const result: number[] = [];
-    // CVAT annotations and lambda calls use task-relative indices, NOT source
-    // start_frame + index * frame_step. Deleted frames use these same indices.
-    for (let frame = 0; frame < meta.size; frame++) {
-        if (deleted.has(frame)) continue;
-        const labels = byFrame.get(frame) ?? new Set<number>();
-        const matches = condition.mode === 'untagged' ? labels.size === 0 :
-            condition.mode === 'all' ? condition.labelIds.every((id) => labels.has(id)) :
-                condition.mode === 'none' ? condition.labelIds.every((id) => !labels.has(id)) :
-                    condition.labelIds.some((id) => labels.has(id));
-        if (matches) result.push(frame);
-    }
+async function eligibleFrames(api: API, task: TaskInfo, meta: Meta, condition: Condition,
+    cancelled: () => boolean): Promise<number[]> {
+    const jobs = await getAll<JobInfo>(api, '/jobs', {
+        task_id: task.id, type: 'annotation', sort: 'id',
+        ...(hasRule(condition.jobFilter) ? { filter: JSON.stringify(condition.jobFilter) } : {}),
+    }, cancelled);
+    const candidates = selectFrames(meta, jobs, task.id);
+    if (!candidates.length || !condition.filters.some(hasRule)) return candidates;
+    if (cancelled()) throw new CancelledError();
+    const result = await api.matchingFrames(task.id, candidates, condition.filters, cancelled);
+    if (cancelled()) throw new CancelledError();
+    const allowed = new Set(candidates);
+    if (!Array.isArray(result) || result.some((frame) => !allowed.has(frame)) ||
+        new Set(result).size !== result.length) throw new Error('画像フィルターの応答が不正です。');
     return result;
 }
 
@@ -150,17 +124,26 @@ function checkTask(task: TaskInfo, scope: Scope): void {
 export async function buildPlan(
     api: API, scope: Scope, condition: Condition, cancelled: () => boolean = () => false,
 ): Promise<Plan> {
-    checkLabels(await readLabels(api, scope, cancelled), condition);
-    const tasks = scope.type === 'task' ? [await checkedGet<TaskInfo>(api, `/tasks/${scope.id}`, {}, cancelled)] :
-        await getAll<TaskInfo>(api, '/tasks', { project_id: scope.id, sort: 'id' }, cancelled);
+    validateCondition(condition);
+    await readLabels(api, scope, cancelled);
+    let tasks: TaskInfo[];
+    if (scope.type === 'task') {
+        const task = await checkedGet<TaskInfo>(api, `/tasks/${scope.id}`, {}, cancelled);
+        checkTask(task, scope);
+        tasks = await taskMatches(api, task.id, condition.taskFilter, cancelled) ? [task] : [];
+    } else {
+        tasks = await getAll<TaskInfo>(api, '/tasks', {
+            project_id: scope.id, sort: 'id',
+            ...(hasRule(condition.taskFilter) ? { filter: JSON.stringify(condition.taskFilter) } : {}),
+        }, cancelled);
+    }
     const frames: Frame[] = [];
     for (const task of tasks) {
         if (cancelled()) throw new CancelledError();
         checkTask(task, scope);
         const meta = await checkedGet<Meta>(api, `/tasks/${task.id}/data/meta`, {}, cancelled);
         if (meta.size !== task.size) throw new Error(`Task #${task.id}: フレーム数が変更されています。`);
-        const annotations = await checkedGet<Collection>(api, `/tasks/${task.id}/annotations`, {}, cancelled);
-        for (const frame of selectFrames(meta, annotations.tags, condition)) {
+        for (const frame of await eligibleFrames(api, task, meta, condition, cancelled)) {
             frames.push({
                 key: `${task.id}:${frame}`, taskId: task.id, frame,
                 name: meta.frames?.[frame]?.name ?? `frame ${frame}`,
@@ -169,7 +152,7 @@ export async function buildPlan(
         // Do not retain masks/shapes or image pixels in a project-wide plan.
     }
     if (cancelled()) throw new CancelledError();
-    return { scope: { ...scope }, condition: { ...condition, labelIds: [...condition.labelIds] }, tasks, frames };
+    return { scope: { ...scope }, condition: JSON.parse(JSON.stringify(condition)) as Condition, tasks, frames };
 }
 
 export function compatible(model: LabelSpec, target: LabelSpec): boolean {
@@ -247,7 +230,7 @@ export async function executePlan(
         if (!selected.size || [...selected].some((key) => !known.has(key))) throw new Error('対象フレームの選択が不正です。');
         if (cancelled()) { report.cancelled = true; return report; }
         const labels = await readLabels(api, plan.scope, cancelled);
-        checkLabels(labels, plan.condition);
+        validateCondition(plan.condition);
         const mapping = buildMapping(model.labels, labels, choices);
         const mappedNames = new Set(Object.values(mapping).map((item) => item.name));
         const allowed = new Set(labels.filter((label) => mappedNames.has(label.name)).map((label) => label.id as number));
@@ -266,8 +249,8 @@ export async function executePlan(
             checkTask(latest, plan.scope);
             const meta = await checkedGet<Meta>(api, `/tasks/${task.id}/data/meta`, {}, cancelled);
             if (latest.size !== task.size || meta.size !== task.size) throw new Error(`Task #${task.id}: フレーム数が変更されています。`);
-            const annotations = await checkedGet<Collection>(api, `/tasks/${task.id}/annotations`, {}, cancelled);
-            const eligible = new Set(selectFrames(meta, annotations.tags, plan.condition));
+            const matches = await taskMatches(api, task.id, plan.condition.taskFilter, cancelled);
+            const eligible = new Set(matches ? await eligibleFrames(api, latest, meta, plan.condition, cancelled) : []);
             for (const target of targets) {
                 if (cancelled()) { report.cancelled = true; break; }
                 current = target;
