@@ -62,16 +62,16 @@ test('model kinds retain standard ML terms and their existing values', () => {
 
 test('contour settings have accessible guidance without changing their bounds', () => {
     const { nodes } = fixture();
-    for (const id of ['min-distance', 'spacing-percent', 'min-area']) {
+    for (const id of ['min-distance', 'max-error', 'min-area']) {
         assert(nodes.has(`${id}-help`));
         assert.match(html, new RegExp(`<input id="${id}"[^>]*aria-describedby="${id}-help"`));
     }
     for (const match of html.matchAll(/\baria-describedby="([^"]+)"/g)) {
         for (const id of match[1].split(/\s+/)) assert(nodes.has(id), `missing help: ${id}`);
     }
-    assert.match(html, /細かい凹凸を省略/);
+    assert.match(html, /小さくすると細部を保持/);
     assert.match(html, /小さい対象を残す場合/);
-    assert.match(html, /id="spacing-percent"[^>]*min="0" max="100"/);
+    assert.match(html, /id="max-error"[^>]*min="0" step="any"/);
 });
 
 test('JSON and logs remain available in closed details elements', () => {

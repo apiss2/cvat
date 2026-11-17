@@ -166,7 +166,7 @@ def test_registered_interactor_native_routing_permissions_prompts_and_mask(
         payload = kwargs["data"]
         image = decode_image(payload["image"])
         InvokeRequest.model_validate(payload).prompts_for(manifest, image.shape[1], image.shape[0])
-        return encode_interactor(image.mean(axis=2) > 128, image.shape)
+        return encode_interactor(image.mean(axis=2) > 128, image.shape, manifest.polygon)
     monkeypatch.setattr(LambdaGateway, "_http", http)
     monkeypatch.setitem(settings.NUCLIO, "INVOKE_METHOD", "dashboard")
     monkeypatch.setattr(TaskFrameProvider, "get_frame", lambda *args: SimpleNamespace(
@@ -197,6 +197,10 @@ def test_registered_interactor_native_routing_permissions_prompts_and_mask(
     mask = np.asarray(response.data["mask"])
     assert mask.shape == (48, 64) and mask.sum() == 32 * 24 - 8 * 8
     assert mask[18, 22] == 0 and mask[10, 14] == 1
+    # Registry polygons follow the mask from ROI-local to image coordinates.
+    assert [sorted(zip(points[::2], points[1::2])) for points in response.data["polygons"]] == [
+        [(12, 8), (12, 32), (44, 8), (44, 32)]
+    ]
     # CVAT's AI tools send an empty box when only points are placed.
     points_only = {**request, "obj_bbox": []}
     response = dispatch("post", path, user, data=json.dumps(points_only), content_type="application/json")

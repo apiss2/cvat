@@ -28,7 +28,10 @@ def merge_manifest(previous: dict, patch: dict) -> Manifest:
         raise ValueError("Weight filenames cannot change during a partial update")
     merged = {**previous, **patch}
     if isinstance(patch.get("polygon"), dict):
-        merged["polygon"] = {**previous.get("polygon", {}), **patch["polygon"]}
+        previous_polygon = Manifest.model_validate(previous).polygon.model_dump()
+        if "spacing_percent" in patch["polygon"] and "max_error_px" not in patch["polygon"]:
+            previous_polygon.pop("max_error_px", None)
+        merged["polygon"] = {**previous_polygon, **patch["polygon"]}
     if isinstance(patch.get("interactor"), dict):
         merged["interactor"] = {**(previous.get("interactor") or {}), **patch["interactor"]}
     return Manifest.model_validate(merged)
