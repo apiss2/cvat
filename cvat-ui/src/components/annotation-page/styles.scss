@@ -336,6 +336,47 @@
     }
 }
 
+/* Keep the Info sections in the viewport; scroll only the content of each section. */
+.cvat-job-info-modal-window {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.cvat-job-info-modal-window > :nth-child(-n+2),
+.cvat-job-info-modal-window > .cvat-job-info-bug-tracker {
+    flex-shrink: 0;
+}
+
+.cvat-job-info-modal-window > .cvat-job-info-statistics {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    min-height: 0;
+}
+
+.cvat-job-info-modal-window > .cvat-job-info-statistics > .ant-col,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table-wrapper,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-spin-nested-loading,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-spin-container,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table-container {
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    min-height: 0;
+}
+
+.cvat-job-info-modal-window .cvat-job-info-statistics > .ant-col > span,
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table-header {
+    flex-shrink: 0;
+}
+
+.cvat-job-info-modal-window .cvat-job-info-statistics .ant-table-body {
+    min-height: 0;
+}
+
 .ant-dropdown-menu.cvat-annotation-menu {
     box-shadow: $box-shadow-base;
 
