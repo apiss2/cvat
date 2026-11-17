@@ -275,12 +275,12 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
     return (
         <Modal {...baseProps}>
             <div className='cvat-job-info-modal-window'>
-                <Row justify='start'>
+                <Row justify='start' className='cvat-job-info-overview-heading'>
                     <Col>
                         <Text className='cvat-text'>Overview</Text>
                     </Col>
                 </Row>
-                <Row justify='start'>
+                <Row justify='start' className='cvat-job-info-overview-details'>
                     <Col span={4}>
                         <Text strong className='cvat-text'>
                             Assignee
