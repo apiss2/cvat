@@ -75,6 +75,9 @@ class Task:
         self.updated_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
         self.organization_id = 10
         self.project_id = None
+        self.subset = "test"
+        self.status = "annotation"
+        self.segment_set = Rows([])
         self.dimension = "2d"
         self.media_type = "image"
         self.data_id = pk
@@ -85,6 +88,7 @@ class Task:
             frame_filter="step=3",
             deleted_frames=[4],
             validation_mode=None,
+            get_frame_step=lambda: 3,
         )
         self.tags = copy.deepcopy(TAGS)
         self.shapes = copy.deepcopy(SHAPES[:2])
@@ -221,6 +225,8 @@ class TestService:
             "target": target,
             "pk": pk,
             "filters_spec": self.filters.to_list(),
+            "task_filter": self.filters.task_filter,
+            "job_filter": self.filters.job_filter,
             "expected_revision": revision,
             "format_name": "CVAT for images 1.1",
             "save_images": True,
@@ -387,3 +393,98 @@ class TestService:
         self.task.label_set = Rows([orm(label) for label in self.labels])
         assert self.original_get_labels(self.task) == self.labels
         assert self.service.get_options(self.task)["labels"] == self.labels
+
+    def test_scope_filters_intersect_with_image_filter_and_keep_annotations(self):
+        def segment(pk, frames, state, job_type="annotation"):
+            return types.SimpleNamespace(
+                pk=pk, start_frame=0, stop_frame=4, type="specific_frames",
+                frames=frames, frame_set=frames,
+                job_set=Rows([types.SimpleNamespace(
+                    pk=pk, stage="acceptance", state=state, status="completed", type=job_type,
+                )]),
+            )
+
+        self.task.segment_set = Rows([
+            segment(1, [100, 103, 112], "completed"),
+            segment(2, [103, 106], "completed"),
+            segment(3, [109], "new"),
+            segment(4, [109], "completed", "replica"),
+            segment(5, [109], "completed", "ground_truth"),
+        ])
+        self.tasks[2].subset = "train"
+        self.tasks[2].segment_set = Rows([segment(6, [100, 103], "completed")])
+        self.filters = AnnotationFilter.parse(
+            [], task_filter=rule("subset", "test"), job_filter=rule("state", "completed"),
+        )
+        preview = self.service.preview("project", 20, self.filters)
+        assert [(row["count"], row["total"]) for row in preview["tasks"]] == [(3, 4), (0, 4)]
+        assert not self.loads
+        self.filters = AnnotationFilter.parse(
+            [rule("type", "tag")], task_filter=rule("subset", "test"),
+            job_filter=rule("state", "completed"),
+        )
+        args = self.args("project")
+        self.service.export_filtered(**args)
+        data = self.calls[-1][0]
+        assert data.init_task_data(1).get_included_frames() == {0, 2}
+        assert data.init_task_data(2).get_included_frames() == set()
+        assert data.init_task_data(1).ir.tags == self.task.tags
+        self.task.segment_set[0].job_set[0].state = "new"
+        with pytest.raises(ValidationError):
+            self.service.check_revision("project", 20, self.filters, args["expected_revision"])
+        with pytest.raises(ValidationError):
+            self.service.export_filtered(**args)
+
+    def test_scope_revision_detects_subset_change_and_rejects_unknown_fields(self):
+        self.filters = AnnotationFilter.parse([], task_filter=rule("subset", "test"))
+        args = self.args()
+        self.task.subset = "train"
+        with pytest.raises(ValidationError):
+            self.service.check_revision("task", 1, self.filters, args["expected_revision"])
+        for kwargs in ({"task_filter": rule("state", "new")}, {"job_filter": rule("subset", "test")}):
+            with pytest.raises(ValidationError):
+                self.service.preview("task", 1, AnnotationFilter.parse([], **kwargs))
+        assert not self.loads
+
+    def test_revision_does_not_read_jobs_for_excluded_tasks(self):
+        self.tasks[2].subset = "train"
+        self.filters = AnnotationFilter.parse(
+            [], task_filter=rule("subset", "test"), job_filter=rule("state", "completed"),
+        )
+        with patch.object(self.service, "_annotation_jobs", wraps=self.service._annotation_jobs) as load:
+            self.service.preview("project", 20, self.filters)
+        load.assert_called_once_with(self.task)
+
+    def test_revision_uses_range_bounds_without_expanding_frames(self):
+        class BoundsOnly:
+            pk = 10
+            start_frame = 0
+            stop_frame = 999999
+            type = "range"
+
+            @property
+            def frames(self):
+                raise AssertionError("Range segments need no explicit frame list")
+
+            @property
+            def frame_set(self):
+                raise AssertionError("Revision must not enumerate a range")
+
+        segment = BoundsOnly()
+        job = types.SimpleNamespace(pk=10, stage="annotation", state="completed", status="annotation")
+        self.filters = AnnotationFilter.parse([], job_filter=rule("state", "completed"))
+        args = (self.project, [self.task], self.labels, self.filters, {self.task.pk: [(segment, job)]})
+        first = self.service.source_revision(*args)
+        segment.stop_frame += 1
+        assert self.service.source_revision(*args) != first
+
+    def test_revision_detects_changed_explicit_segment_frames(self):
+        segment = types.SimpleNamespace(
+            pk=10, start_frame=0, stop_frame=4, type="specific_frames", frames=[100, 106],
+        )
+        job = types.SimpleNamespace(pk=10, stage="annotation", state="completed", status="annotation")
+        filters = AnnotationFilter.parse([], job_filter=rule("state", "completed"))
+        args = (self.project, [self.task], self.labels, filters, {self.task.pk: [(segment, job)]})
+        first = self.service.source_revision(*args)
+        segment.frames = [100, 109]
+        assert self.service.source_revision(*args) != first

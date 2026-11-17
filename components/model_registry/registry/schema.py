@@ -34,8 +34,21 @@ class OutputLabel(StrictModel):
 
 class PolygonSettings(StrictModel):
     min_distance_px: Annotated[float, Field(ge=0)] = 2.0
-    spacing_percent: Annotated[float, Field(ge=0, le=100)] = 1.0
+    max_error_px: Annotated[float, Field(ge=0)] = 1.0
     min_area_px: Annotated[float, Field(ge=0)] = 10.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_spacing(cls, value):
+        # Legacy arc spacing and approximation error are not equivalent.
+        # Use a documented 100 px reference perimeter as a migration heuristic.
+        if isinstance(value, dict) and "spacing_percent" in value:
+            value = dict(value)
+            old = value.pop("spacing_percent")
+            if type(old) not in (int, float) or not math.isfinite(old) or not 0 <= old <= 100:
+                raise ValueError("legacy spacing_percent must be a finite number in [0, 100]")
+            value.setdefault("max_error_px", float(old))
+        return value
 
 
 Point = Annotated[list[float], Field(min_length=2, max_length=2)]

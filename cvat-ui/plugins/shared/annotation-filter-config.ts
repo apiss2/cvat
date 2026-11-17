@@ -21,6 +21,19 @@ const choice = (label: string, values: string[]): Field => ({
 const quantity = (label: string): Field => ({ label, type: 'number', operators: numeric });
 const boolean = (label: string): Field => ({ label, type: 'boolean', operators: ['equal', 'not_equal'] });
 
+export function buildScopeFields(scope: 'task' | 'job'): Config['fields'] {
+    const status = choice('Status', ['annotation', 'validation', 'completed']);
+    const name = (label: string): Field => ({ label, type: 'text', operators: text, valueSources: ['value'] });
+    return scope === 'task' ? {
+        id: quantity('ID'), name: name('Name'), subset: name('Subset'), status,
+    } : {
+        id: quantity('ID'),
+        stage: choice('Stage', ['annotation', 'validation', 'acceptance']),
+        state: choice('State', ['new', 'in progress', 'completed', 'rejected']),
+        status,
+    };
+}
+
 export function buildFields(labels: LabelSpec[], elements = false): Config['fields'] {
     const specs = elements ? labels.flatMap((label) => label.sublabels.map((child) => ({
         ...child, name: `${label.name} / ${child.name}`,

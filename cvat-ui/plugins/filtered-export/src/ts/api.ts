@@ -7,7 +7,13 @@ export interface Preview {
     revision: string;
     tasks: { id: number; name: string; count: number; total: number }[];
 }
-export interface Selection { filters: object[]; format: string; saveImages: boolean }
+export interface Selection {
+    filters: object[];
+    taskFilter?: object;
+    jobFilter?: object;
+    format: string;
+    saveImages: boolean;
+}
 export interface Request {
     method: 'GET' | 'POST';
     url: string;
@@ -19,9 +25,17 @@ export interface Request {
 export type Transport = (request: Request) => Promise<{ data: unknown }>;
 export interface API {
     options(): Promise<Options>;
-    preview(filters: object[]): Promise<Preview>;
+    preview(filters: object[], taskFilter?: object, jobFilter?: object): Promise<Preview>;
     export(selection: Selection, revision: string): Promise<{ rq_id: string }>;
     dispose(): void;
+}
+
+function filterPayload(filters: object[], taskFilter?: object, jobFilter?: object): object {
+    return {
+        filters,
+        ...(taskFilter && Object.keys(taskFilter).length ? { task_filter: taskFilter } : {}),
+        ...(jobFilter && Object.keys(jobFilter).length ? { job_filter: jobFilter } : {}),
+    };
 }
 
 export function createAPI(send: Transport, base: string, type: 'task' | 'project', id: number,
@@ -59,9 +73,11 @@ export function createAPI(send: Transport, base: string, type: 'task' | 'project
     };
     return {
         options: () => request<Options>('options'),
-        preview: (filters) => request<Preview>('preview', { filters }, { location: 'local' }),
+        preview: (filters, taskFilter, jobFilter) => request<Preview>(
+            'preview', filterPayload(filters, taskFilter, jobFilter), { location: 'local' },
+        ),
         export: (selection, revision) => request<{ rq_id: string }>('export', {
-            filters: selection.filters, expected_revision: revision,
+            ...filterPayload(selection.filters, selection.taskFilter, selection.jobFilter), expected_revision: revision,
         }, { format: selection.format, save_images: selection.saveImages, location: 'local' }),
         dispose: () => { invalidated = true; controller.abort(); },
     };

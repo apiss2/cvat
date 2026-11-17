@@ -173,12 +173,15 @@ test('prompting registration sends capabilities and explicit sample prompts', as
     const ui = setup(); ui.get('model-kind').value = 'interactor'; ui.eval('kindChanged()');
     ui.get('name').value = 'prompt model'; ui.get('weights').files = [file('model.onnx')];
     ui.get('sample-prompts').value = '{"pos_points":[[12,8]],"neg_points":[[1,1]],"obj_bbox":null}';
-    assert.equal(ui.get('polygon-options').hidden, true);
+    assert.equal(ui.get('polygon-options').hidden, false);
+    assert.equal(ui.get('max-error').disabled, false);
+    ui.get('max-error').value = '2.5';
     assert.equal(ui.get('interactor-options').hidden, false);
     assert.equal(ui.get('sample-prompts').disabled, false);
     await ui.submit('register-form');
     const manifest = JSON.parse(ui.sandbox.submitted[0].data.get('manifest'));
     assert.equal(manifest.kind, 'interactor');
+    assert.equal(manifest.polygon.max_error_px, 2.5);
     assert.equal(manifest.labels[0].type, 'polygon');
     assert.deepEqual(manifest.interactor.sample.pos_points, [[12, 8]]);
     assert.equal(manifest.interactor.startswith_box, false);
@@ -250,20 +253,24 @@ test('prompting list and revision-aware test display masks and send prompts', as
     await ui.submit('test-form');
     assert.equal(ui.get('notice').textContent, '');
     assert.equal(ui.get('preview').hidden, false);
-    assert.match(ui.get('test-summary').textContent, /出力マスク: 1件/);
+    assert.match(ui.get('test-summary').textContent, /出力マスク: 1件。ポリゴンは頂点数または件数の上限を超えた/);
+    ui.sandbox.response.results = { mask: [[0, 1], [1, 1]], polygons: [[1, 0, 1, 1, 0, 1]] };
+    await ui.submit('test-form');
+    assert.match(ui.get('test-summary').textContent, /出力マスク: 1件。変換後のポリゴン: 1件/);
+    assert.equal(JSON.parse(ui.get('test-result').textContent).objects, 1);
     const payload = JSON.parse(JSON.stringify(requestBodies[0]));
     assert.deepEqual(payload.obj_bbox, [[0, 0], [24, 20]]);
     assert.deepEqual(payload.pos_points, []);
     ui.sandbox.response.results = { shapes: [] };
     await ui.submit('test-form');
-    assert.match(ui.get('test-summary').textContent, /出力マスク: 0件/);
+    assert.equal(ui.get('test-summary').textContent, '出力マスク: 0件。');
     ui.sandbox.model.revisions.push({ revision: 'old-detector', manifest: model().manifest });
     ui.get('revision').value = 'old-detector'; ui.eval('testRevisionChanged()');
     assert.equal(ui.get('test-prompts-field').hidden, true);
     assert.equal(ui.get('test-prompts').disabled, true);
     ui.sandbox.response.results = [];
     await ui.submit('test-form');
-    assert.deepEqual(Object.keys(requestBodies[2]), ['image']);
+    assert.deepEqual(Object.keys(requestBodies[3]), ['image']);
 });
 
 test('changing revision during image reading keeps the submitted prompts with their revision', async () => {
@@ -474,7 +481,7 @@ test('polygon option change retains the other model settings', async () => {
     ui.get('min-area').value = '25';
     await ui.submit('register-form');
     assert.deepEqual(JSON.parse(ui.sandbox.submitted[0].data.get('manifest')),
-        { polygon: { min_distance_px: 2, spacing_percent: 1, min_area_px: 25 } });
+        { polygon: { min_distance_px: 2, max_error_px: 1, min_area_px: 25 } });
 });
 
 for (const reset of ['resetForm()', 'signedOut()']) {

@@ -6,7 +6,7 @@ Field names and attribute conversion follow cvat-core/annotations-filter.ts.
 """
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 
@@ -15,6 +15,8 @@ from .logic import evaluate, number, truthy, validate_rule
 OBJECT_FIELDS = {"label", "type", "shape", "occluded", "source", "width", "height",
                  "rotation", "serverID", "score", "zOrder"}
 ELEMENT_FIELDS = {"label", "occluded"}
+TASK_FIELDS = {"id", "name", "subset", "status"}
+JOB_FIELDS = {"id", "stage", "state", "status"}
 
 
 def fingerprint(value) -> str:
@@ -100,25 +102,47 @@ class AnnotationFields:
 class AnnotationFilter:
     objects: dict
     elements: dict
+    task_filter: dict = field(default_factory=dict)
+    job_filter: dict = field(default_factory=dict)
 
     @classmethod
-    def parse(cls, value):
+    def parse(cls, value, *, task_filter=None, job_filter=None):
         if not isinstance(value, list) or len(value) > 2 or any(not isinstance(v, dict) for v in value):
             raise ValueError("filters must be an array of at most two JsonLogic objects")
+        task_filter = {} if task_filter is None else task_filter
+        job_filter = {} if job_filter is None else job_filter
+        if not isinstance(task_filter, dict) or not isinstance(job_filter, dict):
+            raise ValueError("task_filter and job_filter must be JsonLogic objects")
         try:
-            if len(json.dumps(value, allow_nan=False)) > 65536:
+            if len(json.dumps([value, task_filter, job_filter], allow_nan=False)) > 65536:
                 raise ValueError("Filter is too large")
         except (TypeError, RecursionError) as exc:
             raise ValueError("Invalid filter") from exc
         rules = deepcopy(value) + [{}, {}]
-        return cls(rules[0], rules[1])
+        return cls(rules[0], rules[1], deepcopy(task_filter), deepcopy(job_filter))
 
     def to_list(self):
         if self.elements:
             return deepcopy([self.objects, self.elements])
         return deepcopy([self.objects]) if self.objects else []
 
+    def to_payload(self):
+        payload = {"filters": self.to_list()}
+        for name in ("task_filter", "job_filter"):
+            rule = getattr(self, name)
+            if rule:
+                payload[name] = deepcopy(rule)
+        return payload
+
+    def matches_task(self, values):
+        return truthy(evaluate(self.task_filter, values))
+
+    def matches_job(self, values):
+        return truthy(evaluate(self.job_filter, values))
+
     def validate(self, labels):
+        validate_rule(self.task_filter, TASK_FIELDS)
+        validate_rule(self.job_filter, JOB_FIELDS)
         validate_rule(self.objects, fields_for(labels))
         validate_rule(self.elements, fields_for(labels, elements=True))
 

@@ -124,10 +124,12 @@ def create_worker(package: Path = Path("/model")) -> FastAPI:
                      (prompts.obj_bbox[1][0], prompts.obj_bbox[1][1])) if prompts.obj_bbox else None,
                 )
             result = state["model"].predict(image, params)
-            output = (encode_interactor(result, image.shape) if manifest.kind == "interactor"
+            output = (encode_interactor(result, image.shape, manifest.polygon) if manifest.kind == "interactor"
                       else encode_results(result, manifest, image.shape))
             count = int("mask" in output) if manifest.kind == "interactor" else len(output)
             log.info("request_id=%s stage=predict objects=%d", request_id, count)
+            if "mask" in output and "polygons" not in output:
+                log.warning("request_id=%s stage=predict polygons omitted: vertex or object limit exceeded", request_id)
             return output
         except Exception as exc:
             details = traceback.format_exc()[-16000:]

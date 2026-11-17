@@ -273,6 +273,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
             points: [number, number][];
             contours: [number, number][][];
             approximatedPoints: [number, number][];
+            registryPolygons?: number[][];
             confidence: number;
         }[];
         latestRequest: null | {
@@ -396,7 +397,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         if (prevState.approxPolyAccuracy !== approxPolyAccuracy) {
             if (isActivated && mode === 'interaction') {
-                this.interaction.latestResponse.forEach(({ points }, idx) => {
+                this.interaction.latestResponse.forEach(({ points, registryPolygons }, idx) => {
+                    if (registryPolygons !== undefined) return;
                     const approximated = this.approximateResponsePoints(points);
                     this.interaction.latestResponse[idx].approximatedPoints = approximated;
                 });
@@ -571,7 +573,8 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                         continue;
                     }
 
-                    const approximated = this.approximateResponsePoints(polygonPoints);
+                    const approximated = response.polygons === undefined ?
+                        this.approximateResponsePoints(polygonPoints) : [];
                     const confidenceAttr = item.attributes.find((attr) => attr.spec_id === 0);
                     const confidence = confidenceAttr ? +confidenceAttr.value : 1;
                     showConfidenceControl = showConfidenceControl || !!confidenceAttr;
@@ -580,6 +583,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                         points: polygonPoints,
                         contours,
                         approximatedPoints: approximated,
+                        registryPolygons: response.polygons,
                         confidence,
                     });
                 }
@@ -824,12 +828,17 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         const { convertMasksToPolygons, thresholdValue } = this.state;
         const shapesToBeDrawn = this.interaction.latestResponse
             .filter(({ confidence }) => typeof confidence !== 'number' || confidence >= thresholdValue)
-            .filter(({ approximatedPoints }) => !convertMasksToPolygons || approximatedPoints.length >= 3)
-            .map(({ rle, contours, approximatedPoints }) => ({
-                shapeType: convertMasksToPolygons ? ShapeType.POLYGON : ShapeType.MASK,
-                points: convertMasksToPolygons ? approximatedPoints.flat() : rle,
-                maskOutlines: contours.map((contour) => contour.flat()),
-            }));
+            .flatMap(({
+                rle, contours, approximatedPoints, registryPolygons,
+            }) => {
+                const polygons = registryPolygons ?? [approximatedPoints.flat()];
+                const shapes = convertMasksToPolygons ? polygons.filter((points) => points.length >= 6) : [rle];
+                return shapes.map((points) => ({
+                    shapeType: convertMasksToPolygons ? ShapeType.POLYGON : ShapeType.MASK,
+                    points,
+                    maskOutlines: contours.map((contour) => contour.flat()),
+                }));
+            });
 
         canvasInstance.interact({
             enabled: true,
@@ -1128,11 +1137,12 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
         let objects: ObjectState[] = [];
         if (convertMasksToPolygons) {
             objects = objectsToConstruct
-                .filter(({ approximatedPoints }) => approximatedPoints.length >= 3)
-                .map(({ approximatedPoints }) => (
+                .flatMap(({ approximatedPoints, registryPolygons }) => registryPolygons ?? [approximatedPoints.flat()])
+                .filter((points) => points.length >= 6)
+                .map((points) => (
                     new core.classes.ObjectState({
                         shapeType: ShapeType.POLYGON,
-                        points: approximatedPoints.flat(),
+                        points,
                         ...common,
                     })
                 ));
@@ -1594,7 +1604,9 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
         const interactionContent: JSX.Element | null = showInteractionContent ? (
             <>
-                { convertMasksToPolygons && (
+                { convertMasksToPolygons && this.interaction.latestResponse.every(
+                    ({ registryPolygons }) => registryPolygons === undefined,
+                ) && (
                     <ApproximationAccuracy
                         approxPolyAccuracy={approxPolyAccuracy}
                         onChange={(value: number) => {

@@ -12,7 +12,13 @@ from .schema import Manifest
 
 def validate_wire(result: list | dict, manifest: Manifest, width: int, height: int) -> list | dict:
     if manifest.kind == "interactor":
-        return validate_interactor_wire(result, width, height)
+        output = validate_interactor_wire(result, width, height)
+        if "polygons" in output:
+            label = manifest.labels[0].name
+            objects = [{"type": "polygon", "label": label, "confidence": 1., "points": points}
+                       for points in output["polygons"]]
+            validate_wire(objects, manifest.model_copy(update={"kind": "detector", "interactor": None}), width, height)
+        return output
     if not isinstance(result, list) or len(result) > MAX_OBJECTS:
         raise ValueError("invalid worker object count")
     labels = {label.name: label.type for label in manifest.labels}
@@ -53,8 +59,8 @@ def validate_wire(result: list | dict, manifest: Manifest, width: int, height: i
             total_vertices += len(ring)
             if total_vertices > MAX_TOTAL_POLYGON_VERTICES:
                 raise ValueError("combined worker polygons exceed vertex budget")
-            if (ring < 0).any() or (ring[:, 0] > width - 1).any() or (ring[:, 1] > height - 1).any():
-                raise ValueError("worker polygon outside original image pixel centers")
+            if (ring < 0).any() or (ring[:, 0] > width).any() or (ring[:, 1] > height).any():
+                raise ValueError("worker polygon outside original image")
             distances = np.linalg.norm(np.roll(ring, -1, axis=0) - ring, axis=1)
             if (distances + GEOMETRY_EPSILON < manifest.polygon.min_distance_px).any():
                 raise ValueError("worker polygon violates minimum adjacent vertex distance")
@@ -84,8 +90,10 @@ def validate_interactor_wire(result, width: int, height: int) -> dict:
         raise ValueError("interactor output must be a mask response")
     if result == {"shapes": []}:
         return result
-    if set(result) != {"mask"} or width * height > MAX_MASK_VALUES:
+    if set(result) not in ({"mask"}, {"mask", "polygons"}) or width * height > MAX_MASK_VALUES:
         raise ValueError("invalid interactor output fields or pixel budget")
+    if "polygons" in result and (not isinstance(result["polygons"], list) or len(result["polygons"]) > MAX_OBJECTS):
+        raise ValueError("invalid interactor polygon count")
     mask = result["mask"]
     if (not isinstance(mask, list) or len(mask) != height
             or any(not isinstance(row, list) or len(row) != width for row in mask)):
