@@ -95,11 +95,48 @@ def _tasks(instance):
     return tasks
 
 
-def source_revision(instance, tasks, labels, filters):
+def _task_values(task):
+    return {"id": task.pk, "name": task.name, "subset": task.subset, "status": task.status}
+
+
+def _job_values(job):
+    return {"id": job.pk, "stage": job.stage, "state": job.state, "status": job.status}
+
+
+def _annotation_jobs(task):
+    # Match TaskAnnotation's normal export scope; replica and GT jobs must
+    # not make a frame eligible through annotations absent from task export.
+    return [
+        (segment, job)
+        for segment in task.segment_set.all().prefetch_related("job_set").order_by("id")
+        for job in sorted(segment.job_set.all(), key=lambda entry: entry.pk)
+        if job.type == "annotation"
+    ]
+
+
+def _job_frames(task, jobs, filters):
+    step = task.data.get_frame_step()
+    return {
+        (frame - task.data.start_frame) // step
+        for segment, job in jobs if filters.matches_job(_job_values(job))
+        for frame in segment.frame_set
+    }
+
+
+def source_revision(instance, tasks, labels, filters, jobs):
+    scope = {}
+    if filters.task_filter:
+        scope["task_scope"] = [_task_values(task) for task in tasks]
+    if filters.job_filter:
+        scope["job_scope"] = [
+            [task.pk, _job_values(job), segment.pk, segment.start_frame,
+             segment.stop_frame, segment.type, list(segment.frames or [])]
+            for task in tasks for segment, job in jobs[task.pk]
+        ]
     return fingerprint({
         "instance": [instance.__class__.__name__, instance.pk,
                      instance.updated_date.isoformat(), instance.organization_id],
-        "labels": labels, "filters": filters.to_list(),
+        "labels": labels, **filters.to_payload(), **scope,
         "tasks": [[task.pk, task.updated_date.isoformat(), task.data_id,
                    task.data.size, task.data.start_frame, task.data.stop_frame,
                    task.data.frame_filter, sorted(task.data.deleted_frames)] for task in tasks],
@@ -112,24 +149,31 @@ def _validate_filter(instance, filters):
         filters.validate(labels)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
-    return _tasks(instance), labels
+    tasks = _tasks(instance)
+    jobs = {task.pk: _annotation_jobs(task) for task in tasks} if filters.job_filter else {}
+    return tasks, labels, jobs
 
 
 @db_utils.transaction_with_repeatable_read()
 def check_revision(target, pk, filters, expected_revision):
     instance = get_instance(target, pk)
-    tasks, labels = _validate_filter(instance, filters)
-    if expected_revision != source_revision(instance, tasks, labels, filters):
+    tasks, labels, jobs = _validate_filter(instance, filters)
+    if expected_revision != source_revision(instance, tasks, labels, filters, jobs):
         raise ValidationError("Data or filter changed after preview. Preview the selection again.")
 
 
 def _plan(instance, filters):
-    tasks, labels = _validate_filter(instance, filters)
-    revision = source_revision(instance, tasks, labels, filters)
+    tasks, labels, jobs = _validate_filter(instance, filters)
+    revision = source_revision(instance, tasks, labels, filters, jobs)
     selected, counts = {}, []
     for task in tasks:
         available = TaskData(AnnotationIR(task.dimension), task).get_included_frames()
-        if not filters.objects and not filters.elements:
+        total = len(available)
+        if filters.task_filter and not filters.matches_task(_task_values(task)):
+            available = set()
+        elif filters.job_filter:
+            available = available & _job_frames(task, jobs[task.pk], filters)
+        if not available or (not filters.objects and not filters.elements):
             selected[task.pk] = available
         else:
             annotation = TaskAnnotation(task.pk)
@@ -142,7 +186,7 @@ def _plan(instance, filters):
             )
             selected[task.pk] = filters.select(available, annotation.ir_data.tags, shapes, labels)
         counts.append({"id": task.pk, "name": task.name,
-                       "count": len(selected[task.pk]), "total": len(available)})
+                       "count": len(selected[task.pk]), "total": total})
     return selected, counts, revision
 
 
@@ -154,14 +198,14 @@ def preview(target, pk, filters):
 
 @db_utils.transaction_with_repeatable_read()
 def export_filtered(*, target, pk, filters_spec, expected_revision, format_name,
-                    save_images, signature, server_url=""):
+                    save_images, signature, server_url="", task_filter=None, job_filter=None):
     if not re.fullmatch(r"[0-9a-f]{64}", signature):
         raise ValidationError("Invalid export signature")
     if (format_name not in IMAGE_EXPORT_FORMATS or format_name not in EXPORT_FORMATS
             or not EXPORT_FORMATS[format_name].ENABLED):
         raise ValidationError("Unsupported export format")
     instance = get_instance(target, pk)
-    filters = AnnotationFilter.parse(filters_spec)
+    filters = AnnotationFilter.parse(filters_spec, task_filter=task_filter, job_filter=job_filter)
     selected, counts, revision = _plan(instance, filters)
     if revision != expected_revision:
         raise ValidationError("Data or filter changed after preview. Preview the selection again.")
