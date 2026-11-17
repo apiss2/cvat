@@ -225,6 +225,11 @@ def result_message(plan, created, duplicates, failed, conflicts):
         f"({len(duplicates)} duplicate task names, {len(failed - duplicates)} other task errors); "
         f"{plan.duplicates} duplicate images skipped; {plan.high_bit_checked} HighBit checks passed"
     )
+    if plan.planar_configuration_corrected:
+        message += (
+            f"; {plan.planar_configuration_corrected} DICOM instances had "
+            "PlanarConfiguration corrected for decoding"
+        )
     if conflicts:
         message += (
             f"; {len(conflicts)} duplicate names have a different or missing StudyInstanceUID"

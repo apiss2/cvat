@@ -460,6 +460,21 @@ def test_successful_import_has_no_warning(service, monkeypatch, tmp_path):
     assert service.test_meta.status.startswith("DICOM: 1 tasks created; 0 tasks failed")
 
 
+def test_successful_import_reports_planar_corrections(service, monkeypatch, tmp_path):
+    current_project = prepare_import(
+        service,
+        monkeypatch,
+        tmp_path,
+        Plan(tasks=[movie("good", tmp_path)], planar_configuration_corrected=2),
+    )
+    monkeypatch.setattr(service, "create_task", lambda *_: SimpleNamespace(id=10))
+    service.import_project(None, tmp_path, current_project)
+    assert service.test_meta.status.startswith("DICOM: 1 tasks created; 0 tasks failed")
+    assert "2 DICOM instances had PlanarConfiguration corrected for decoding" in (
+        service.test_meta.status
+    )
+
+
 def test_progress_throttles_intermediate_writes_but_always_reports_phase_boundaries(
     service, monkeypatch
 ):
