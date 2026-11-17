@@ -328,8 +328,7 @@ function StatisticsModalComponent(props: StateToProps & DispatchToProps): JSX.El
                             <Spin style={{ margin: '0 50%' }} />
                         ) : (
                             <Table
-                                size='small'
-                                scroll={{ x: 'max-content', y: 200 }}
+                                scroll={{ x: 'max-content', y: 400 }}
                                 bordered
                                 pagination={false}
                                 columns={is2D ? columns : columns3D}
