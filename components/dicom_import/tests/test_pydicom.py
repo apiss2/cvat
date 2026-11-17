@@ -322,6 +322,147 @@ def test_streamed_rgb_video_keeps_channel_order(tmp_path, monkeypatch, compresse
         assert frame.mean(axis=(0, 1)) == pytest.approx(expected, abs=5)
 
 
+def save_color_frames(path, pixels, *, encoding, planar):
+    """Write synthetic RGB frames, including JPEG with a misleading planar tag."""
+    from pydicom.encaps import encapsulate
+    from pydicom.uid import JPEGBaseline8Bit, JPEG2000Lossless
+    from PIL import Image
+
+    save_movie(path, pixels)
+    ds = pydicom.dcmread(path)
+    if len(pixels) == 1:
+        del ds.NumberOfFrames
+    if encoding == "native":
+        stored = pixels if planar == 0 else pixels.transpose(0, 3, 1, 2)
+        ds.PixelData = stored.tobytes()
+    elif encoding == "rle":
+        ds.compress(RLELossless)
+    else:
+        encoded = []
+        for frame in pixels:
+            stream = io.BytesIO()
+            if encoding == "jpeg":
+                Image.fromarray(frame).save(stream, format="JPEG", quality=100, subsampling=1)
+            else:
+                Image.fromarray(frame).save(
+                    stream, format="JPEG2000", irreversible=False, no_jp2=True, mct=0
+                )
+            encoded.append(stream.getvalue())
+        ds.file_meta.TransferSyntaxUID = (
+            JPEGBaseline8Bit if encoding == "jpeg" else JPEG2000Lossless
+        )
+        ds.PhotometricInterpretation = "YBR_FULL_422" if encoding == "jpeg" else "RGB"
+        ds.PixelData = encapsulate(encoded)
+        ds["PixelData"].is_undefined_length = True
+    ds.PlanarConfiguration = planar
+    ds.save_as(path, enforce_file_format=True)
+    return path
+
+
+def color_pattern():
+    # Different colors in different spatial regions expose both channel and
+    # pixel permutations. A non-square image also exposes axis mistakes.
+    pixels = np.empty((32, 48, 3), dtype=np.uint8)
+    pixels[:, :16] = (220, 30, 60)
+    pixels[:, 16:32] = (30, 200, 80)
+    pixels[:, 32:] = (40, 70, 230)
+    pixels[16:] = pixels[16:, :, ::-1]
+    return pixels
+
+
+@pytest.mark.parametrize(
+    "encoding,planar",
+    [
+        ("native", 0),
+        ("native", 1),
+        ("jpeg", 0),
+        ("jpeg", 1),
+        ("jpeg2000", 0),
+        ("jpeg2000", 1),
+        ("rle", 1),
+    ],
+)
+def test_color_png_layout_and_original_tags(tmp_path, monkeypatch, encoding, planar):
+    pixels = color_pattern()
+    source = save_color_frames(
+        tmp_path / "color.dcm", pixels[None], encoding=encoding, planar=planar
+    )
+    # For JPEG, compare the same codestream using the ordinary pixel-by-pixel
+    # setting. This isolates layout from differences between JPEG decoders.
+    ds = pydicom.dcmread(source)
+    original_bytes = source.read_bytes()
+    original_tags = conversion.metadata(ds)
+    if encoding == "jpeg":
+        ds.PlanarConfiguration = 0
+        expected = ds.pixel_array
+        # Also check independent known colors away from the lossy block edges.
+        np.testing.assert_allclose(
+            expected[8::16, 8::16].astype(int), pixels[8::16, 8::16].astype(int), atol=5
+        )
+    else:
+        expected = pixels
+
+    guard_source_reads(monkeypatch, [source])
+    plan = prepare([source], tmp_path / "output", "GRD")
+    assert not plan.failed_tasks and len(plan.tasks) == 1
+    task = plan.tasks[0]
+    assert task.frames == 1 and not task.video
+    png = cv2.imread(str(task.media[0]), cv2.IMREAD_UNCHANGED)
+    assert png is not None and png.dtype == np.uint8
+    np.testing.assert_array_equal(png, expected[:, :, ::-1])
+    assert next(iter(task.tags.values())) == original_tags
+    assert original_tags["PlanarConfiguration"] == str(planar)
+    assert source.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("encoding", ["native", "jpeg"])
+def test_planar_color_multiframe_keeps_frame_order(tmp_path, monkeypatch, encoding):
+    pixels = np.stack([np.roll(color_pattern(), 16 * i, axis=1) for i in range(3)])
+    source = save_color_frames(tmp_path / "movie.dcm", pixels, encoding=encoding, planar=1)
+    ds = pydicom.dcmread(source)
+    original_bytes = source.read_bytes()
+    if encoding == "jpeg":
+        ds.PlanarConfiguration = 0
+        expected = ds.pixel_array
+    else:
+        expected = pixels
+    guard_source_reads(monkeypatch, [source])
+    actual = list(conversion.iter_dicom_frames(source, conversion._read_dicom(source)))
+    np.testing.assert_array_equal(np.stack(actual), expected)
+
+    plan = prepare([source], tmp_path / "output", "GRD")
+    assert not plan.failed_tasks and len(plan.tasks) == 1
+    task = plan.tasks[0]
+    assert task.video and task.frames == len(pixels)
+    assert next(iter(task.tags.values()))["PlanarConfiguration"] == "1"
+    frames = video_frames(task.media[0])
+    assert len(frames) == len(pixels)
+    for frame, original in zip(frames, pixels, strict=True):
+        np.testing.assert_allclose(
+            frame[8::16, 8::16].astype(int),
+            original[8::16, 8::16, ::-1].astype(int),
+            atol=12,
+        )
+    assert source.read_bytes() == original_bytes
+
+
+def test_monochrome_png_pixels_and_tags_unchanged(tmp_path, monkeypatch):
+    pixels = np.arange(24, dtype=np.uint16).reshape(4, 6) * 100
+    source = save(tmp_path / "mono.dcm", 1, pixels)
+    original_bytes = source.read_bytes()
+    original_tags = conversion.metadata(pydicom.dcmread(source))
+    guard_source_reads(monkeypatch, [source])
+    plan = prepare([source], tmp_path / "output", "GRD")
+    assert not plan.failed_tasks and len(plan.tasks) == 1
+    task = plan.tasks[0]
+    png = cv2.imread(str(task.media[0]), cv2.IMREAD_UNCHANGED)
+    assert png is not None and png.dtype == pixels.dtype
+    np.testing.assert_array_equal(png, pixels)
+    assert next(iter(task.tags.values())) == original_tags
+    assert "PlanarConfiguration" not in original_tags
+    assert source.read_bytes() == original_bytes
+
+
 def test_multiframe_high_bit_is_checked_and_original_metadata_is_kept(tmp_path, monkeypatch):
     pixels = np.arange(3 * 4 * 6, dtype=np.uint16).reshape(3, 4, 6) * 50
     source = save_movie(tmp_path / "high-bit.dcm", pixels, bits_stored=12, high_bit=15)
