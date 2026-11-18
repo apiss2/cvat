@@ -181,15 +181,13 @@ for (const result of ['cancel', 'conflict']) {
     });
 }
 
-test('selective annotation describes classification and the specific threshold limitation', () => {
+test('selective annotation describes threshold control and execution warnings', () => {
     const dialog = fs.readFileSync(path.join(root, 'cvat-ui/plugins/selective-ai/src/ts/dialog.tsx'), 'utf8');
-    assert.match(dialog, /Segmentation、Detection、Classification/);
-    assert.match(dialog, /この画面から信頼度の閾値を変更できません/);
-    assert.doesNotMatch(dialog, /検出条件は変更できません|検出なし|現在の通信/);
+    assert.match(dialog, /thresholdEditable && <Form.Item label='信頼度の閾値'/);
+    assert.doesNotMatch(dialog, /検出条件は変更できません|検出なし|現在の通信|この画面から信頼度の閾値を変更できません/);
     assert.match(dialog, /empty: '出力なし'/);
-    assert.match(dialog, /再実行すると重複する場合があります/);
-    assert.match(dialog, /保存した結果は残ります/);
-    assert.match(dialog, /各フレームを1枚の画像/);
+    assert.match(dialog, /再実行で重複する場合があります/);
+    assert.match(dialog, /保存済みの結果は残っています/);
 });
 
 test('tracking guidance covers masks and reverse direction without losing warnings', () => {
