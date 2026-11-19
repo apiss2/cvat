@@ -43,6 +43,10 @@
 
 選択した画像へ登録済みONNXモデルを実行する場合は、`selective_ai` と `model_registry` を両方選びます。Nuclioへ配備済みの他のモデルを使う場合は、`model_registry` は不要です。推論の開始と中止は画面で行います。
 
+### 外部クライアント
+
+[Jobの更新](cli-jobs.md) は外部で動作する `cvat-cli` パッケージの機能です。サーバーでは既存のAPIを使用し、追加サービス、GPU、画面やCompose設定を必要としません。`CVAT_EXTENSIONS` の選択対象にはせず、クライアントのインストールで管理します。開発時の検証は `cvatctl quality run --suite cli_jobs` に組み込みます。`config`、`doctor`、`build`、`up`、`down`、`status`、`check` の対象となるサーバー構成は変わりません。
+
 ## 有効化と無効化
 
 新規環境では、目的に合う設定名だけを `CVAT_EXTENSIONS` へ記載します。例えば、DICOMを取り込み、長さと説明文を表示する構成は次のとおりです。この例はGPUを必要としません。

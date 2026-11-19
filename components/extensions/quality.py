@@ -24,7 +24,7 @@ SUITES = {
     name: [f"components/{name}/tests"]
     for name in (
         "extensions", "itgformat", "filtered_export", "task_guide", "dicom_import",
-        "project_annotations", "model_registry", "sam2", "sam31", "ultrasam",
+        "project_annotations", "model_registry", "sam2", "sam31", "ultrasam", "cli_jobs",
     )
 }
 SUITES["project_orm"] = ["components/project_annotations/tests/run_orm_tests.py"]

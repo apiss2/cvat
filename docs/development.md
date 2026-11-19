@@ -42,6 +42,8 @@
 
 本体の試験群に置く根拠は、[共通の試験準備](../tests/python/conftest.py)、そこから読み込む[サービスの準備処理](../tests/python/shared/fixtures/init.py)と[実行設定](../tests/python/pytest.ini)を使うことです。例えば [Job APIの結合試験](../tests/python/rest_api/test_jobs.py)に追加する応答項目の検証は、その試験群に残します。外部サービスを必要としない独自の単体試験は、機能側に配置します。本体の試験群自体を、このフォークの配置に合わせて移動しません。
 
+CLIの独自コマンドは、配布パッケージに含めるため `cvat-cli/src/cvat_cli/` に実装し、試験は `components/cli_jobs/tests/` に配置します。サーバーと独立したCLIの管理および検証方法は [Jobの更新](extensions/cli-jobs.md) に記載します。
+
 ## 試験用データと依存関係をまとめる
 
 試験専用の入力ファイルは、各機能の `tests/fixtures/` に置きます。例えば、タスク説明の入力例は `components/task_guide/tests/fixtures/` です。[モデル管理の作例](../components/model_registry/examples/)のように、利用者向けの作例を試験でも使う場合は、その配置を正本として参照し、試験用に重複コピーしません。
@@ -147,7 +149,7 @@ bash components/extensions/cvatctl quality run --suite sam2 \
 bash components/extensions/cvatctl quality report --output "$CVAT_QUALITY_DIR"
 ```
 
-試験名は `extensions`、`itgformat`、`filtered_export`、`task_guide`、`dicom_import`、`project_annotations`、`model_registry`、`sam2`、`sam31`、`ultrasam`、`core_integration` です。本体との接続を確認する `core_integration` も、全体の品質判定に必要な標準の試験に含めます。CVATサーバーのPython依存を持つ別環境で、`--python` を指定して実行します。アノテーション保存をさらに確認する `project_orm` は、同じ依存環境で追加実行できます。GPU、実Redis、Dockerの確認は、各機能の手順で明示的に実行します。
+試験名は `extensions`、`itgformat`、`filtered_export`、`task_guide`、`dicom_import`、`project_annotations`、`model_registry`、`sam2`、`sam31`、`ultrasam`、`cli_jobs`、`core_integration` です。本体との接続を確認する `core_integration` も、全体の品質判定に必要な標準の試験に含めます。CVATサーバーのPython依存を持つ別環境で、`--python` を指定して実行します。アノテーション保存をさらに確認する `project_orm` は、同じ依存環境で追加実行できます。GPU、実Redis、Dockerの確認は、各機能の手順で明示的に実行します。
 
 集計結果には、使用したソース、試験、Pythonとライブラリの版、失敗と未実施を残します。異なるソースの計測結果は混合しません。未実施の機能がある集計は部分的な結果として扱い、全機能を確認した値とは比較しません。出力するJSON、CSV、HTMLと実行ログを、恒久文書としてコミットしません。
 
