@@ -308,11 +308,46 @@ def test_filtered_export_job_frames_use_real_segment_model(user, mode):
     filters = AnnotationFilter.parse([], job_filter={"==": [{"var": "state"}, "completed"]})
     # Reload the model and relationships from the DB, rather than supplying a mock frame_set.
     task = models.Task.objects.get(pk=task.pk)
-    assert _job_frames(task, _annotation_jobs(task), filters) == {0, 1, 2, 3, 4}
+    jobs = _annotation_jobs({task.pk}, filters.job_filter)
+    assert _job_frames(task, jobs[task.pk]) == {0, 1, 2, 3, 4}
     selected, counts, revision = _plan(task, filters)
     assert selected == {task.pk: {0, 2, 3, 4}}
     assert counts == [{"id": task.pk, "name": task.name, "count": 4, "total": 5}]
     assert len(revision) == 64
+
+    # Standard list filters use ORM lookups, username searches and datetime
+    # comparisons. Exercise the same native lookup mapping used by export.
+    from cvat.apps.dataset_manager.filtered_export.service import _matching_task_ids
+    other = User.objects.create(username="other-filter-user")
+    task.assignee = user
+    task.save()
+    models.Job.objects.filter(segment=first).update(assignee=user)
+    models.Job.objects.filter(segment=second).update(assignee=other)
+    task_rule = {"and": [
+        {"==": [{"var": "owner"}, user.username]},
+        {"==": [{"var": "assignee"}, user.username]},
+        {"==": [{"var": "mode"}, mode]},
+        {"in": ["filtered", {"var": "name"}]},
+        {">=": [{"var": "created_date"}, task.created_date.isoformat()]},
+    ]}
+    job_rule = {"and": [
+        {"==": [{"var": "assignee"}, user.username]},
+        {"==": [{"var": "task_id"}, task.pk]},
+        {"==": [{"var": "dimension"}, "2d"]},
+        {"==": [{"var": "state"}, "completed"]},
+    ]}
+    extended = AnnotationFilter.parse([], task_filter=task_rule, job_filter=job_rule)
+    assert _matching_task_ids([task], task_rule) == {task.pk}
+    selected, counts, revision = _plan(task, extended)
+    assert selected == {task.pk: {0, 2}}
+    models.Job.objects.filter(segment=first).update(assignee=other)
+    selected, _, new_revision = _plan(task, extended)
+    assert selected == {task.pk: set()}
+    assert new_revision != revision
+    from rest_framework.exceptions import ValidationError
+    for invalid in ({"var": "assignee__email"}, {"==": [{"var": "owner"}, "x"]}):
+        with pytest.raises(ValidationError):
+            _plan(task, AnnotationFilter.parse([], job_filter=invalid))
 
 
 @pytest.mark.parametrize("method", ["get", "head"])

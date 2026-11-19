@@ -5,7 +5,8 @@ import {
     type Config, type ImmutableTree,
 } from '@react-awesome-query-builder/antd';
 import Collapse from 'antd/lib/collapse';
-import { buildFields, buildScopeFields, completeTree } from '../../../shared/annotation-filter-config';
+import { buildFields, completeTree } from '../../../shared/annotation-filter-config';
+import { buildScopeFields } from '../../../shared/resource-filter-config';
 import type { LabelSpec } from './api';
 
 interface Props {

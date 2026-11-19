@@ -95,38 +95,62 @@ def _tasks(instance):
     return tasks
 
 
-def _task_values(task):
-    return {"id": task.pk, "name": task.name, "subset": task.subset, "status": task.status}
+def _apply_scope_filter(queryset, rule, view):
+    """Reuse the list API's field aliases and query semantics on a scoped queryset."""
+    if not rule:
+        return queryset
+    from django.core.exceptions import FieldError, ValidationError as DjangoValidationError
+    from cvat.apps.engine.filters import JsonLogicFilter, get_lookup_fields
+    from .logic import validate_rule
+
+    lookup_fields = get_lookup_fields(view)
+    try:
+        # Bound complexity and reject unknown fields before the native parser,
+        # including its special bare-var/is-null branch.
+        validate_rule(rule, set(lookup_fields))
+        return JsonLogicFilter().apply_filter(queryset, rule, lookup_fields=lookup_fields)
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError,
+            FieldError, DjangoValidationError) as exc:
+        raise ValidationError("Invalid resource filter") from exc
 
 
-def _job_values(job):
-    return {"id": job.pk, "stage": job.stage, "state": job.state, "status": job.status}
+def _matching_task_ids(tasks, rule):
+    ids = {task.pk for task in tasks}
+    if not rule:
+        return ids
+    # Import lazily to avoid a cycle with the core view module.
+    from cvat.apps.engine.views import TaskViewSet
+    queryset = Task.objects.filter(pk__in=ids)
+    return set(_apply_scope_filter(queryset, rule, TaskViewSet).values_list("pk", flat=True))
 
 
-def _annotation_jobs(task):
-    # Match TaskAnnotation's normal export scope; replica and GT jobs must
-    # not make a frame eligible through annotations absent from task export.
-    return [
-        (segment, job)
-        for segment in task.segment_set.all().prefetch_related("job_set").order_by("id")
-        for job in sorted(segment.job_set.all(), key=lambda entry: entry.pk)
-        if job.type == "annotation"
-    ]
+def _annotation_jobs(task_ids, rule):
+    # The condition is ANDed with the operation's task and normal-job scope.
+    # Neither replica nor GT jobs can make a task-export frame eligible.
+    from cvat.apps.engine.models import Job
+    from cvat.apps.engine.views import JobViewSet
+
+    queryset = Job.objects.filter(segment__task_id__in=task_ids, type="annotation")
+    queryset = _apply_scope_filter(queryset, rule, JobViewSet)
+    jobs = {task_id: [] for task_id in task_ids}
+    for job in queryset.select_related("segment__task__data").order_by("segment_id", "pk"):
+        jobs[job.segment.task_id].append((job.segment, job))
+    return jobs
 
 
-def _job_frames(task, jobs, filters):
+def _job_frames(task, jobs):
     step = task.data.get_frame_step()
     return {
         (frame - task.data.start_frame) // step
-        for segment, job in jobs if filters.matches_job(_job_values(job))
+        for segment, _ in jobs
         for frame in segment.frame_set
     }
 
 
-def source_revision(instance, tasks, labels, filters, jobs):
+def source_revision(instance, tasks, labels, filters, jobs, matched_task_ids):
     scope = {}
     if filters.task_filter:
-        scope["task_scope"] = [_task_values(task) for task in tasks]
+        scope["task_scope"] = sorted(matched_task_ids)
     if filters.job_filter:
         segments = {}
         job_scope = []
@@ -159,32 +183,30 @@ def _validate_filter(instance, filters):
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
     tasks = _tasks(instance)
-    jobs = {
-        task.pk: _annotation_jobs(task) for task in tasks
-        if filters.matches_task(_task_values(task))
-    } if filters.job_filter else {}
-    return tasks, labels, jobs
+    matched_task_ids = _matching_task_ids(tasks, filters.task_filter)
+    jobs = _annotation_jobs(matched_task_ids, filters.job_filter) if filters.job_filter else {}
+    return tasks, labels, jobs, matched_task_ids
 
 
 @db_utils.transaction_with_repeatable_read()
 def check_revision(target, pk, filters, expected_revision):
     instance = get_instance(target, pk)
-    tasks, labels, jobs = _validate_filter(instance, filters)
-    if expected_revision != source_revision(instance, tasks, labels, filters, jobs):
+    tasks, labels, jobs, matched_task_ids = _validate_filter(instance, filters)
+    if expected_revision != source_revision(instance, tasks, labels, filters, jobs, matched_task_ids):
         raise ValidationError("Data or filter changed after preview. Preview the selection again.")
 
 
 def _plan(instance, filters):
-    tasks, labels, jobs = _validate_filter(instance, filters)
-    revision = source_revision(instance, tasks, labels, filters, jobs)
+    tasks, labels, jobs, matched_task_ids = _validate_filter(instance, filters)
+    revision = source_revision(instance, tasks, labels, filters, jobs, matched_task_ids)
     selected, counts = {}, []
     for task in tasks:
         available = TaskData(AnnotationIR(task.dimension), task).get_included_frames()
         total = len(available)
-        if filters.task_filter and not filters.matches_task(_task_values(task)):
+        if task.pk not in matched_task_ids:
             available = set()
         elif filters.job_filter:
-            available = available & _job_frames(task, jobs[task.pk], filters)
+            available = available & _job_frames(task, jobs[task.pk])
         if not available or (not filters.objects and not filters.elements):
             selected[task.pk] = available
         else:

@@ -24,7 +24,7 @@ function load(name, mocks = {}, globals = {}) {
     return module.exports;
 }
 const { createAPI, errorMessage } = load('api.ts');
-const { buildFields, buildScopeFields, completeTree } = load('../../../shared/annotation-filter-config.ts');
+const { buildFields, completeTree } = load('../../../shared/annotation-filter-config.ts');
 const filters = [{ and: [{ '==': [{ var: 'type' }, 'tag'] }, { '==': [{ var: 'label' }, 'ready'] }] }];
 const selection = { filters, format: 'CVAT for images 1.1', saveImages: true };
 
@@ -214,16 +214,24 @@ test('task and job filters are sent identically to preview and export', async ()
     assert.deepEqual(plain(requests[1].data), { ...payload, expected_revision: 'revision' });
 });
 
-test('task and job fields are disjoint by scope and completed is a state, not a stage', () => {
-    const task = buildScopeFields('task');
-    const job = buildScopeFields('job');
-    assert.deepEqual(Object.keys(task), ['id', 'name', 'subset', 'status']);
-    assert.deepEqual(Object.keys(job), ['id', 'stage', 'state', 'status']);
-    assert.deepEqual(plain(job.stage.fieldSettings.listValues).map((v) => v.value),
-        ['annotation', 'validation', 'acceptance']);
-    assert.deepEqual(plain(job.state.fieldSettings.listValues).map((v) => v.value),
-        ['new', 'in progress', 'completed', 'rejected']);
-    assert.equal(task.subset.type, 'text');
+test('both plugins reuse every native list field and its original widget definition', () => {
+    const nativeMocks = { 'components/resource-sorting-filtering/request-users': async () => ({ values: [] }) };
+    const taskPath = 'components/tasks-page/tasks-filter-configuration';
+    const jobPath = 'components/jobs-page/jobs-filter-configuration';
+    const taskConfig = load('../../../../src/' + taskPath + '.ts', nativeMocks);
+    const jobConfig = load('../../../../src/' + jobPath + '.ts', nativeMocks);
+    const { buildScopeFields } = load('../../../shared/resource-filter-config.ts', {
+        [taskPath]: taskConfig, [jobPath]: jobConfig,
+    });
+    for (const [scope, config] of [['task', taskConfig], ['job', jobConfig]]) {
+        assert.equal(buildScopeFields(scope), config.config.fields);
+        assert.equal(typeof buildScopeFields(scope).assignee.fieldSettings.asyncFetch, 'function');
+    }
+    for (const file of ['filter-editor.tsx', '../../../selective-ai/src/ts/filter-editor.tsx']) {
+        const editor = fs.readFileSync(path.join(source, file), 'utf8');
+        assert.ok(editor.includes("from '../../../shared/resource-filter-config'"));
+        assert.ok(editor.includes("buildScopeFields('task'), buildScopeFields('job')"));
+    }
 });
 
 test('all three scope editors invalidate the preview and remove duplicated explanations', () => {
