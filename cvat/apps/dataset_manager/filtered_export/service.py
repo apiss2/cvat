@@ -95,7 +95,7 @@ def _tasks(instance):
     return tasks
 
 
-def _apply_scope_filter(queryset, rule, view):
+def _apply_scope_filter(queryset, rule, view, *, scope):
     """Reuse the list API's field aliases and query semantics on a scoped queryset."""
     if not rule:
         return queryset
@@ -109,9 +109,17 @@ def _apply_scope_filter(queryset, rule, view):
         # including its special bare-var/is-null branch.
         validate_rule(rule, set(lookup_fields))
         return JsonLogicFilter().apply_filter(queryset, rule, lookup_fields=lookup_fields)
-    except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError,
-            FieldError, DjangoValidationError) as exc:
-        raise ValidationError("Invalid resource filter") from exc
+    except ValidationError as exc:
+        # The native filter parser already supplies a user-facing explanation.
+        raise ValidationError([f"{scope}: {message}" for message in exc.detail]) from exc
+    except DjangoValidationError as exc:
+        raise ValidationError([f"{scope}: {message}" for message in exc.messages]) from exc
+    except (ValueError, FieldError, OverflowError) as exc:
+        raise ValidationError(f"{scope}: {exc}") from exc
+    except (TypeError, KeyError, IndexError, AttributeError) as exc:
+        # Malformed operand structures can reach the native parser, which
+        # expects the query builder's operand layout.
+        raise ValidationError(f"{scope}: Invalid filter operand structure ({exc})") from exc
 
 
 def _matching_task_ids(tasks, rule):
@@ -121,7 +129,7 @@ def _matching_task_ids(tasks, rule):
     # Import lazily to avoid a cycle with the core view module.
     from cvat.apps.engine.views import TaskViewSet
     queryset = Task.objects.filter(pk__in=ids)
-    return set(_apply_scope_filter(queryset, rule, TaskViewSet).values_list("pk", flat=True))
+    return set(_apply_scope_filter(queryset, rule, TaskViewSet, scope="Task filter").values_list("pk", flat=True))
 
 
 def _annotation_jobs(task_ids, rule):
@@ -131,7 +139,7 @@ def _annotation_jobs(task_ids, rule):
     from cvat.apps.engine.views import JobViewSet
 
     queryset = Job.objects.filter(segment__task_id__in=task_ids, type="annotation")
-    queryset = _apply_scope_filter(queryset, rule, JobViewSet)
+    queryset = _apply_scope_filter(queryset, rule, JobViewSet, scope="Job filter")
     jobs = {task_id: [] for task_id in task_ids}
     for job in queryset.select_related("segment__task__data").order_by("segment_id", "pk"):
         jobs[job.segment.task_id].append((job.segment, job))
@@ -170,7 +178,10 @@ def source_revision(instance, tasks, labels, filters, jobs, matched_task_ids):
         "instance": [instance.__class__.__name__, instance.pk,
                      instance.updated_date.isoformat(), instance.organization_id],
         "labels": labels, **filters.to_payload(), **scope,
-        "tasks": [[task.pk, task.updated_date.isoformat(), task.data_id,
+        # Resource membership and export metadata are separate. Keep task
+        # metadata even when a change leaves the matched ID set unchanged.
+        "tasks": [[task.pk, task.name, task.subset, task.status,
+                   task.updated_date.isoformat(), task.data_id,
                    task.data.size, task.data.start_frame, task.data.stop_frame,
                    task.data.frame_filter, sorted(task.data.deleted_frames)] for task in tasks],
     })

@@ -345,9 +345,37 @@ def test_filtered_export_job_frames_use_real_segment_model(user, mode):
     assert selected == {task.pk: set()}
     assert new_revision != revision
     from rest_framework.exceptions import ValidationError
-    for invalid in ({"var": "assignee__email"}, {"==": [{"var": "owner"}, "x"]}):
-        with pytest.raises(ValidationError):
+    for invalid, reason in (
+        ({"var": "assignee__email"}, "assignee__email"),
+        ({"==": [{"var": "owner"}, "x"]}, "owner"),
+        ({"unsupported": []}, "Unsupported filter operator"),
+        ({"!=": [{"var": "state"}, "new"]}, "operation '!='"),
+        ({"==": [{"var": "id"}, "not-an-id"]}, "not-an-id"),
+    ):
+        with pytest.raises(ValidationError) as error:
             _plan(task, AnnotationFilter.parse([], job_filter=invalid))
+        assert "Job filter:" in str(error.value.detail)
+        assert reason in str(error.value.detail)
+    with pytest.raises(ValidationError) as error:
+        _plan(task, AnnotationFilter.parse([], task_filter={"var": "unknown_task_field"}))
+    assert "Task filter:" in str(error.value.detail)
+    assert "unknown_task_field" in str(error.value.detail)
+
+    # Renaming through the normal Task serializer updates the timestamp.
+    # Also verify the explicitly hashed metadata independently of that timestamp.
+    from cvat.apps.engine.serializers import TaskWriteSerializer
+    stable_filter = AnnotationFilter.parse([], task_filter={"==": [{"var": "id"}, task.pk]})
+    task.refresh_from_db()
+    before = task.updated_date
+    _, _, old_revision = _plan(task, stable_filter)
+    TaskWriteSerializer().update(task, {"name": "renamed task"})
+    task.refresh_from_db()
+    assert task.updated_date > before
+    _, _, renamed_revision = _plan(task, stable_filter)
+    assert renamed_revision != old_revision
+    task.name = "another name"
+    _, _, metadata_revision = _plan(task, stable_filter)
+    assert metadata_revision != renamed_revision
 
 
 @pytest.mark.parametrize("method", ["get", "head"])

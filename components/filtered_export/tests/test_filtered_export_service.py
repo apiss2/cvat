@@ -474,6 +474,33 @@ class TestService:
                 self.service.preview("task", 1, AnnotationFilter.parse([], **kwargs))
         assert not self.loads
 
+    @pytest.mark.parametrize("target", ["task", "project"])
+    @pytest.mark.parametrize("use_task_filter", [False, True])
+    @pytest.mark.parametrize("attribute,value", [
+        ("name", "renamed task"),
+        ("subset", "validation"),
+        ("status", "completed"),
+    ])
+    def test_revision_detects_task_metadata_changes_without_membership_change(
+        self, target, use_task_filter, attribute, value,
+    ):
+        # Select by ID so the task continues matching after the metadata change.
+        self.filters = AnnotationFilter.parse(
+            [], task_filter=rule("id", self.task.pk) if use_task_filter else {},
+        )
+        args = self.args(target)
+        preview = self.service.preview(target, args["pk"], self.filters)
+        previous_timestamp = self.task.updated_date
+        setattr(self.task, attribute, value)
+        updated = self.service.preview(target, args["pk"], self.filters)
+        assert self.task.updated_date == previous_timestamp
+        assert updated["count"] == preview["count"]
+        assert updated["revision"] != preview["revision"]
+        with pytest.raises(ValidationError):
+            self.service.check_revision(target, args["pk"], self.filters, args["expected_revision"])
+        with pytest.raises(ValidationError):
+            self.service.export_filtered(**args)
+
     def test_revision_does_not_read_jobs_for_excluded_tasks(self):
         self.tasks[2].subset = "train"
         self.filters = AnnotationFilter.parse(
