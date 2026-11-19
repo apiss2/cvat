@@ -45,7 +45,7 @@
 
 ### 外部クライアント
 
-[Jobの更新](cli-jobs.md) は外部で動作する `cvat-cli` パッケージの機能です。サーバーでは既存のAPIを使用し、追加サービス、GPU、画面やCompose設定を必要としません。`CVAT_EXTENSIONS` の選択対象にはせず、クライアントのインストールで管理します。開発時の検証は `cvatctl quality run --suite cli_jobs` に組み込みます。`config`、`doctor`、`build`、`up`、`down`、`status`、`check` の対象となるサーバー構成は変わりません。
+[JobのCLI操作](cli-jobs.md) は外部で動作する `cvat-cli` パッケージの機能です。サーバーでは既存のAPIを使用し、追加サービス、GPU、画面やCompose設定を必要としません。`CVAT_EXTENSIONS` の選択対象にはせず、クライアントのインストールで管理します。開発時の検証は `cvatctl quality run --suite cli_jobs` に組み込みます。`config`、`doctor`、`build`、`up`、`down`、`status`、`check` の対象となるサーバー構成は変わりません。
 
 ## 有効化と無効化
 
