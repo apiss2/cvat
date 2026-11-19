@@ -41,7 +41,7 @@
 
 | 機能 | できること |
 | --- | --- |
-| [Jobの更新](extensions/cli-jobs.md) | CLIからJobの担当者、stage、stateを変更します。 |
+| [JobのCLI操作](extensions/cli-jobs.md) | CLIからJob情報とアノテーションを取得し、担当者、stage、state、個別アノテーション、Issueを操作します。 |
 
 ## 環境を管理する場合
 

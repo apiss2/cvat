@@ -42,7 +42,7 @@
 
 本体の試験群に置く根拠は、[共通の試験準備](../tests/python/conftest.py)、そこから読み込む[サービスの準備処理](../tests/python/shared/fixtures/init.py)と[実行設定](../tests/python/pytest.ini)を使うことです。例えば [Job APIの結合試験](../tests/python/rest_api/test_jobs.py)に追加する応答項目の検証は、その試験群に残します。外部サービスを必要としない独自の単体試験は、機能側に配置します。本体の試験群自体を、このフォークの配置に合わせて移動しません。
 
-CLIの独自コマンドは、配布パッケージに含めるため `cvat-cli/src/cvat_cli/` に実装し、試験は `components/cli_jobs/tests/` に配置します。サーバーと独立したCLIの管理および検証方法は [Jobの更新](extensions/cli-jobs.md) に記載します。
+CLIの独自コマンドは、配布パッケージに含めるため `cvat-cli/src/cvat_cli/` に実装し、試験は `components/cli_jobs/tests/` に配置します。サーバーと独立したCLIの管理および検証方法は [JobのCLI操作](extensions/cli-jobs.md) に記載します。
 
 ## 試験用データと依存関係をまとめる
 
