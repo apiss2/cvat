@@ -42,6 +42,8 @@ cvat-cli --server-host https://cvat.example.org --auth user --org my-org job upd
 
 CLIの標準のコマンド登録に2行を追加し、処理は独立した `commands_jobs.py` に配置します。CLIパッケージとしてインストールできるようにするため、実装を `components/` に置かず、CLIのパッケージ内に置きます。SDK、サーバー、データベース、画面の実装は変更しません。上流が同名のJobコマンドを追加した場合は、機能を比較して登録と実装を統合してください。
 
+`--stage` と `--state` の選択肢は、サーバーの [`StageChoice` と `StateChoice`](../../cvat/apps/engine/models.py) の値をCLI側で個別に定義しています。自動同期は行わないため、上流の更新で列挙値が追加・変更・削除された場合は、[`commands_jobs.py`](../../cvat-cli/src/cvat_cli/_internal/commands_jobs.py) の選択肢、回帰テスト、この文書を手動で更新してください。追随しない場合、新たにサーバーが受理する値をCLIが引数解析時に拒否することがあります。
+
 開発時はルートから次のコマンドで試験します。
 
 ```bash
