@@ -101,7 +101,7 @@ cvat-cli job annotations update 42 --type track --id 789 --file changes.json
 {"group": 2}
 ```
 
-たとえば上記はgroupだけを変更します。指定しないフィールドは取得した値を維持します。JSONで `attributes`、`points`、`shapes`、`elements` などの配列を指定すると、その配列全体が置換されます。JSONでIDを指定する場合は対象のIDと一致する必要があります。対象は各コレクションの最上位のアノテーションです。TrackのキーフレームやSkeletonの要素を独立したIDで直接更新するのではなく、親のTrackやShapeを指定してください。
+たとえば上記はgroupだけを変更します。指定しないフィールドは取得した値を維持します。`--file` で指定できるフィールドは、取得した対象アノテーションのJSONに既に存在するキーに限ります。サーバーが空値などの理由で返さなかったフィールドは、APIで有効な項目であっても `--file` から新規に設定できません。JSONで `attributes`、`points`、`shapes`、`elements` などの配列を指定すると、その配列全体が置換されます。JSONでIDを指定する場合は対象のIDと一致する必要があります。対象は各コレクションの最上位のアノテーションです。TrackのキーフレームやSkeletonの要素を独立したIDで直接更新するのではなく、親のTrackやShapeを指定してください。
 
 ### 特定のアノテーションを削除する
 
@@ -132,7 +132,7 @@ Issueの登録とコメントの追加は作成されたIDを標準出力に返�
 
 CLIの標準のコマンド登録に2行を追加し、Jobの基本操作は `commands_jobs.py`、アノテーション操作は `commands_job_annotations.py`、Issue操作は `commands_job_issues.py`、共通の引数・JSON処理は `job_cli_common.py` に配置します。CLIパッケージとしてインストールできるようにするため、実装を `components/` に置かず、CLIのパッケージ内に置きます。SDK、サーバー、データベース、画面の実装は変更しません。上流が同名のJobコマンドを追加した場合は、機能を比較して登録と実装を統合してください。
 
-`--stage` と `--state` の選択肢は、サーバーの [`StageChoice` と `StateChoice`](../../cvat/apps/engine/models.py) の値をCLI側で個別に定義しています。自動同期は行わないため、上流の更新で列挙値が追加・変更・削除された場合は、[`commands_jobs.py`](../../cvat-cli/src/cvat_cli/_internal/commands_jobs.py) の選択肢、回帰テスト、この文書を手動で更新してください。追随しない場合、新たにサーバーが受理する値をCLIが引数解析時に拒否することがあります。 回帰テストはCLIの選択肢とサーバーソースの列挙値を双方向に照合し、不一致があれば不足・余分な値を表示して失敗します。Djangoや実サーバーは不要です。列挙値の定義方法自体が変わった場合は、試験の抽出処理も見直してください。
+`--stage` と `--state` の選択肢は、サーバーの [`StageChoice` と `StateChoice`](../../cvat/apps/engine/models.py) の値をCLI側で個別に定義しています。自動同期は行わないため、上流の更新で列挙値が追加・変更・削除された場合は、[`commands_jobs.py`](../../cvat-cli/src/cvat_cli/_internal/commands_jobs.py) の選択肢、回帰テスト、この文書を手動で更新してください。追随しない場合、新たにサーバーが受理する値をCLIが引数解析時に拒否することがあります。[列挙値の同一性テスト](../../components/cli_jobs/tests/test_job_choices.py) はCLIの選択肢とサーバーソースの列挙値を双方向に照合し、不一致があれば不足・余分な値を表示して失敗します。Djangoや実サーバーは不要です。列挙値の定義方法自体が変わった場合は、試験の抽出処理も見直してください。
 
 開発時はルートから次のコマンドで試験します。
 

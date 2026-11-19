@@ -114,6 +114,16 @@ def test_json_update_preserves_track_keyframes(client, annotations, tmp_path):
     )
 
 
+def test_json_update_rejects_field_absent_from_retrieved_annotation(client, tmp_path):
+    # The second tag has no group key, even though group is a valid API field.
+    path = tmp_path / "patch.json"
+    path.write_text(json.dumps({"group": 2}))
+    with pytest.raises(CriticalError, match="Unknown fields for this annotation.*group"):
+        run(client, "annotations", "update", "42", "--type", "tag", "--id", "8",
+            "--file", str(path))
+    client.api_client.jobs_api.partial_update_annotations.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "changes", [{"id": 8, "group": 2}, {"attributess": []}, {"id": 7}, []]
 )
