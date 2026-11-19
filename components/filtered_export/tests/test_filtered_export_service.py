@@ -218,13 +218,12 @@ class TestService:
         self.service.get_labels = lambda instance: copy.deepcopy(self.labels)
         # The native ORM boundary is covered by core_integration; unit tests
         # substitute only its matching resource IDs/segments.
-        from test_filtered_export_selection import selection as filter_selection
         def matches(rule, values, fields):
             try:
-                filter_selection.validate_rule(rule, fields)
+                selection.validate_rule(rule, fields)
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
-            return not rule or filter_selection.truthy(filter_selection.evaluate(rule, values))
+            return not rule or selection.truthy(selection.evaluate(rule, values))
 
         def matching_tasks(tasks, rule):
             return {task.pk for task in tasks if matches(

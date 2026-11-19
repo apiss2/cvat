@@ -53,7 +53,7 @@ CVAT_EXTENSIONS=model_registry,frame_navigation_filter,selective_ai
 ## 開発者向けの実装と制約
 
 cvat-ui/plugins/selective-ai/と共通フィルター定義の範囲で、projectActions.itemsとtaskActions.itemsを使います。標準の実行画面、サーバー、データベースを変更しません。配備対象の選択は共通のcomponents/extensions/manage.pyで管理します。
-filter-editor.tsxは標準のTaskとJob一覧のフィールド定義、cvat-ui/plugins/shared/annotation-filter-config.tsの共通画像フィールド定義を再利用します。条件付きエクスポートもこの共通定義を使用し、互いのプラグイン内部には依存しません。画像検索はCVAT本体のTask.annotations.searchで行い、Job条件がある場合はJob一覧の範囲と交差させます。通常の連続したJob範囲とフレーム数の不一致は、範囲外の画像へ実行しないためエラーにします。filtered_exportの有効化は不要です。
+filter-editor.tsxはcvat-ui/plugins/shared/resource-filter-config.tsを介して標準のTaskとJob一覧のフィールド定義をそのまま利用し、cvat-ui/plugins/shared/annotation-filter-config.tsの共通画像フィールド定義も再利用します。条件付きエクスポートもこの共通定義を使用し、互いのプラグイン内部には依存しません。画像検索はCVAT本体のTask.annotations.searchで行い、Job条件がある場合はJob一覧の範囲と交差させます。通常の連続したJob範囲とフレーム数の不一致は、範囲外の画像へ実行しないためエラーにします。filtered_exportの有効化は不要です。
 
 mapper.tsxは既存のLabelsMapperとそのスタイルを再利用します。入力配列をモデル単位で保持し、進捗更新で選択を初期化しません。実行中は対応付けの操作を隠しますが、状態は保持します。
 

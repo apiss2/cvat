@@ -117,6 +117,39 @@ test('task, job and image conditions are intersected and rechecked before infere
     assert.ok(f.gets.some(([path, params]) => path === '/jobs' && params.type === 'annotation' && params.filter));
 });
 
+test('native owner, assignee and datetime rules reach list APIs unchanged, including revalidation', async () => {
+    const f = fixture();
+    const scoped = {
+        taskFilter: { and: [
+            { '==': [{ var: 'owner' }, 'annotator'] },
+            { '>=': [{ var: 'created_date' }, '2026-01-01T00:00:00Z'] },
+        ] },
+        jobFilter: { and: [
+            { '==': [{ var: 'assignee' }, 'checker'] },
+            { '!': { var: 'parent_job_id' } },
+        ] },
+        filters: [],
+    };
+    const plan = await buildPlan(f.api, { type: 'project', id: 7 }, scoped);
+    assert.equal(plan.frames.length, 4);
+    const report = await run(f, { plan });
+    assert.equal(report.error, undefined);
+    const requests = f.gets.filter(([path]) => path === '/tasks');
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0][1].project_id, 7);
+    assert.deepEqual(JSON.parse(requests[0][1].filter), scoped.taskFilter);
+    assert.deepEqual(JSON.parse(requests[1][1].filter), {
+        and: [{ '==': [{ var: 'id' }, f.task.id] }, scoped.taskFilter],
+    });
+    const jobRequests = f.gets.filter(([path]) => path === '/jobs');
+    assert.equal(jobRequests.length, 2);
+    for (const [, params] of jobRequests) {
+        assert.equal(params.type, 'annotation');
+        assert.equal(params.task_id, f.task.id);
+        assert.deepEqual(JSON.parse(params.filter), scoped.jobFilter);
+    }
+});
+
 test('preview is read-only and API frame indices are not source start/step indices', async () => {
     const f = fixture(); const plan = await buildPlan(f.api, scope, condition);
     assert.deepEqual(plan.frames.map((item) => item.frame), [0, 2]);
