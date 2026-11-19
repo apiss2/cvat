@@ -15,8 +15,6 @@ from .logic import evaluate, number, truthy, validate_rule
 OBJECT_FIELDS = {"label", "type", "shape", "occluded", "source", "width", "height",
                  "rotation", "serverID", "score", "zOrder"}
 ELEMENT_FIELDS = {"label", "occluded"}
-TASK_FIELDS = {"id", "name", "subset", "status"}
-JOB_FIELDS = {"id", "stage", "state", "status"}
 
 
 def fingerprint(value) -> str:
@@ -134,15 +132,9 @@ class AnnotationFilter:
                 payload[name] = deepcopy(rule)
         return payload
 
-    def matches_task(self, values):
-        return truthy(evaluate(self.task_filter, values))
-
-    def matches_job(self, values):
-        return truthy(evaluate(self.job_filter, values))
-
     def validate(self, labels):
-        validate_rule(self.task_filter, TASK_FIELDS)
-        validate_rule(self.job_filter, JOB_FIELDS)
+        # Resource filters are validated and evaluated by the native ORM
+        # filter in the service; this module only evaluates annotations.
         validate_rule(self.objects, fields_for(labels))
         validate_rule(self.elements, fields_for(labels, elements=True))
 

@@ -216,6 +216,34 @@ class TestService:
         self.original_get_labels = self.service.get_labels
         self.labels = copy.deepcopy(LABELS)
         self.service.get_labels = lambda instance: copy.deepcopy(self.labels)
+        # The native ORM boundary is covered by core_integration; unit tests
+        # substitute only its matching resource IDs/segments.
+        def matches(rule, values, fields):
+            try:
+                selection.validate_rule(rule, fields)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+            return not rule or selection.truthy(selection.evaluate(rule, values))
+
+        def matching_tasks(tasks, rule):
+            return {task.pk for task in tasks if matches(
+                rule, {"id": task.pk, "name": task.name, "subset": task.subset, "status": task.status},
+                {"id", "name", "subset", "status"},
+            )}
+
+        def matching_jobs(task_ids, rule):
+            # Validate even when the task condition matched nothing.
+            matches(rule, {}, {"id", "stage", "state"})
+            return {task_id: [
+                (segment, job) for segment in self.tasks[task_id].segment_set
+                for job in segment.job_set if job.type == "annotation" and matches(
+                    rule, {"id": job.pk, "state": job.state, "stage": job.stage},
+                    {"id", "stage", "state"},
+                )
+            ] for task_id in task_ids}
+
+        self.service._matching_task_ids = matching_tasks
+        self.service._annotation_jobs = matching_jobs
         self.filters = AnnotationFilter.parse([rule("type", "tag")])
 
     def args(self, target="task", **changes):
@@ -446,6 +474,33 @@ class TestService:
                 self.service.preview("task", 1, AnnotationFilter.parse([], **kwargs))
         assert not self.loads
 
+    @pytest.mark.parametrize("target", ["task", "project"])
+    @pytest.mark.parametrize("use_task_filter", [False, True])
+    @pytest.mark.parametrize("attribute,value", [
+        ("name", "renamed task"),
+        ("subset", "validation"),
+        ("status", "completed"),
+    ])
+    def test_revision_detects_task_metadata_changes_without_membership_change(
+        self, target, use_task_filter, attribute, value,
+    ):
+        # Select by ID so the task continues matching after the metadata change.
+        self.filters = AnnotationFilter.parse(
+            [], task_filter=rule("id", self.task.pk) if use_task_filter else {},
+        )
+        args = self.args(target)
+        preview = self.service.preview(target, args["pk"], self.filters)
+        previous_timestamp = self.task.updated_date
+        setattr(self.task, attribute, value)
+        updated = self.service.preview(target, args["pk"], self.filters)
+        assert self.task.updated_date == previous_timestamp
+        assert updated["count"] == preview["count"]
+        assert updated["revision"] != preview["revision"]
+        with pytest.raises(ValidationError):
+            self.service.check_revision(target, args["pk"], self.filters, args["expected_revision"])
+        with pytest.raises(ValidationError):
+            self.service.export_filtered(**args)
+
     def test_revision_does_not_read_jobs_for_excluded_tasks(self):
         self.tasks[2].subset = "train"
         self.filters = AnnotationFilter.parse(
@@ -453,7 +508,7 @@ class TestService:
         )
         with patch.object(self.service, "_annotation_jobs", wraps=self.service._annotation_jobs) as load:
             self.service.preview("project", 20, self.filters)
-        load.assert_called_once_with(self.task)
+        load.assert_called_once_with({self.task.pk}, self.filters.job_filter)
 
     def test_revision_uses_range_bounds_without_expanding_frames(self):
         class BoundsOnly:
@@ -473,7 +528,7 @@ class TestService:
         segment = BoundsOnly()
         job = types.SimpleNamespace(pk=10, stage="annotation", state="completed", status="annotation")
         self.filters = AnnotationFilter.parse([], job_filter=rule("state", "completed"))
-        args = (self.project, [self.task], self.labels, self.filters, {self.task.pk: [(segment, job)]})
+        args = (self.project, [self.task], self.labels, self.filters, {self.task.pk: [(segment, job)]}, {self.task.pk})
         first = self.service.source_revision(*args)
         segment.stop_frame += 1
         assert self.service.source_revision(*args) != first
@@ -484,7 +539,7 @@ class TestService:
         )
         job = types.SimpleNamespace(pk=10, stage="annotation", state="completed", status="annotation")
         filters = AnnotationFilter.parse([], job_filter=rule("state", "completed"))
-        args = (self.project, [self.task], self.labels, filters, {self.task.pk: [(segment, job)]})
+        args = (self.project, [self.task], self.labels, filters, {self.task.pk: [(segment, job)]}, {self.task.pk})
         first = self.service.source_revision(*args)
         segment.frames = [100, 109]
         assert self.service.source_revision(*args) != first

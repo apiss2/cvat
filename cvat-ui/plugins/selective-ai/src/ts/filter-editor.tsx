@@ -6,8 +6,7 @@ import {
 } from '@react-awesome-query-builder/antd';
 import Collapse from 'antd/lib/collapse';
 import { buildFields, completeTree } from '../../../shared/annotation-filter-config';
-import { config as tasksConfig } from 'components/tasks-page/tasks-filter-configuration';
-import { config as jobsConfig } from 'components/jobs-page/jobs-filter-configuration';
+import { buildScopeFields } from '../../../shared/resource-filter-config';
 import type { LabelSpec } from './engine';
 
 type FilterLabel = Parameters<typeof buildFields>[0][number];
@@ -18,10 +17,6 @@ const filterLabel = (label: LabelSpec): FilterLabel => ({
     })),
     sublabels: (label.sublabels ?? []).map(filterLabel),
 });
-
-// Use the list-filter definitions and operators supported by the existing API.
-const scopeFields = (config: Partial<Config>, keys: string[]): Config['fields'] =>
-    Object.fromEntries(keys.map((key) => [key, config.fields![key]]));
 
 interface Props {
     labels: LabelSpec[];
@@ -37,8 +32,7 @@ export default function FilterEditor({ labels, disabled, onChange }: Props): JSX
     const [job, setJob] = useState<ImmutableTree>(emptyTree);
     const configs = useMemo(() => [
         buildFields(labels.map(filterLabel)), buildFields(labels.map(filterLabel), true),
-        scopeFields(tasksConfig, ['id', 'name', 'subset', 'status']),
-        scopeFields(jobsConfig, ['id', 'stage', 'state']),
+        buildScopeFields('task'), buildScopeFields('job'),
     ].map((fields): Config => ({
         ...AntdConfig, fields,
         settings: { ...AntdConfig.settings,
