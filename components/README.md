@@ -9,6 +9,7 @@
 | 役割 | ディレクトリ | 文書 |
 | --- | --- | --- |
 | 機能の選択、ビルド、起動、バックアップ | `extensions/` | [導入と運用](../docs/extensions/README.md) |
+| Job更新CLIの試験 | `cli_jobs/` | [Jobの更新](../docs/extensions/cli-jobs.md) |
 
 ## データの取り込みと出力
 
