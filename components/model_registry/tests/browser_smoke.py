@@ -227,6 +227,7 @@ def main():
                 page.locator('#author-contact').fill('alice@example.internal')
                 page.locator('#model-kind').select_option('polygon' if kind == 'segmentation' else 'rectangle')
                 page.locator('[data-key=name]').fill('bright_object')
+                expect(page.locator('[data-key=labelTitle]')).to_have_text('出力順 0：ラベル名' if kind == 'segmentation' else 'ラベル名')
                 directory = ROOT / 'examples' / kind
                 for element, file in [('code', 'model.py'), ('weights', 'model.onnx'), ('sample', 'sample.png')]:
                     page.locator('#' + element).set_input_files(str(directory / file))
@@ -248,9 +249,8 @@ def main():
             page.locator('#models-nav').click()
             expect(page.locator('#models')).to_contain_text(model_names['segmentation'])
             expect(page.locator('#models')).to_contain_text('alice@example.internal')
-            expect(page.locator('#model-count')).to_have_text('2')
-            expect(page.locator('#published-count')).to_have_text('2')
-            expect(page.locator('#my-model-count')).to_have_text('2')
+            expect(page.locator('#catalog-count')).to_have_text('2件のモデル')
+            assert not page.locator('.stats').count()
             page.locator('#search').fill('存在しないモデル')
             expect(page.locator('#models')).to_contain_text('一致するモデルがありません')
             expect(page.locator('#catalog-count')).to_have_text('2件中 0件を表示')
@@ -265,6 +265,20 @@ def main():
             expect(page.locator('#registration')).to_be_visible()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'mobile form overflow'
             screenshot(page, '-registration-mobile')
+            page.locator('#model-kind').select_option('interactor')
+            expect(page.locator('#add-label')).to_be_disabled()
+            assert page.locator('#sample-prompts').input_value().strip() != ''
+            assert page.locator('#sample-prompts').evaluate('el => JSON.parse(el.value).pos_points.length') == 0
+            page.locator('#min-neg-points').fill('3')
+            page.locator('#disable-neg-points').check()
+            expect(page.locator('#min-neg-points')).to_be_disabled()
+            expect(page.locator('#min-neg-points-field')).to_be_hidden()
+            page.locator('#disable-neg-points').uncheck()
+            expect(page.locator('#min-neg-points')).to_be_enabled()
+            expect(page.locator('#min-neg-points-field')).to_be_visible()
+            expect(page.locator('#min-neg-points')).to_have_value('3')
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'mobile prompting form overflow'
+            screenshot(page, '-prompting-mobile')
             page.set_viewport_size({'width': 1440, 'height': 1050})
             page.locator('#models-nav').click()
 
@@ -277,8 +291,7 @@ def main():
             other = native_tab
             expect(other.locator('#models')).to_contain_text(model_names['segmentation'])
             expect(other.locator('#identity')).to_have_text('bob')
-            expect(other.locator('#my-model-count')).to_have_text('0')
-            other.locator('#models button').first.click()
+            other.locator('#models a').first.click()
             expect(other.locator('#detail')).to_be_visible()
             expect(other.locator('#update-model')).to_be_hidden()
             expect(other.locator('#delete-model')).to_be_hidden()
@@ -294,7 +307,16 @@ def main():
             expect(other.locator('#detail-contact')).to_have_text('')
             bob.close()
             return_to_registry(page)
-            page.get_by_role('button', name=model_names['segmentation'] + 'の詳細を見る').click()
+            page.get_by_role('link', name=model_names['segmentation'], exact=True).click()
+            expect(page.locator('#detail')).to_be_visible()
+            page.locator('#update-model').click()
+            expect(page.locator('#registration')).to_be_visible()
+            expect(page.locator('#code-retained')).to_have_text('現行を使用')
+            expect(page.locator('#sample-retained')).to_have_text('現行を使用')
+            expect(page.locator('#retained-model-files')).to_contain_text('現行を使用')
+            screenshot(page, '-update')
+            page.locator('#models-nav').click()
+            page.get_by_role('link', name=model_names['segmentation'], exact=True).click()
             expect(page.locator('#detail')).to_be_visible()
             page.on('dialog', lambda dialog: dialog.accept())
             page.locator('#delete-model').click()

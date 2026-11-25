@@ -55,23 +55,26 @@ test('model kinds retain standard ML terms and their existing values', () => {
     assert.match(html, /model\.py/);
     assert.doesNotMatch(html, /zip-form|submit-zip|static\/updates\.js/);
     assert.match(html, /id="retained-model-files"/);
-    assert.match(html, /公開中の版を維持/);
-    assert.match(html, /領域内の穴は塗りつぶされます/);
+    assert.doesNotMatch(html, /公開中の版を維持|領域内の穴は塗りつぶされます|MODEL LIBRARY|class="stats"/);
     assert.match(html, /連絡先はログインした利用者全員に表示されます/);
 });
 
-test('contour settings have accessible guidance without changing their bounds', () => {
+test('contour settings expose labels, units, bounds and error containers', () => {
     const { nodes } = fixture();
     for (const id of ['min-distance', 'max-error', 'min-area']) {
-        assert(nodes.has(`${id}-help`));
-        assert.match(html, new RegExp(`<input id="${id}"[^>]*aria-describedby="${id}-help"`));
+        assert(nodes.has(`${id}-error`));
+        assert.match(html, new RegExp(`<input id="${id}"[^>]*aria-describedby="${id}-error"`));
     }
     for (const match of html.matchAll(/\baria-describedby="([^"]+)"/g)) {
         for (const id of match[1].split(/\s+/)) assert(nodes.has(id), `missing help: ${id}`);
     }
-    assert.match(html, /小さくすると細部を保持/);
-    assert.match(html, /小さい対象を残す場合/);
+    assert.match(html, /隣接する頂点の最小距離（px）/);
+    assert.match(html, /輪郭の近似許容誤差（px）/);
+    assert.match(html, /最小面積（px²）/);
+    assert.doesNotMatch(html, /小さくすると細部を保持|小さい対象を残す場合/);
     assert.match(html, /id="max-error"[^>]*min="0" step="any"/);
+    for (const match of html.matchAll(/id="([^"]+)" class="field-error"/g)) assert.match(match[1], /-error$/);
+    assert.doesNotMatch(source, /(?:min-distance|max-error|min-area|sample-prompts|label)-help/);
 });
 
 test('JSON and logs remain available in closed details elements', () => {
@@ -82,15 +85,12 @@ test('JSON and logs remain available in closed details elements', () => {
 });
 
 for (const [kind, name] of [['polygon', 'Segmentation'], ['rectangle', 'Detection'], ['tag', 'Classification']]) {
-    test(`${name} guidance describes label input rather than SDK internals`, () => {
+    test(`${name} uses controls without redundant guidance`, () => {
         const { nodes, run } = fixture();
         nodes.get('model-kind').value = kind;
         run('kindChanged()');
-        const help = nodes.get('label-help').textContent;
-        assert.match(help, new RegExp(name));
-        assert.doesNotMatch(help, /N,H,W|class_id|ModelBase|返却値|空配列/);
-        assert.match(help, kind === 'polygon' ? /出力順/ : /クラスID/);
-        if (kind === 'tag') assert.match(help, /ROIを指定しない/);
+        assert.equal(nodes.get('label-error').textContent, '');
+        assert.equal(nodes.get('label-error').hidden, true);
         assert.equal(nodes.get('polygon-options').hidden, kind !== 'polygon');
         assert.equal(nodes.get('min-area').disabled, kind !== 'polygon');
     });
@@ -153,10 +153,8 @@ for (const remaining of [0, 1]) {
         assert.equal(run('selected'), null);
         assert.equal(nodes.get('detail').hidden, true);
         assert.equal(nodes.get('catalog').hidden, false);
-        for (const id of ['model-count', 'published-count', 'my-model-count']) {
-            assert.equal(Number(nodes.get(id).textContent), remaining);
-        }
         assert.equal(nodes.get('catalog-count').textContent, `${remaining}件のモデル`);
+        if (remaining) assert.equal(nodes.get('models').children[0].children[0].children[0].href, '#model/' + 'b'.repeat(20));
         assert.match(nodes.get('notice').textContent, /モデルを削除しました/);
         assert.equal(requests[0].path, `/api/models/${'a'.repeat(20)}`);
         assert.equal(requests[0].options.method, 'DELETE');
