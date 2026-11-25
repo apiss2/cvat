@@ -16,7 +16,6 @@ function signedOut() {
     $('workspace').hidden = true; $('operation').hidden = true; $('access-panel').hidden = false; $('account').hidden = true; $('identity').textContent = ''; $('avatar').textContent = '';
     $('models').replaceChildren();
     for (const id of ['logs', 'test-result', 'test-summary', 'test-tags', 'operation', 'detail-title', 'detail-info', 'detail-contact', 'detail-description', 'detail-labels', 'detail-polygon', 'catalog-count']) $(id).textContent = '';
-    for (const id of ['model-count', 'published-count', 'my-model-count']) $(id).textContent = '0';
     $('search').value = ''; $('revision').replaceChildren(); $('preview').hidden = true; $('preview').width = 0; $('preview').height = 0; $('test-form').reset();
     $('submit-model').disabled = false; $('upload-progress').hidden = true; resetForm();
 }
@@ -29,7 +28,7 @@ function accessError(status) {
         502: ['CVATとの連携に失敗しました', 'CVATに接続できません。再試行しても改善しない場合は、管理者に接続設定の確認を依頼してください。'],
     };
     const [title, help] = messages[status] || ['CVATとの接続を確認できません', '時間をおいて再試行してください。改善しない場合は管理者に接続設定の確認を依頼してください。'];
-    $('access-title').textContent = title; $('access-help').textContent = help;
+    $('access-title').textContent = title; $('access-help').textContent = help; $('access-help').hidden = false;
     $('loading-indicator').hidden = true; $('access-panel').setAttribute('aria-busy', 'false'); $('access-actions').hidden = false;
 }
 async function api(path, options = {}) {
@@ -51,6 +50,20 @@ async function api(path, options = {}) {
 }
 async function run(handler) { try { await handler(); } catch (error) { if (!(error instanceof StaleSession) && !(error instanceof AccessUnavailable)) notice(error.message, true); } }
 function button(text, handler) { const b = document.createElement('button'); b.textContent = text; b.type = 'button'; b.addEventListener('click', () => run(handler)); return b; }
+function fieldError(id, message) {
+    const element = $(id); element.textContent = message; element.hidden = !message;
+}
+function invalidField(id, message) {
+    fieldError(id, message);
+    throw new Error(message);
+}
+function negativePointsChanged() {
+    $('min-neg-points').disabled = $('model-kind').value !== 'interactor' || $('disable-neg-points').checked;
+}
+function labelControls() {
+    const count = $('labels').children.length;
+    $('add-label').disabled = $('model-kind').value === 'interactor' && count >= 1;
+}
 function kindChanged() {
     const prompting = $('model-kind').value === 'interactor';
     const polygonOutput = $('model-kind').value === 'polygon' || prompting;
@@ -58,7 +71,10 @@ function kindChanged() {
     $('interactor-options').hidden = !prompting; $('sample-prompts-field').hidden = !prompting;
     for (const id of ['min-pos-points', 'min-neg-points', 'box-mode', 'sample-prompts']) $(id).disabled = !prompting;
     for (const id of ['min-distance', 'max-error', 'min-area']) $(id).disabled = !polygonOutput;
-    $('label-help').textContent = prompting ? 'Promptingは対象1個のマスクを返します。モデルの説明用ラベルを1件だけ登録してください。実際のラベルはCVATで選びます。' : $('model-kind').value === 'polyline' ? 'Line detectionのクラスIDとラベル名を登録します。1枚の画像から任意の本数の線を出力でき、各線はCVATのポリラインになります。クラスIDはモデルの出力と一致させてください。' : $('model-kind').value === 'tag' ? 'ClassificationのクラスIDとラベル名を登録します。分類結果は画像や動画の各フレームのタグになります。画像全体を分類する場合は、実行時にROIを指定しないでください。' : polygonOutput ? 'Segmentationのラベルをモデルの出力順に登録してください。この順番に従って、各領域にラベルを付けます。' : 'DetectionのクラスIDとラベル名を登録します。クラスIDはモデルの出力と一致させてください。';
+    fieldError('label-help', '');
+    $('disable-neg-points').disabled = !prompting;
+    negativePointsChanged();
+    labelControls();
 }
 function labelRow(value = { id: 0, name: '' }) {
     const row = document.createElement('div'); row.className = 'label-row';
@@ -68,16 +84,17 @@ function labelRow(value = { id: 0, name: '' }) {
         if (type === 'number') { input.min = '0'; input.max = String(2 ** 31 - 1); input.step = '1'; } else input.maxLength = 128;
         input.value = value[key]; label.append(input); row.append(label);
     }
-    row.append(button('削除', () => { if ($('labels').children.length <= 1) throw new Error('ラベルは1件以上必要です。'); row.remove(); })); $('labels').append(row);
+    row.append(button('削除', () => { if ($('labels').children.length <= 1) throw new Error('ラベルは1件以上必要です。'); row.remove(); labelControls(); fieldError('label-help', ''); })); $('labels').append(row); labelControls();
 }
 function resetForm(model = null) {
     editing = model; $('register-form').reset(); $('labels').replaceChildren();
+    for (const id of ['min-distance-help', 'max-error-help', 'min-area-help', 'min-pos-error', 'sample-prompts-help', 'label-help', 'code-error']) fieldError(id, '');
     $('form-title').textContent = model ? `モデルの更新: ${model.manifest?.name || model.id}` : 'モデルの新規登録';
     $('name').value = model?.manifest?.name || ''; $('description').value = model?.manifest?.description || ''; $('author-contact').value = model?.manifest?.author_contact || '';
     const labelType = model?.manifest?.labels?.[0]?.type;
     $('model-kind').value = model?.manifest?.kind === 'interactor' ? 'interactor' : ['rectangle', 'polyline', 'tag'].includes(labelType) ? labelType : 'polygon';
     const interactor = model?.manifest?.interactor;
-    $('min-pos-points').value = interactor?.min_pos_points ?? 1; $('min-neg-points').value = interactor?.min_neg_points ?? 0;
+    $('min-pos-points').value = interactor?.min_pos_points ?? 1; $('min-neg-points').value = Math.max(0, interactor?.min_neg_points ?? 0); $('disable-neg-points').checked = interactor?.min_neg_points === -1;
     $('box-mode').value = interactor?.startswith_box ? 'required' : interactor?.startswith_box_optional === false ? 'disabled' : 'optional';
     $('sample-prompts').value = JSON.stringify(interactor?.sample || { pos_points: [[0, 0]], neg_points: [], obj_bbox: null }, null, 2);
     const polygon = model?.manifest?.polygon || {}; $('min-distance').value = polygon.min_distance_px ?? 2; $('max-error').value = polygon.max_error_px ?? 1; $('min-area').value = polygon.min_area_px ?? 10;
@@ -89,28 +106,35 @@ function resetForm(model = null) {
     for (const id of ['code', 'weights', 'sample']) $(id).required = !updating;
     $('submit-model').textContent = updating ? '変更を検証して更新' : '検証して公開';
     if (updating) {
-        const help = document.createElement('p');
-        help.textContent = '変更するファイルだけ選択してください。未選択のONNXファイル、推論コード、試験画像は公開中の版を使用します。ファイルを選ばず、設定だけを更新することもできます。';
-        panel.append(help);
         for (const name of model.manifest.weights) {
             const label = document.createElement('label');
-            label.textContent = `ONNX: ${name}（差し替える場合は同じファイル名を選択）`;
+            label.className = 'file-field'; label.textContent = `ONNX: ${name}`;
             const input = document.createElement('input');
             input.type = 'file'; input.accept = '.onnx';
             input.setAttribute('aria-label', `${name}と差し替えるONNXファイル`);
             input.addEventListener('change', updateSummary);
-            label.append(input); panel.append(label); replacementWeights.push({ name, input });
+            const retained = document.createElement('span'); retained.className = 'help';
+            const error = document.createElement('span'); error.className = 'field-error'; error.setAttribute('role', 'alert'); error.hidden = true;
+            label.append(input, retained, error); panel.append(label); replacementWeights.push({ name, input, retained, error });
         }
     }
     updateSummary();
 }
 function updateSummary() {
     const summary = $('update-summary');
-    if (!editing?.active_revision) { summary.textContent = ''; return; }
-    const replaced = replacementWeights.filter(({ input }) => input.files.length).map(({ name }) => name);
-    if ($('code').files.length) replaced.push('model.py');
-    if ($('sample').files.length) replaced.push('試験画像');
-    summary.textContent = `更新元の版: ${editing.active_revision}。差し替えるファイル: ${replaced.join('、') || 'なし（設定のみ更新）'}。その他のファイルは公開中の版を使用します。`;
+    const updating = Boolean(editing?.active_revision);
+    summary.textContent = updating ? `更新元の版: ${editing.active_revision}` : '';
+    for (const id of ['code', 'sample']) {
+        const status = $(`${id}-retained`);
+        status.textContent = updating && !$(id).files.length ? '現行を使用' : '';
+        status.hidden = !status.textContent;
+    }
+    fieldError('code-error', '');
+    for (const { input, retained, error } of replacementWeights) {
+        retained.textContent = input.files.length ? '' : '現行を使用';
+        retained.hidden = !retained.textContent;
+        error.textContent = ''; error.hidden = true;
+    }
 }
 function readModelSettings(previous) {
     const kind = $('model-kind').value;
@@ -124,14 +148,33 @@ function readModelSettings(previous) {
     });
     const settings = { name: $('name').value.trim(), description: $('description').value,
         author_contact: $('author-contact').value.trim(), labels };
-    if (kind === 'polygon' || kind === 'interactor') settings.polygon = { min_distance_px: Number($('min-distance').value),
-        max_error_px: Number($('max-error').value), min_area_px: Number($('min-area').value) };
+    if (kind === 'polygon' || kind === 'interactor') {
+        settings.polygon = {};
+        for (const [id, key] of [['min-distance', 'min_distance_px'], ['max-error', 'max_error_px'], ['min-area', 'min_area_px']]) {
+            const value = Number($(id).value);
+            fieldError(`${id}-help`, '');
+            if ($(id).value === '' || !Number.isFinite(value) || value < 0) invalidField(`${id}-help`, '0以上の数値を指定してください。');
+            settings.polygon[key] = value;
+        }
+    }
     if (kind === 'interactor') {
-        if (labels.length !== 1) throw new Error('Promptingの説明用ラベルは1件だけにしてください。');
+        fieldError('label-help', '');
+        if (labels.length !== 1) invalidField('label-help', 'Promptingの説明用ラベルは1件だけにしてください。');
+        fieldError('min-pos-error', '');
+        const minPos = Number($('min-pos-points').value);
+        const minNeg = $('disable-neg-points').checked ? -1 : Number($('min-neg-points').value);
+        const boxMode = $('box-mode').value;
+        if (boxMode !== 'required' && minPos === 0) invalidField('min-pos-error', '正の点を0にする場合は矩形Promptを必須にしてください。');
+        const sample = readPrompts('sample-prompts');
+        if (boxMode === 'required' && !sample.obj_bbox) invalidField('sample-prompts-help', '矩形Promptを指定してください。');
+        if (boxMode === 'disabled' && sample.obj_bbox) invalidField('sample-prompts-help', '矩形Promptは使用できません。');
+        if (sample.pos_points.length < minPos) invalidField('sample-prompts-help', '正の点が最小数に達していません。矩形だけで推論する場合は正の点の最小数を0にしてください。');
+        if (minNeg === -1 && sample.neg_points.length) invalidField('sample-prompts-help', '除外点を使用しない設定です。');
+        if (sample.neg_points.length < Math.max(0, minNeg)) invalidField('sample-prompts-help', '除外点が最小数に達していません。');
         settings.kind = 'interactor';
-        settings.interactor = { min_pos_points: Number($('min-pos-points').value),
-            min_neg_points: Number($('min-neg-points').value), startswith_box: $('box-mode').value === 'required',
-            startswith_box_optional: $('box-mode').value === 'optional', sample: readPrompts('sample-prompts') };
+        settings.interactor = { min_pos_points: minPos,
+            min_neg_points: minNeg, startswith_box: boxMode === 'required',
+            startswith_box_optional: boxMode === 'optional', sample };
     } else if (previous?.kind) {
         settings.kind = 'detector';
         if (previous.interactor) settings.interactor = null;
@@ -139,13 +182,25 @@ function readModelSettings(previous) {
     return settings;
 }
 function readPrompts(id) {
-    const prompts = JSON.parse($(id).value);
+    const errorId = id === 'sample-prompts' ? 'sample-prompts-help' : 'test-prompts-error';
+    fieldError(errorId, '');
+    let prompts;
+    try { prompts = JSON.parse($(id).value); }
+    catch { invalidField(errorId, '有効なJSONを入力してください。'); }
     if (!prompts || Array.isArray(prompts) || typeof prompts !== 'object' ||
         Object.keys(prompts).some((key) => !['pos_points', 'neg_points', 'obj_bbox'].includes(key)) ||
         !Array.isArray(prompts.pos_points) || !Array.isArray(prompts.neg_points)) {
-        throw new Error('PromptのJSONにはpos_pointsとneg_pointsの配列、任意のobj_bboxだけを指定してください。');
+        invalidField(errorId, 'PromptのJSONにはpos_pointsとneg_pointsの配列、任意のobj_bboxだけを指定してください。');
     }
-    return { ...prompts, obj_bbox: prompts.obj_bbox ?? null };
+    const point = (p) => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0);
+    for (const key of ['pos_points', 'neg_points']) {
+        if (prompts[key].length > 1000 || !prompts[key].every(point)) invalidField(errorId, `${key}は0以上の数値の座標[x,y]を1000件以内で指定してください。`);
+    }
+    const box = Array.isArray(prompts.obj_bbox) && prompts.obj_bbox.length === 0 ? null : prompts.obj_bbox ?? null;
+    if (box !== null && (!Array.isArray(box) || box.length !== 2 || !box.every(point) || box[0][0] >= box[1][0] || box[0][1] >= box[1][1])) {
+        invalidField(errorId, 'obj_bboxは左上と右下の座標[[x,y],[x,y]]またはnullを指定してください。');
+    }
+    return { ...prompts, obj_bbox: box };
 }
 async function submitModel() {
     const model = editing;
@@ -161,7 +216,7 @@ async function submitModel() {
         }
         if (Object.keys(patch).length) data.set('manifest', JSON.stringify(patch));
         if ($('code').files.length && $('code').files[0].name !== 'model.py') {
-            throw new Error('Pythonコードのファイル名はmodel.pyにしてください。');
+            invalidField('code-error', 'Pythonコードのファイル名はmodel.pyにしてください。');
         }
     } else {
         data.set('manifest', JSON.stringify({ schema_version: 1, ...settings,
@@ -169,9 +224,12 @@ async function submitModel() {
     }
     for (const id of ['code', 'sample']) if ($(id).files.length) data.set(id, $(id).files[0]);
     if (updating) {
-        for (const { name, input } of replacementWeights) {
+        for (const { name, input, error } of replacementWeights) {
             if (!input.files.length) continue;
-            if (input.files[0].name !== name) throw new Error(`ONNXファイル名は${name}と一致させてください。`);
+            if (input.files[0].name !== name) {
+                error.textContent = `ONNXファイル名は${name}と一致させてください。`; error.hidden = false;
+                throw new Error(error.textContent);
+            }
             data.append('weights', input.files[0]);
         }
         if (![...data.keys()].length) throw new Error('変更するファイルまたは設定を指定してください。');
@@ -183,15 +241,12 @@ async function submitModel() {
 }
 function renderModels() {
     $('models').replaceChildren(); const query = $('search').value.trim().toLocaleLowerCase(); let count = 0;
-    $('model-count').textContent = models.length;
-    $('published-count').textContent = models.filter((model) => model.active_revision && !model.deleted).length;
-    $('my-model-count').textContent = models.filter((model) => model.owner === user?.name).length;
     for (const model of models) {
         if (query && !`${model.manifest?.name || ''} ${model.owner}`.toLocaleLowerCase().includes(query)) continue;
         const tr = document.createElement('tr'); const op = model.operations?.[0];
         const pending = op && ['queued', 'validating'].includes(op.status);
         const state = model.deleted ? '削除済み' : model.active_revision ? (pending ? '公開中 / 更新検証中' : '公開中') : ({ queued: '検証待ち', validating: '検証中', failed: '検証失敗' }[op?.status] || '未公開');
-        const name = document.createElement('td'); const title = document.createElement('span'); title.className = 'model-title'; title.textContent = model.manifest?.name || model.id; name.append(title);
+        const name = document.createElement('td'); const title = document.createElement('a'); title.href = `#model/${model.id}`; title.className = 'model-title'; title.textContent = model.manifest?.name || model.id; name.append(title);
         if (model.manifest?.description) { const description = document.createElement('span'); description.className = 'model-description'; description.textContent = model.manifest.description; name.append(description); }
         const kind = document.createElement('td'); const badge = document.createElement('span'); badge.className = 'model-type';
         const types = new Set((model.manifest?.labels || []).map((label) => label.type));
@@ -199,14 +254,12 @@ function renderModels() {
         const author = document.createElement('td'); const owner = document.createElement('span'); owner.className = 'model-owner'; owner.textContent = model.owner; author.append(owner);
         const contact = document.createElement('span'); contact.className = 'model-contact'; contact.textContent = model.manifest?.author_contact || '連絡先は未設定'; author.append(contact);
         const status = document.createElement('td'); const pill = document.createElement('span'); pill.className = `status ${model.deleted ? '' : pending ? 'pending' : model.active_revision ? 'published' : op?.status === 'failed' ? 'failed' : ''}`; pill.textContent = state; status.append(pill);
-        const action = document.createElement('td'); const detail = button('詳細を見る →', () => { location.hash = `model/${model.id}`; }); detail.className = 'row-action'; detail.setAttribute('aria-label', `${model.manifest?.name || model.id}の詳細を見る`); action.append(detail);
-        tr.append(name, kind, author, status, action); $('models').append(tr); count++;
+        tr.append(name, kind, author, status); $('models').append(tr); count++;
     }
     $('catalog-count').textContent = query ? `${models.length}件中 ${count}件を表示` : `${count}件のモデル`;
-    if (!count) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 5; td.className = 'empty-state';
+    if (!count) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 4; td.className = 'empty-state';
         const title = document.createElement('strong'); title.textContent = query ? '一致するモデルがありません' : '登録されたモデルがありません';
-        const help = document.createElement('span'); help.textContent = query ? '別のモデル名や作者で検索してください。' : '登録して公開したモデルは、この一覧からチームに共有されます。';
-        td.append(title, help); tr.append(td); $('models').append(tr);
+        td.append(title); tr.append(td); $('models').append(tr);
     }
 }
 async function refresh() {
@@ -222,7 +275,7 @@ async function checkSession() {
     if (checkingSession) return;
     checkingSession = true; $('retry-access').disabled = true;
     if (!user) {
-        $('access-title').textContent = 'モデル一覧を読み込んでいます'; $('access-help').textContent = '少々お待ちください。';
+        $('access-title').textContent = 'モデル一覧を読み込んでいます'; $('access-help').textContent = ''; $('access-help').hidden = true;
         $('loading-indicator').hidden = false; $('access-panel').setAttribute('aria-busy', 'true'); $('access-actions').hidden = true;
     }
     try {
@@ -261,7 +314,7 @@ async function selectModel(id) {
     $('detail-labels').textContent = (model.manifest?.labels || []).map((label, index) => `${index}: ${label.name} (ID=${label.id}, ${label.type})`).join('\n');
     const polygon = model.manifest?.polygon;
     const polygonSummary = polygon && model.manifest?.labels?.some((label) => label.type === 'polygon') ? `ポリゴン変換: 頂点の最小距離 ${polygon.min_distance_px} px、輪郭の近似許容誤差 ${polygon.max_error_px} px、最小面積 ${polygon.min_area_px} px²` : '';
-    $('detail-polygon').textContent = model.manifest?.kind === 'interactor' ? `Prompting: マスクは穴と離れた領域を保持します。CVATでポリゴンに変換する場合の${polygonSummary}` : polygonSummary;
+    $('detail-polygon').textContent = polygonSummary;
     const managed = Boolean(model.can_manage); $('owner-detail').hidden = !managed;
     for (const id of ['update-model', 'delete-model']) { $(id).hidden = !managed; $(id).disabled = id === 'update-model' && Boolean(model.deleted || !model.active_revision); }
     $('revision').replaceChildren(); $('logs').textContent = ''; $('test-result').textContent = ''; $('test-summary').textContent = ''; $('test-tags').textContent = ''; $('preview').hidden = true;
@@ -279,7 +332,7 @@ function testedManifest() {
 function testRevisionChanged() {
     const manifest = testedManifest(); const prompting = manifest?.kind === 'interactor';
     $('test-prompts-field').hidden = !prompting; $('test-prompts').disabled = !prompting;
-    $('test-prompts').value = prompting ? JSON.stringify(manifest.interactor.sample, null, 2) : '';
+    $('test-prompts').value = prompting ? JSON.stringify(manifest.interactor.sample, null, 2) : ''; fieldError('test-prompts-error', '');
     $('test-tags').textContent = ''; $('test-summary').textContent = ''; $('test-result').textContent = ''; $('preview').hidden = true;
 }
 async function refreshLogs() {
@@ -314,7 +367,7 @@ async function sendPackage(path, form) {
             $('operation').textContent = `${statusName}${status.detail ? `\n${status.detail}` : ''}`;
             if (['succeeded', 'failed'].includes(status.status)) {
                 activeOperation = ''; await refresh();
-                notice(status.status === 'succeeded' ? '公開しました。CVATのモデル一覧から選択できます。' : '検証に失敗しました。処理ログを確認してください。', status.status !== 'succeeded');
+                notice(status.status === 'succeeded' ? '公開しました。' : '検証に失敗しました。処理ログを確認してください。', status.status !== 'succeeded');
                 if (status.status === 'succeeded') resetForm();
                 location.hash = `model/${status.model_id}`; break;
             }
@@ -331,6 +384,10 @@ $('refresh').addEventListener('click', () => run(refresh)); $('search').addEvent
 $('new-model').addEventListener('click', () => { resetForm(); $('operation').textContent = ''; notice(''); location.hash = 'register'; });
 $('register-nav').addEventListener('click', () => { if (!activeOperation) { resetForm(); $('operation').textContent = ''; notice(''); } });
 $('cancel-update').addEventListener('click', () => resetForm()); $('model-kind').addEventListener('change', kindChanged);
+$('disable-neg-points').addEventListener('change', negativePointsChanged);
+for (const [id, error] of [['min-distance', 'min-distance-help'], ['max-error', 'max-error-help'], ['min-area', 'min-area-help'], ['min-pos-points', 'min-pos-error'], ['box-mode', 'min-pos-error'], ['sample-prompts', 'sample-prompts-help'], ['test-prompts', 'test-prompts-error']]) {
+    $(id).addEventListener('input', () => fieldError(error, ''));
+}
 $('revision').addEventListener('change', testRevisionChanged);
 $('add-label').addEventListener('click', () => { const ids = [...$('labels').querySelectorAll('[data-key=id]')].map((x) => Number(x.value)); labelRow({ id: ids.length ? Math.max(...ids) + 1 : 0, name: '' }); });
 for (const id of ['code', 'sample']) $(id).addEventListener('change', updateSummary);
@@ -396,7 +453,7 @@ $('test-form').addEventListener('submit', (event) => { event.preventDefault(); r
             const tags = objects.filter((object) => object.type === 'tag');
             $('test-tags').textContent = tags.length ? `分類タグ: ${tags.map((tag) => `${tag.label}（信頼度 ${tag.confidence.toFixed(3)}）`).join('、')}` :
                 manifest?.labels?.some((label) => label.type === 'tag') ? '分類タグ: なし' : '';
-            $('test-summary').textContent = manifest?.kind === 'interactor' ? `出力マスク: ${result.results.mask ? 1 : 0}件。${Array.isArray(result.results.polygons) ? `変換後のポリゴン: ${result.results.polygons.length}件。輪郭を青緑色で表示します。` : result.results.mask ? 'ポリゴンは頂点数または件数の上限を超えたため生成していません。CVATでは標準の変換を使います。' : ''}` : `出力件数: ${objects.length}件（図形 ${objects.length - tags.length}件、タグ ${tags.length}件）。結果を画像とタグ一覧で確認してください。`;
+            $('test-summary').textContent = manifest?.kind === 'interactor' ? `出力マスク: ${result.results.mask ? 1 : 0}件。${Array.isArray(result.results.polygons) ? `変換後のポリゴン: ${result.results.polygons.length}件。${result.results.polygons.length === 0 ? '変換条件を満たす領域がありません。' : ''}` : result.results.mask ? 'ポリゴンは頂点数または件数の上限を超えたため生成していません。CVATでは標準の変換を使います。' : ''}` : `出力件数: ${objects.length}件（図形 ${objects.length - tags.length}件、タグ ${tags.length}件）。`;
             $('test-result').textContent = JSON.stringify({ request_id: result.request_id, revision: result.revision, objects: Array.isArray(result.results) ? result.results.length : result.results.mask ? 1 : 0, results: result.results }, null, 2);
             await preview(file, result.results, model.id, revision);
         }

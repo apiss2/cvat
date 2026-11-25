@@ -93,7 +93,7 @@ function file(name) { return new File(['fixture'], name); }
 for (const [kind, outputName] of [['tag', 'Classification'], ['polygon', 'Segmentation'], ['rectangle', 'Detection'], ['polyline', 'Line detection']]) {
     test(`new registration retains ${kind} label types and correct options`, async () => {
         const ui = setup(); ui.get('model-kind').value = kind; ui.eval('kindChanged()');
-        assert.match(ui.get('label-help').textContent, new RegExp(outputName));
+        assert.equal(ui.get('label-help').hidden, true);
         assert.equal(ui.get('polygon-options').hidden, kind !== 'polygon');
         assert.equal(ui.get('min-area').disabled, kind !== 'polygon');
         ui.get('name').value = 'test'; ui.get('weights').files = [file('model.onnx')];
@@ -204,7 +204,8 @@ test('prompting can disable both the box and negative points on an existing revi
     ui.sandbox.model = promptingModel();
     ui.eval('resetForm(model)');
     ui.get('box-mode').value = 'disabled';
-    ui.get('min-neg-points').value = '-1';
+    ui.get('disable-neg-points').checked = true; ui.eval('negativePointsChanged()');
+    assert.equal(ui.get('min-neg-points').disabled, true);
     await ui.submit('register-form');
     const patch = JSON.parse(ui.sandbox.submitted[0].data.get('manifest'));
     assert.equal(patch.interactor.startswith_box, false);
@@ -315,7 +316,7 @@ test('line detection registers polyline labels and previews any number of lines'
     const ui = setup(); ui.get('model-kind').value = 'polyline'; ui.eval('kindChanged()');
     assert.equal(ui.get('polygon-options').hidden, true);
     assert.equal(ui.get('interactor-options').hidden, true);
-    assert.match(ui.get('label-help').textContent, /任意の本数/);
+    assert.equal(ui.get('label-help').hidden, true);
     ui.get('name').value = 'line model'; ui.get('code').files = [file('model.py')];
     ui.get('weights').files = [file('model.onnx')]; ui.get('sample').files = [file('sample.png')];
     await ui.submit('register-form');
@@ -489,7 +490,7 @@ for (const reset of ['resetForm()', 'signedOut()']) {
         const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
         const input = ui.get('retained-model-files').children.find((node) => node.tagName === 'label').children[0];
         input.files = [file('model.onnx')]; ui.get('code').files = [file('model.py')];
-        ui.eval('updateSummary()'); assert.match(ui.get('update-summary').textContent, /model\.onnx/);
+        ui.eval('updateSummary()'); assert.equal(ui.get('code-retained').hidden, true);
         ui.eval(reset);
         assert.equal(ui.get('retained-model-files').hidden, true);
         assert.equal(ui.get('retained-model-files').children.length, 0);
@@ -529,8 +530,10 @@ test('replacement summary follows code, sample and weight input changes', () => 
         input.files = [file(name)];
         for (const entry of input.listeners.filter((listener) => listener.type === 'change')) entry.handler();
     }
-    const summary = ui.get('update-summary').textContent;
-    for (const value of ['model.py', '試験画像', 'model.onnx', ui.sandbox.model.active_revision]) assert(summary.includes(value));
+    assert.equal(ui.get('code-retained').hidden, true);
+    assert.equal(ui.get('sample-retained').hidden, true);
+    assert.equal(weight.parentElement.children[1].hidden, true);
+    assert.match(ui.get('update-summary').textContent, new RegExp(ui.sandbox.model.active_revision));
 });
 
 test('failed validation keeps the update form and its base revision', async () => {
@@ -562,4 +565,45 @@ test('upload response from a signed-out account is rejected', async () => {
     await assert.rejects(ui.eval("actualSendPackage('/api/upload', data)"), (error) => error.constructor.name === 'StaleSession');
     assert.equal(ui.eval('activeOperation'), '');
     assert.equal(ui.get('retained-model-files').hidden, true);
+});
+
+test('negative point checkbox restores the sentinel and can be unchecked', () => {
+    const ui = setup(); const model = promptingModel();
+    model.manifest.interactor.min_neg_points = -1; ui.sandbox.model = model;
+    ui.eval('resetForm(model)');
+    assert.equal(ui.get('disable-neg-points').checked, true);
+    assert.equal(ui.get('min-neg-points').disabled, true);
+    assert.equal(ui.eval('readModelSettings(model.manifest).interactor.min_neg_points'), -1);
+    ui.get('disable-neg-points').checked = false; ui.eval('negativePointsChanged()');
+    assert.equal(ui.get('min-neg-points').disabled, false);
+    assert.equal(ui.eval('readModelSettings(model.manifest).interactor.min_neg_points'), 0);
+});
+
+test('invalid polygon values and incompatible prompting settings show field errors', async () => {
+    const ui = setup();
+    ui.get('min-area').value = '-1'; await ui.submit('register-form');
+    assert.equal(ui.sandbox.submitted.length, 0);
+    assert.equal(ui.get('min-area-help').hidden, false);
+    ui.get('min-area').value = '10';
+    ui.get('model-kind').value = 'interactor'; ui.eval('kindChanged()');
+    ui.get('min-pos-points').value = '0'; await ui.submit('register-form');
+    assert.equal(ui.get('min-pos-error').hidden, false);
+    ui.get('box-mode').value = 'required';
+    ui.get('sample-prompts').value = '{"pos_points":[],"neg_points":[],"obj_bbox":[[12,8],[1,1]]}';
+    await ui.submit('register-form');
+    assert.equal(ui.sandbox.submitted.length, 0);
+    assert.equal(ui.get('sample-prompts-help').hidden, false);
+    ui.get('sample-prompts').value = '{"pos_points":[],"neg_points":[],"obj_bbox":[[1,1],[12,8]]}';
+    await ui.submit('register-form');
+    assert.equal(ui.sandbox.submitted.length, 1);
+    assert.equal(ui.get('sample-prompts-help').hidden, true);
+});
+
+test('update identifies retained files individually before selection', () => {
+    const ui = setup(); ui.sandbox.model = model(); ui.eval('resetForm(model)');
+    const weight = ui.get('retained-model-files').children.find((node) => node.tagName === 'label');
+    for (const status of [ui.get('code-retained'), ui.get('sample-retained'), weight.children[1]]) {
+        assert.equal(status.textContent, '現行を使用');
+        assert.equal(status.hidden, false);
+    }
 });
