@@ -16,7 +16,7 @@ function signedOut() {
     $('workspace').hidden = true; $('operation').hidden = true; $('access-panel').hidden = false; $('account').hidden = true; $('identity').textContent = ''; $('avatar').textContent = '';
     $('models').replaceChildren();
     for (const id of ['logs', 'test-result', 'test-summary', 'test-tags', 'operation', 'detail-title', 'detail-info', 'detail-contact', 'detail-description', 'detail-labels', 'detail-polygon', 'catalog-count']) $(id).textContent = '';
-    $('search').value = ''; $('revision').replaceChildren(); $('preview').hidden = true; $('preview').width = 0; $('preview').height = 0; $('test-form').reset();
+    $('search').value = ''; $('revision').replaceChildren(); $('preview').hidden = true; $('preview').width = 0; $('preview').height = 0; $('test-form').reset(); fieldError('test-prompts-error', '');
     $('submit-model').disabled = false; $('upload-progress').hidden = true; resetForm();
 }
 function accessError(status) {
@@ -59,10 +59,12 @@ function invalidField(id, message) {
 }
 function negativePointsChanged() {
     $('min-neg-points').disabled = $('model-kind').value !== 'interactor' || $('disable-neg-points').checked;
+    fieldError('sample-prompts-help', '');
 }
 function labelControls() {
     const count = $('labels').children.length;
     $('add-label').disabled = $('model-kind').value === 'interactor' && count >= 1;
+    if (count === 1) fieldError('label-help', '');
 }
 function kindChanged() {
     const prompting = $('model-kind').value === 'interactor';
@@ -96,7 +98,7 @@ function resetForm(model = null) {
     const interactor = model?.manifest?.interactor;
     $('min-pos-points').value = interactor?.min_pos_points ?? 1; $('min-neg-points').value = Math.max(0, interactor?.min_neg_points ?? 0); $('disable-neg-points').checked = interactor?.min_neg_points === -1;
     $('box-mode').value = interactor?.startswith_box ? 'required' : interactor?.startswith_box_optional === false ? 'disabled' : 'optional';
-    $('sample-prompts').value = JSON.stringify(interactor?.sample || { pos_points: [[0, 0]], neg_points: [], obj_bbox: null }, null, 2);
+    $('sample-prompts').value = interactor?.sample ? JSON.stringify(interactor.sample, null, 2) : '';
     const polygon = model?.manifest?.polygon || {}; $('min-distance').value = polygon.min_distance_px ?? 2; $('max-error').value = polygon.max_error_px ?? 1; $('min-area').value = polygon.min_area_px ?? 10;
     (model?.manifest?.labels || [{ id: 0, name: 'object' }]).forEach(labelRow); $('cancel-update').hidden = !model; kindChanged();
     const updating = Boolean(model?.active_revision);
@@ -114,7 +116,8 @@ function resetForm(model = null) {
             input.setAttribute('aria-label', `${name}と差し替えるONNXファイル`);
             input.addEventListener('change', updateSummary);
             const retained = document.createElement('span'); retained.className = 'help';
-            const error = document.createElement('span'); error.className = 'field-error'; error.setAttribute('role', 'alert'); error.hidden = true;
+            const error = document.createElement('span'); error.className = 'field-error'; error.id = `retained-weight-${replacementWeights.length}-error`; error.setAttribute('role', 'alert'); error.hidden = true;
+            input.setAttribute('aria-describedby', error.id);
             label.append(input, retained, error); panel.append(label); replacementWeights.push({ name, input, retained, error });
         }
     }
@@ -385,7 +388,7 @@ $('new-model').addEventListener('click', () => { resetForm(); $('operation').tex
 $('register-nav').addEventListener('click', () => { if (!activeOperation) { resetForm(); $('operation').textContent = ''; notice(''); } });
 $('cancel-update').addEventListener('click', () => resetForm()); $('model-kind').addEventListener('change', kindChanged);
 $('disable-neg-points').addEventListener('change', negativePointsChanged);
-for (const [id, error] of [['min-distance', 'min-distance-help'], ['max-error', 'max-error-help'], ['min-area', 'min-area-help'], ['min-pos-points', 'min-pos-error'], ['box-mode', 'min-pos-error'], ['sample-prompts', 'sample-prompts-help'], ['test-prompts', 'test-prompts-error']]) {
+for (const [id, error] of [['min-distance', 'min-distance-help'], ['max-error', 'max-error-help'], ['min-area', 'min-area-help'], ['min-pos-points', 'min-pos-error'], ['box-mode', 'min-pos-error'], ['min-neg-points', 'sample-prompts-help'], ['sample-prompts', 'sample-prompts-help'], ['test-prompts', 'test-prompts-error']]) {
     $(id).addEventListener('input', () => fieldError(error, ''));
 }
 $('revision').addEventListener('change', testRevisionChanged);

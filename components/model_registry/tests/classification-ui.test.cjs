@@ -581,6 +581,7 @@ test('negative point checkbox restores the sentinel and can be unchecked', () =>
 
 test('invalid polygon values and incompatible prompting settings show field errors', async () => {
     const ui = setup();
+    assert.equal(ui.get('sample-prompts').value, '');
     ui.get('min-area').value = '-1'; await ui.submit('register-form');
     assert.equal(ui.sandbox.submitted.length, 0);
     assert.equal(ui.get('min-area-help').hidden, false);

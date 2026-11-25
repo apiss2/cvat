@@ -54,7 +54,7 @@ th, td { text-align: left; padding: 1.15rem 1.4rem; border-bottom: 1px solid #e8
 th { background: #f8fafd; color: #7a879a; font-size: .72rem; font-weight: 600; padding-top: .8rem; padding-bottom: .8rem; white-space: nowrap; }
 td:first-child { min-width: 210px; max-width: 330px; }
 td:nth-child(3) { min-width: 170px; max-width: 260px; }
-td:last-child { text-align: right; white-space: nowrap; }
+td:last-child { white-space: nowrap; }
 tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: #fafcff; }
 .model-title { display: block; font-weight: 650; font-size: .95rem; color: var(--accent); overflow-wrap: anywhere; }
@@ -85,6 +85,7 @@ textarea { resize: vertical; }
 .field-error { display: block; color: #9b4339; font-size: .79rem; margin-top: .25rem; }
 #retained-model-files { min-width: 0; }
 #retained-model-files .file-field:first-child { margin-top: .9rem; }
+#retained-model-files .file-field:last-child { margin-bottom: .5rem; }
 #update-summary { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
 #update-summary:empty { display: none; }
 .help { color: var(--muted); font-size: .79rem; line-height: 1.8; }
@@ -94,7 +95,7 @@ textarea { resize: vertical; }
 fieldset { padding: 1rem 1.2rem .5rem; border: 1px solid #d9e2ef; background: #f9fbfe; border-radius: 7px; margin: 1.6rem 0 0; }
 legend { padding: 0 .5rem; font-size: .85rem; font-weight: 600; color: #455b7a; }
 fieldset .fields-row label { min-width: 190px; font-size: .75rem; margin-top: .2rem; }
-.upload-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+.upload-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; align-items: start; }
 .file-field { border: 1px dashed #c4d2e5; border-radius: 7px; padding: 1rem; background: #fbfcfe; overflow-wrap: anywhere; }
 .file-field strong, .file-field .help { display: block; }
 .file-field strong { font-weight: 600; }
