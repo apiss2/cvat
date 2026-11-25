@@ -5,6 +5,7 @@ const base = new URL('./', location.href);
 let user = null, authEpoch = 0, checkingSession = false;
 class StaleSession extends Error {}
 class AccessUnavailable extends Error {}
+class FieldValidationError extends Error {}
 let selected = null, editing = null, models = [], activeOperation = '', refreshingEpoch = null, detailSequence = 0;
 let replacementWeights = [];
 const endpoint = (path) => new URL(path.replace(/^\//, ''), base).href;
@@ -48,23 +49,37 @@ async function api(path, options = {}) {
     if (epoch !== authEpoch) throw new StaleSession();
     return result;
 }
-async function run(handler) { try { await handler(); } catch (error) { if (!(error instanceof StaleSession) && !(error instanceof AccessUnavailable)) notice(error.message, true); } }
-function button(text, handler) { const b = document.createElement('button'); b.textContent = text; b.type = 'button'; b.addEventListener('click', () => run(handler)); return b; }
-function fieldError(id, message) {
-    const element = $(id); element.textContent = message; element.hidden = !message;
+async function run(handler) {
+    try { await handler(); }
+    catch (error) {
+        if (error instanceof FieldValidationError) notice('');
+        else if (!(error instanceof StaleSession) && !(error instanceof AccessUnavailable)) notice(error.message, true);
+    }
 }
-function invalidField(id, message) {
-    fieldError(id, message);
-    throw new Error(message);
+function button(text, handler) { const b = document.createElement('button'); b.textContent = text; b.type = 'button'; b.addEventListener('click', () => run(handler)); return b; }
+function fieldError(target, message) {
+    const element = typeof target === 'string' ? $(target) : target;
+    element.textContent = message; element.hidden = !message;
+}
+function invalidField(target, message) {
+    fieldError(target, message);
+    throw new FieldValidationError(message);
 }
 function negativePointsChanged() {
-    $('min-neg-points').disabled = $('model-kind').value !== 'interactor' || $('disable-neg-points').checked;
-    fieldError('sample-prompts-help', '');
+    const disabled = $('disable-neg-points').checked;
+    $('min-neg-points-field').hidden = disabled;
+    $('min-neg-points').disabled = $('model-kind').value !== 'interactor' || disabled;
+    fieldError('sample-prompts-error', '');
 }
 function labelControls() {
-    const count = $('labels').children.length;
+    const rows = [...$('labels').children];
+    const count = rows.length;
+    const ordered = $('model-kind').value === 'polygon';
+    rows.forEach((row, index) => {
+        row.querySelector('[data-key=labelTitle]').textContent = ordered ? `出力順 ${index}：ラベル名` : 'ラベル名';
+    });
     $('add-label').disabled = $('model-kind').value === 'interactor' && count >= 1;
-    if (count === 1) fieldError('label-help', '');
+    if (count === 1) fieldError('label-error', '');
 }
 function kindChanged() {
     const prompting = $('model-kind').value === 'interactor';
@@ -73,7 +88,7 @@ function kindChanged() {
     $('interactor-options').hidden = !prompting; $('sample-prompts-field').hidden = !prompting;
     for (const id of ['min-pos-points', 'min-neg-points', 'box-mode', 'sample-prompts']) $(id).disabled = !prompting;
     for (const id of ['min-distance', 'max-error', 'min-area']) $(id).disabled = !polygonOutput;
-    fieldError('label-help', '');
+    fieldError('label-error', '');
     $('disable-neg-points').disabled = !prompting;
     negativePointsChanged();
     labelControls();
@@ -81,16 +96,19 @@ function kindChanged() {
 function labelRow(value = { id: 0, name: '' }) {
     const row = document.createElement('div'); row.className = 'label-row';
     for (const [key, title, type] of [['id', 'クラスID', 'number'], ['name', 'ラベル名', 'text']]) {
-        const label = document.createElement('label'); label.textContent = title; const input = document.createElement('input');
+        const label = document.createElement('label'); const input = document.createElement('input');
+        if (key === 'name') {
+            const caption = document.createElement('span'); caption.dataset.key = 'labelTitle'; caption.textContent = title; label.append(caption);
+        } else label.textContent = title;
         input.dataset.key = key; input.type = type; input.required = true;
         if (type === 'number') { input.min = '0'; input.max = String(2 ** 31 - 1); input.step = '1'; } else input.maxLength = 128;
         input.value = value[key]; label.append(input); row.append(label);
     }
-    row.append(button('削除', () => { if ($('labels').children.length <= 1) throw new Error('ラベルは1件以上必要です。'); row.remove(); labelControls(); fieldError('label-help', ''); })); $('labels').append(row); labelControls();
+    row.append(button('削除', () => { if ($('labels').children.length <= 1) invalidField('label-error', 'ラベルは1件以上必要です。'); row.remove(); labelControls(); fieldError('label-error', ''); })); $('labels').append(row); labelControls();
 }
 function resetForm(model = null) {
     editing = model; $('register-form').reset(); $('labels').replaceChildren();
-    for (const id of ['min-distance-help', 'max-error-help', 'min-area-help', 'min-pos-error', 'sample-prompts-help', 'label-help', 'code-error']) fieldError(id, '');
+    for (const id of ['min-distance-error', 'max-error-error', 'min-area-error', 'min-pos-error', 'sample-prompts-error', 'label-error', 'code-error']) fieldError(id, '');
     $('form-title').textContent = model ? `モデルの更新: ${model.manifest?.name || model.id}` : 'モデルの新規登録';
     $('name').value = model?.manifest?.name || ''; $('description').value = model?.manifest?.description || ''; $('author-contact').value = model?.manifest?.author_contact || '';
     const labelType = model?.manifest?.labels?.[0]?.type;
@@ -98,7 +116,7 @@ function resetForm(model = null) {
     const interactor = model?.manifest?.interactor;
     $('min-pos-points').value = interactor?.min_pos_points ?? 1; $('min-neg-points').value = Math.max(0, interactor?.min_neg_points ?? 0); $('disable-neg-points').checked = interactor?.min_neg_points === -1;
     $('box-mode').value = interactor?.startswith_box ? 'required' : interactor?.startswith_box_optional === false ? 'disabled' : 'optional';
-    $('sample-prompts').value = interactor?.sample ? JSON.stringify(interactor.sample, null, 2) : '';
+    $('sample-prompts').value = JSON.stringify(interactor?.sample ?? { pos_points: [], neg_points: [], obj_bbox: null }, null, 2);
     const polygon = model?.manifest?.polygon || {}; $('min-distance').value = polygon.min_distance_px ?? 2; $('max-error').value = polygon.max_error_px ?? 1; $('min-area').value = polygon.min_area_px ?? 10;
     (model?.manifest?.labels || [{ id: 0, name: 'object' }]).forEach(labelRow); $('cancel-update').hidden = !model; kindChanged();
     const updating = Boolean(model?.active_revision);
@@ -155,25 +173,25 @@ function readModelSettings(previous) {
         settings.polygon = {};
         for (const [id, key] of [['min-distance', 'min_distance_px'], ['max-error', 'max_error_px'], ['min-area', 'min_area_px']]) {
             const value = Number($(id).value);
-            fieldError(`${id}-help`, '');
-            if ($(id).value === '' || !Number.isFinite(value) || value < 0) invalidField(`${id}-help`, '0以上の数値を指定してください。');
+            fieldError(`${id}-error`, '');
+            if ($(id).value === '' || !Number.isFinite(value) || value < 0) invalidField(`${id}-error`, '0以上の数値を指定してください。');
             settings.polygon[key] = value;
         }
     }
     if (kind === 'interactor') {
-        fieldError('label-help', '');
-        if (labels.length !== 1) invalidField('label-help', 'Promptingの説明用ラベルは1件だけにしてください。');
+        fieldError('label-error', '');
+        if (labels.length !== 1) invalidField('label-error', 'Promptingの説明用ラベルは1件だけにしてください。');
         fieldError('min-pos-error', '');
         const minPos = Number($('min-pos-points').value);
         const minNeg = $('disable-neg-points').checked ? -1 : Number($('min-neg-points').value);
         const boxMode = $('box-mode').value;
         if (boxMode !== 'required' && minPos === 0) invalidField('min-pos-error', '正の点を0にする場合は矩形Promptを必須にしてください。');
         const sample = readPrompts('sample-prompts');
-        if (boxMode === 'required' && !sample.obj_bbox) invalidField('sample-prompts-help', '矩形Promptを指定してください。');
-        if (boxMode === 'disabled' && sample.obj_bbox) invalidField('sample-prompts-help', '矩形Promptは使用できません。');
-        if (sample.pos_points.length < minPos) invalidField('sample-prompts-help', '正の点が最小数に達していません。矩形だけで推論する場合は正の点の最小数を0にしてください。');
-        if (minNeg === -1 && sample.neg_points.length) invalidField('sample-prompts-help', '除外点を使用しない設定です。');
-        if (sample.neg_points.length < Math.max(0, minNeg)) invalidField('sample-prompts-help', '除外点が最小数に達していません。');
+        if (boxMode === 'required' && !sample.obj_bbox) invalidField('sample-prompts-error', '矩形Promptを指定してください。');
+        if (boxMode === 'disabled' && sample.obj_bbox) invalidField('sample-prompts-error', '矩形Promptは使用できません。');
+        if (sample.pos_points.length < minPos) invalidField('sample-prompts-error', '正の点が最小数に達していません。矩形だけで推論する場合は正の点の最小数を0にしてください。');
+        if (minNeg === -1 && sample.neg_points.length) invalidField('sample-prompts-error', '除外点を使用しない設定です。');
+        if (sample.neg_points.length < Math.max(0, minNeg)) invalidField('sample-prompts-error', '除外点が最小数に達していません。');
         settings.kind = 'interactor';
         settings.interactor = { min_pos_points: minPos,
             min_neg_points: minNeg, startswith_box: boxMode === 'required',
@@ -185,7 +203,7 @@ function readModelSettings(previous) {
     return settings;
 }
 function readPrompts(id) {
-    const errorId = id === 'sample-prompts' ? 'sample-prompts-help' : 'test-prompts-error';
+    const errorId = id === 'sample-prompts' ? 'sample-prompts-error' : 'test-prompts-error';
     fieldError(errorId, '');
     let prompts;
     try { prompts = JSON.parse($(id).value); }
@@ -229,10 +247,7 @@ async function submitModel() {
     if (updating) {
         for (const { name, input, error } of replacementWeights) {
             if (!input.files.length) continue;
-            if (input.files[0].name !== name) {
-                error.textContent = `ONNXファイル名は${name}と一致させてください。`; error.hidden = false;
-                throw new Error(error.textContent);
-            }
+            if (input.files[0].name !== name) invalidField(error, `ONNXファイル名は${name}と一致させてください。`);
             data.append('weights', input.files[0]);
         }
         if (![...data.keys()].length) throw new Error('変更するファイルまたは設定を指定してください。');
@@ -388,7 +403,7 @@ $('new-model').addEventListener('click', () => { resetForm(); $('operation').tex
 $('register-nav').addEventListener('click', () => { if (!activeOperation) { resetForm(); $('operation').textContent = ''; notice(''); } });
 $('cancel-update').addEventListener('click', () => resetForm()); $('model-kind').addEventListener('change', kindChanged);
 $('disable-neg-points').addEventListener('change', negativePointsChanged);
-for (const [id, error] of [['min-distance', 'min-distance-help'], ['max-error', 'max-error-help'], ['min-area', 'min-area-help'], ['min-pos-points', 'min-pos-error'], ['box-mode', 'min-pos-error'], ['min-neg-points', 'sample-prompts-help'], ['sample-prompts', 'sample-prompts-help'], ['test-prompts', 'test-prompts-error']]) {
+for (const [id, error] of [['min-distance', 'min-distance-error'], ['max-error', 'max-error-error'], ['min-area', 'min-area-error'], ['min-pos-points', 'min-pos-error'], ['box-mode', 'min-pos-error'], ['min-neg-points', 'sample-prompts-error'], ['sample-prompts', 'sample-prompts-error'], ['test-prompts', 'test-prompts-error']]) {
     $(id).addEventListener('input', () => fieldError(error, ''));
 }
 $('revision').addEventListener('change', testRevisionChanged);

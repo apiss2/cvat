@@ -41,16 +41,16 @@
                 <label>作者の連絡先 <span class="optional">任意</span><input id="author-contact" maxlength="512" placeholder="社内メールアドレス、内線など" aria-describedby="contact-help"></label><p id="contact-help" class="help">連絡先はログインした利用者全員に表示されます。</p>
             </div>
             <div class="panel form-panel"><h2>出力ラベルと変換</h2>
-                <p id="label-help" class="field-error" role="alert" hidden></p><div id="labels"></div><button type="button" id="add-label" class="secondary">＋ ラベルを追加</button>
+                <p id="label-error" class="field-error" role="alert" hidden></p><div id="labels"></div><button type="button" id="add-label" class="secondary">＋ ラベルを追加</button>
                 <fieldset id="polygon-options"><legend>ポリゴン変換</legend><div class="fields-row">
-                    <label>隣接する頂点の最小距離（px）<input id="min-distance" type="number" min="0" step="any" value="2" aria-describedby="min-distance-help" required><span id="min-distance-help" class="field-error" role="alert" hidden></span></label>
-                    <label>輪郭の近似許容誤差（px）<input id="max-error" type="number" min="0" step="any" value="1" aria-describedby="max-error-help" required><span id="max-error-help" class="field-error" role="alert" hidden></span></label>
-                    <label>最小面積（px²）<input id="min-area" type="number" min="0" step="any" value="10" aria-describedby="min-area-help" required><span id="min-area-help" class="field-error" role="alert" hidden></span></label></div>
+                    <label>隣接する頂点の最小距離（px）<input id="min-distance" type="number" min="0" step="any" value="2" aria-describedby="min-distance-error" required><span id="min-distance-error" class="field-error" role="alert" hidden></span></label>
+                    <label>輪郭の近似許容誤差（px）<input id="max-error" type="number" min="0" step="any" value="1" aria-describedby="max-error-error" required><span id="max-error-error" class="field-error" role="alert" hidden></span></label>
+                    <label>最小面積（px²）<input id="min-area" type="number" min="0" step="any" value="10" aria-describedby="min-area-error" required><span id="min-area-error" class="field-error" role="alert" hidden></span></label></div>
                     
                 </fieldset>
                 <fieldset id="interactor-options" hidden><legend>Promptingの入力</legend><div class="fields-row">
                     <label>正の点の最小数<input id="min-pos-points" type="number" min="0" max="1000" step="1" value="1" aria-describedby="min-pos-error" required><span id="min-pos-error" class="field-error" role="alert" hidden></span></label>
-                    <div class="negative-points"><label>除外点の最小数<input id="min-neg-points" type="number" min="0" max="1000" step="1" value="0" required></label><label class="checkbox-label"><input id="disable-neg-points" type="checkbox" aria-controls="min-neg-points">除外点を使用しない</label></div>
+                    <div class="negative-points"><label id="min-neg-points-field">除外点の最小数<input id="min-neg-points" type="number" min="0" max="1000" step="1" value="0" required></label><label class="checkbox-label"><input id="disable-neg-points" type="checkbox" aria-controls="min-neg-points-field">除外点を使用しない</label></div>
                     <label>矩形Prompt<select id="box-mode"><option value="optional">任意</option><option value="required">必須</option><option value="disabled">使用しない</option></select></label>
                 </div>
                 </fieldset>
@@ -58,7 +58,7 @@
             <div class="panel form-panel"><h2>ファイルと試験画像</h2>
                 <div class="upload-grid"><label class="file-field"><strong>推論コード（model.py）</strong><input id="code" type="file" accept=".py" aria-describedby="code-error" required><span id="code-retained" class="help" hidden></span><span id="code-error" class="field-error" role="alert" hidden></span></label><label class="file-field"><strong>ONNXファイル</strong><input id="weights" type="file" accept=".onnx" multiple required></label><section id="retained-model-files" hidden></section><label class="file-field"><strong>試験画像</strong><input id="sample" type="file" accept=".png,.jpg,.jpeg" required><span id="sample-retained" class="help" hidden></span></label></div>
                 
-                <label id="sample-prompts-field" hidden>試験画像用のPrompt（JSON）<textarea id="sample-prompts" placeholder="&#123;&quot;pos_points&quot;:[[12,8]],&quot;neg_points&quot;:[],&quot;obj_bbox&quot;:null&#125;" rows="4" maxlength="131072" required aria-describedby="sample-prompts-help"></textarea><span id="sample-prompts-help" class="field-error" role="alert" hidden></span></label>
+                <label id="sample-prompts-field" hidden>試験画像用のPrompt（JSON）<textarea id="sample-prompts" placeholder="&#123;&quot;pos_points&quot;:[[12,8]],&quot;neg_points&quot;:[],&quot;obj_bbox&quot;:null&#125;" rows="4" maxlength="131072" required aria-describedby="sample-prompts-error"></textarea><span id="sample-prompts-error" class="field-error" role="alert" hidden></span></label>
                 <div class="form-actions"><p id="update-summary" role="status" class="help"></p><button id="submit-model" class="primary" type="submit">検証して公開</button><button id="cancel-update" class="secondary" type="button" hidden>更新を取り消す</button></div><progress id="upload-progress" max="100" value="0" aria-label="アップロードの進捗" hidden></progress>
             </div>
         </form>

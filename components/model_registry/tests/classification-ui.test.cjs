@@ -20,6 +20,7 @@ class Element {
     get textContent() { return this.text + this.children.map((node) => node.textContent).join(''); }
     append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
     replaceChildren(...nodes) { this.children = []; this.text = ''; this.append(...nodes); }
+    remove() { this.parentElement.children = this.parentElement.children.filter((node) => node !== this); this.parentElement = null; }
     setAttribute(name, value) { this[name] = value; }
     addEventListener(type, handler, capture = false) { this.listeners.push({ type, handler, capture }); }
     querySelectorAll(selector) {
@@ -60,7 +61,8 @@ function setup() {
     vm.runInContext(app.replace(boot, '\n'), context);
     vm.runInContext(`
         let pending;
-        run = (handler) => { pending = Promise.resolve().then(handler).catch((error) => notice(error.message, true)); };
+        const actualRun = run;
+        run = (handler) => { pending = actualRun(handler); return pending; };
         globalThis.actualSendPackage = sendPackage;
         sendPackage = async (route, data) => submitted.push({ route, data });
         api = async (route) => route.endsWith('/logs') ? [] : response;
@@ -93,7 +95,7 @@ function file(name) { return new File(['fixture'], name); }
 for (const [kind, outputName] of [['tag', 'Classification'], ['polygon', 'Segmentation'], ['rectangle', 'Detection'], ['polyline', 'Line detection']]) {
     test(`new registration retains ${kind} label types and correct options`, async () => {
         const ui = setup(); ui.get('model-kind').value = kind; ui.eval('kindChanged()');
-        assert.equal(ui.get('label-help').hidden, true);
+        assert.equal(ui.get('label-error').hidden, true);
         assert.equal(ui.get('polygon-options').hidden, kind !== 'polygon');
         assert.equal(ui.get('min-area').disabled, kind !== 'polygon');
         ui.get('name').value = 'test'; ui.get('weights').files = [file('model.onnx')];
@@ -136,7 +138,10 @@ for (const name of ['new-local-name.onnx', 'Model.onnx']) {
         panel.children.find((node) => node.tagName === 'label').children[0].files = [file(name)];
         await ui.submit('register-form');
         assert.equal(ui.sandbox.submitted.length, 0);
-        assert.match(ui.get('notice').textContent, /ONNXファイル名はmodel\.onnxと一致/);
+        const error = panel.children.find((node) => node.tagName === 'label').children[2];
+        assert.match(error.textContent, /ONNXファイル名はmodel\.onnxと一致/);
+        assert.equal(error.hidden, false);
+        assert.equal(ui.get('notice').textContent, '');
     });
 }
 
@@ -145,7 +150,9 @@ test('code filename mismatch is rejected without uploading', async () => {
     ui.get('code').files = [file('renamed.py')];
     await ui.submit('register-form');
     assert.equal(ui.sandbox.submitted.length, 0);
-    assert.match(ui.get('notice').textContent, /ファイル名はmodel\.py/);
+    assert.match(ui.get('code-error').textContent, /ファイル名はmodel\.py/);
+    assert.equal(ui.get('code-error').hidden, false);
+    assert.equal(ui.get('notice').textContent, '');
 });
 
 test('code-only update retains the model.py filename and other files', async () => {
@@ -229,11 +236,15 @@ test('invalid prompting JSON and multiple labels are rejected before upload', as
         ui.get('sample-prompts').value = json;
         await ui.submit('register-form');
         assert.equal(ui.sandbox.submitted.length, 0);
-        assert.notEqual(ui.get('notice').textContent, '');
+        assert.notEqual(ui.get('sample-prompts-error').textContent, '');
+        assert.equal(ui.get('sample-prompts-error').hidden, false);
+        assert.equal(ui.get('notice').textContent, '');
     }
     ui.eval("labelRow({ id: 1, name: 'extra' })");
     await ui.submit('register-form');
-    assert.match(ui.get('notice').textContent, /1件だけ/);
+    assert.match(ui.get('label-error').textContent, /1件だけ/);
+    assert.equal(ui.get('label-error').hidden, false);
+    assert.equal(ui.get('notice').textContent, '');
 });
 
 test('prompting list and revision-aware test display masks and send prompts', async () => {
@@ -316,7 +327,7 @@ test('line detection registers polyline labels and previews any number of lines'
     const ui = setup(); ui.get('model-kind').value = 'polyline'; ui.eval('kindChanged()');
     assert.equal(ui.get('polygon-options').hidden, true);
     assert.equal(ui.get('interactor-options').hidden, true);
-    assert.equal(ui.get('label-help').hidden, true);
+    assert.equal(ui.get('label-error').hidden, true);
     ui.get('name').value = 'line model'; ui.get('code').files = [file('model.py')];
     ui.get('weights').files = [file('model.onnx')]; ui.get('sample').files = [file('sample.png')];
     await ui.submit('register-form');
@@ -573,31 +584,42 @@ test('negative point checkbox restores the sentinel and can be unchecked', () =>
     ui.eval('resetForm(model)');
     assert.equal(ui.get('disable-neg-points').checked, true);
     assert.equal(ui.get('min-neg-points').disabled, true);
+    assert.equal(ui.get('min-neg-points-field').hidden, true);
     assert.equal(ui.eval('readModelSettings(model.manifest).interactor.min_neg_points'), -1);
     ui.get('disable-neg-points').checked = false; ui.eval('negativePointsChanged()');
     assert.equal(ui.get('min-neg-points').disabled, false);
+    assert.equal(ui.get('min-neg-points-field').hidden, false);
     assert.equal(ui.eval('readModelSettings(model.manifest).interactor.min_neg_points'), 0);
+    ui.get('min-neg-points').value = '2';
+    ui.get('disable-neg-points').checked = true; ui.eval('negativePointsChanged()');
+    assert.equal(ui.get('min-neg-points-field').hidden, true);
+    ui.get('disable-neg-points').checked = false; ui.eval('negativePointsChanged()');
+    assert.equal(ui.get('min-neg-points-field').hidden, false);
+    assert.equal(ui.get('min-neg-points').value, '2');
 });
 
 test('invalid polygon values and incompatible prompting settings show field errors', async () => {
     const ui = setup();
-    assert.equal(ui.get('sample-prompts').value, '');
+    assert.deepEqual(JSON.parse(ui.get('sample-prompts').value), { pos_points: [], neg_points: [], obj_bbox: null });
     ui.get('min-area').value = '-1'; await ui.submit('register-form');
     assert.equal(ui.sandbox.submitted.length, 0);
-    assert.equal(ui.get('min-area-help').hidden, false);
+    assert.equal(ui.get('min-area-error').hidden, false);
+    assert.equal(ui.get('notice').textContent, '');
     ui.get('min-area').value = '10';
     ui.get('model-kind').value = 'interactor'; ui.eval('kindChanged()');
     ui.get('min-pos-points').value = '0'; await ui.submit('register-form');
     assert.equal(ui.get('min-pos-error').hidden, false);
+    assert.equal(ui.get('notice').textContent, '');
     ui.get('box-mode').value = 'required';
     ui.get('sample-prompts').value = '{"pos_points":[],"neg_points":[],"obj_bbox":[[12,8],[1,1]]}';
     await ui.submit('register-form');
     assert.equal(ui.sandbox.submitted.length, 0);
-    assert.equal(ui.get('sample-prompts-help').hidden, false);
+    assert.equal(ui.get('sample-prompts-error').hidden, false);
+    assert.equal(ui.get('notice').textContent, '');
     ui.get('sample-prompts').value = '{"pos_points":[],"neg_points":[],"obj_bbox":[[1,1],[12,8]]}';
     await ui.submit('register-form');
     assert.equal(ui.sandbox.submitted.length, 1);
-    assert.equal(ui.get('sample-prompts-help').hidden, true);
+    assert.equal(ui.get('sample-prompts-error').hidden, true);
 });
 
 test('update identifies retained files individually before selection', () => {
@@ -607,4 +629,51 @@ test('update identifies retained files individually before selection', () => {
         assert.equal(status.textContent, '現行を使用');
         assert.equal(status.hidden, false);
     }
+});
+
+test('Segmentation shows zero-based output order independent of class IDs', async () => {
+    const ui = setup();
+    ui.eval("labelRow({ id: 2, name: 'middle' }); labelRow({ id: 1, name: 'last' });");
+    const rows = () => ui.get('labels').children;
+    const titles = () => rows().map((row) => row.querySelector('[data-key=labelTitle]').textContent);
+    const ids = () => rows().map((row) => Number(row.querySelector('[data-key=id]').value));
+    rows()[0].querySelector('[data-key=id]').value = '9';
+    assert.deepEqual(titles(), ['出力順 0：ラベル名', '出力順 1：ラベル名', '出力順 2：ラベル名']);
+    assert.deepEqual(ids(), [9, 2, 1]);
+    await rows()[1].children[2].listeners.find((entry) => entry.type === 'click').handler();
+    assert.deepEqual(titles(), ['出力順 0：ラベル名', '出力順 1：ラベル名']);
+    assert.deepEqual(ids(), [9, 1]);
+    ui.get('model-kind').value = 'rectangle'; ui.eval('kindChanged()');
+    assert.deepEqual(titles(), ['ラベル名', 'ラベル名']);
+    ui.get('model-kind').value = 'polygon'; ui.eval('kindChanged()');
+    assert.deepEqual(titles(), ['出力順 0：ラベル名', '出力順 1：ラベル名']);
+    await ui.submit('register-form');
+    const manifest = JSON.parse(ui.sandbox.submitted[0].data.get('manifest'));
+    assert.deepEqual(manifest.labels.map((label) => label.id), [9, 1]);
+});
+
+test('new Prompting starts with an editable skeleton but requires real coordinates', async () => {
+    const ui = setup();
+    ui.get('model-kind').value = 'interactor'; ui.eval('kindChanged()');
+    assert.deepEqual(JSON.parse(ui.get('sample-prompts').value), { pos_points: [], neg_points: [], obj_bbox: null });
+    await ui.submit('register-form');
+    assert.equal(ui.sandbox.submitted.length, 0);
+    assert.match(ui.get('sample-prompts-error').textContent, /正の点が最小数/);
+    assert.equal(ui.get('notice').textContent, '');
+    ui.get('sample-prompts').value = '{"pos_points":[[12,8]],"neg_points":[],"obj_bbox":null}';
+    await ui.submit('register-form');
+    assert.equal(ui.sandbox.submitted.length, 1);
+    assert.equal(ui.get('sample-prompts-error').hidden, true);
+});
+
+test('field errors in test inference do not duplicate the global notice', async () => {
+    const ui = setup(); ui.sandbox.model = promptingModel(); ui.eval('selected = model');
+    ui.get('revision').value = ui.sandbox.model.active_revision; ui.eval('testRevisionChanged()');
+    ui.get('test-image').files = [file('sample.png')];
+    ui.get('test-prompts').value = 'invalid';
+    await ui.submit('test-form');
+    assert.equal(ui.get('test-prompts-error').hidden, false);
+    assert.match(ui.get('test-prompts-error').textContent, /JSON/);
+    assert.equal(ui.get('notice').textContent, '');
+    assert.equal(ui.get('test-button').disabled, false);
 });

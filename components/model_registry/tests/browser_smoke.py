@@ -227,6 +227,7 @@ def main():
                 page.locator('#author-contact').fill('alice@example.internal')
                 page.locator('#model-kind').select_option('polygon' if kind == 'segmentation' else 'rectangle')
                 page.locator('[data-key=name]').fill('bright_object')
+                expect(page.locator('[data-key=labelTitle]')).to_have_text('出力順 0：ラベル名' if kind == 'segmentation' else 'ラベル名')
                 directory = ROOT / 'examples' / kind
                 for element, file in [('code', 'model.py'), ('weights', 'model.onnx'), ('sample', 'sample.png')]:
                     page.locator('#' + element).set_input_files(str(directory / file))
@@ -266,11 +267,16 @@ def main():
             screenshot(page, '-registration-mobile')
             page.locator('#model-kind').select_option('interactor')
             expect(page.locator('#add-label')).to_be_disabled()
-            expect(page.locator('#sample-prompts')).to_have_value('')
+            assert page.locator('#sample-prompts').input_value().strip() != ''
+            assert page.locator('#sample-prompts').evaluate('el => JSON.parse(el.value).pos_points.length') == 0
+            page.locator('#min-neg-points').fill('3')
             page.locator('#disable-neg-points').check()
             expect(page.locator('#min-neg-points')).to_be_disabled()
+            expect(page.locator('#min-neg-points-field')).to_be_hidden()
             page.locator('#disable-neg-points').uncheck()
             expect(page.locator('#min-neg-points')).to_be_enabled()
+            expect(page.locator('#min-neg-points-field')).to_be_visible()
+            expect(page.locator('#min-neg-points')).to_have_value('3')
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'mobile prompting form overflow'
             screenshot(page, '-prompting-mobile')
             page.set_viewport_size({'width': 1440, 'height': 1050})

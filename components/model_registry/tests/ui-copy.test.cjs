@@ -62,8 +62,8 @@ test('model kinds retain standard ML terms and their existing values', () => {
 test('contour settings expose labels, units, bounds and error containers', () => {
     const { nodes } = fixture();
     for (const id of ['min-distance', 'max-error', 'min-area']) {
-        assert(nodes.has(`${id}-help`));
-        assert.match(html, new RegExp(`<input id="${id}"[^>]*aria-describedby="${id}-help"`));
+        assert(nodes.has(`${id}-error`));
+        assert.match(html, new RegExp(`<input id="${id}"[^>]*aria-describedby="${id}-error"`));
     }
     for (const match of html.matchAll(/\baria-describedby="([^"]+)"/g)) {
         for (const id of match[1].split(/\s+/)) assert(nodes.has(id), `missing help: ${id}`);
@@ -73,6 +73,8 @@ test('contour settings expose labels, units, bounds and error containers', () =>
     assert.match(html, /最小面積（px²）/);
     assert.doesNotMatch(html, /小さくすると細部を保持|小さい対象を残す場合/);
     assert.match(html, /id="max-error"[^>]*min="0" step="any"/);
+    for (const match of html.matchAll(/id="([^"]+)" class="field-error"/g)) assert.match(match[1], /-error$/);
+    assert.doesNotMatch(source, /(?:min-distance|max-error|min-area|sample-prompts|label)-help/);
 });
 
 test('JSON and logs remain available in closed details elements', () => {
@@ -87,8 +89,8 @@ for (const [kind, name] of [['polygon', 'Segmentation'], ['rectangle', 'Detectio
         const { nodes, run } = fixture();
         nodes.get('model-kind').value = kind;
         run('kindChanged()');
-        assert.equal(nodes.get('label-help').textContent, '');
-        assert.equal(nodes.get('label-help').hidden, true);
+        assert.equal(nodes.get('label-error').textContent, '');
+        assert.equal(nodes.get('label-error').hidden, true);
         assert.equal(nodes.get('polygon-options').hidden, kind !== 'polygon');
         assert.equal(nodes.get('min-area').disabled, kind !== 'polygon');
     });
